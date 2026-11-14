@@ -3,17 +3,17 @@ import AppKit
 import NotifyCore
 
 enum Palette {
-    static let background = Color(red: 35.0 / 255, green: 29.0 / 255, blue: 33.0 / 255)
-    static let surface = Color(red: 48.0 / 255, green: 39.0 / 255, blue: 44.0 / 255)
-    static let sidebar = surface
-    static let raised = Color.white.opacity(0.07)
-    static let ink = Color(red: 248.0 / 255, green: 240.0 / 255, blue: 233.0 / 255)
-    static let line = Color.white.opacity(0.09)
-    static let muted = Color(red: 214.0 / 255, green: 196.0 / 255, blue: 202.0 / 255)
-    static let accent = Color(red: 237.0 / 255, green: 192.0 / 255, blue: 163.0 / 255)
-    static let highlightInk = Color(red: 57.0 / 255, green: 40.0 / 255, blue: 31.0 / 255)
-    static let noticeMuted = Color(red: 1, green: 234.0 / 255, blue: 223.0 / 255)
-    static let amber = Color(red: 1, green: 235.0 / 255, blue: 207.0 / 255)
+    static let background = Color(red: 247.0 / 255, green: 245.0 / 255, blue: 250.0 / 255)
+    static let surface = Color.white
+    static let sidebar = Color(red: 244.0 / 255, green: 241.0 / 255, blue: 248.0 / 255)
+    static let raised = Color(red: 238.0 / 255, green: 232.0 / 255, blue: 246.0 / 255)
+    static let ink = Color(red: 37.0 / 255, green: 39.0 / 255, blue: 51.0 / 255)
+    static let line = ink.opacity(0.18)
+    static let muted = Color(red: 101.0 / 255, green: 91.0 / 255, blue: 115.0 / 255)
+    static let accent = Color(red: 106.0 / 255, green: 74.0 / 255, blue: 173.0 / 255)
+    static let highlightInk = Color.white
+    static let noticeMuted = Color(red: 87.0 / 255, green: 74.0 / 255, blue: 101.0 / 255)
+    static let amber = Color(red: 122.0 / 255, green: 73.0 / 255, blue: 27.0 / 255)
     static func state(_ state: String) -> Color {
         switch state {
         case "waiting": return amber
@@ -46,7 +46,7 @@ struct AgentIcon: View {
     var body: some View {
         Image(systemName: agent == "claude" ? "sparkle" : "terminal")
             .font(.system(size: 16, weight: .medium))
-            .foregroundStyle(agent == "claude" ? Palette.amber : Color(red: 0.68, green: 0.77, blue: 0.93))
+            .foregroundStyle(agent == "claude" ? Palette.amber : Palette.accent)
             .frame(width: 32, height: 32)
             .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
             .accessibilityLabel(agentName(agent))
@@ -64,7 +64,7 @@ struct DashboardView: View {
         WorkOverview(store: store)
         .background(Palette.background)
         .foregroundStyle(Palette.ink)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(.light)
         .tint(Palette.accent)
         .sheet(isPresented: $store.settingsVisible) { SettingsView(store: store) }
         .safeAreaInset(edge: .bottom) {
@@ -160,7 +160,7 @@ struct ReadableContext: View {
                                 let added = line.hasPrefix("+") && !line.hasPrefix("+++")
                                 let removed = line.hasPrefix("-") && !line.hasPrefix("---")
                                 Text(line.isEmpty ? " " : line).font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(added ? Color(red: 0.87, green: 1, blue: 0.83) : (removed ? Color(red: 1, green: 0.85, blue: 0.86) : Palette.ink))
+                                    .foregroundStyle(added ? Color(red: 0.13, green: 0.36, blue: 0.23) : (removed ? Color(red: 0.52, green: 0.13, blue: 0.22) : Palette.ink))
                                     .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }.textSelection(.enabled)
@@ -257,25 +257,8 @@ struct RequestEditor: View {
                 approvalActions.fixedSize(horizontal: false, vertical: true)
                 ScrollView { approvalActions }.frame(minHeight: 80, maxHeight: 280).scrollIndicators(.visible)
             }.layoutPriority(1)
-            if request.kind == "permission" && request.supportsFeedback == true {
-                TextField("Denial instructions", text: Binding(get: { feedback }, set: { feedback = $0 }),
-                          prompt: Text("Tell Copilot what to do differently (optional)").foregroundColor(secondary), axis: .vertical)
-                    .textFieldStyle(.plain).lineLimit(1...3).font(.system(size: 12))
-                    .padding(.vertical, 7)
-                    .overlay(alignment: .bottom) { Rectangle().fill(feedbackFocused ? Palette.accent : secondary.opacity(0.65)).frame(height: feedbackFocused ? 2 : 1) }
-                    .focused($feedbackFocused)
-                    .disabled(store.sending.contains(request.id))
-                if feedback.utf16.count > 4000 {
-                    Text("Keep instructions within 4,000 characters.").font(.system(size: 12)).foregroundStyle(Palette.amber)
-                }
-            }
             HStack {
-                Button(request.kind == "question" ? "Decline" : (denialFeedback == nil ? "Deny" : "Deny with instructions")) {
-                    store.reply(session: session.id, request: request, decision: "deny", feedback: denialFeedback)
-                }.buttonStyle(ReplyButtonStyle(primary: false, highlighted: keyboardChoice == .deny))
-                    .keyboardShortcut(shortcut(for: .deny)).id(ReplyChoice.deny)
-                    .disabled(store.sending.contains(request.id) || !session.connected ||
-                              !request.accepts(decision: "deny", answers: [:], feedback: denialFeedback))
+                if request.kind == "question" { denialAction }
                 Spacer()
                 if store.sending.contains(request.id) {
                     HStack { ProgressView().controlSize(.mini); Text("Waiting for confirmation").font(.system(size: 10)) }.foregroundStyle(secondary)
@@ -328,17 +311,29 @@ struct RequestEditor: View {
     private var approvalActions: some View {
         VStack(alignment: .leading, spacing: 12) {
             if request.kind == "permission" {
-                let horizontal = wide && (request.permissionOptions?.count ?? 0) <= 2
-                let layout = horizontal ? AnyLayout(HStackLayout(alignment: .top, spacing: 24)) : AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
-                layout {
+                HStack(spacing: 10) {
                     Button("Allow once") { store.reply(session: session.id, request: request, decision: "allow") }
                         .buttonStyle(ReplyButtonStyle(primary: true, highlighted: keyboardChoice == .allowOnce))
                         .keyboardShortcut(shortcut(for: .allowOnce)).id(ReplyChoice.allowOnce)
-                        .frame(maxWidth: horizontal ? .infinity : nil, alignment: .leading)
                         .help("Up and Down choose an option. Return activates the highlighted option, including remembered scopes. Text editing keeps normal keys.")
-                    ForEach(request.permissionOptions ?? []) { option in scopeAction(option) }
+                    denialAction
+                }
+                if request.supportsFeedback == true {
+                    TextField("Denial instructions", text: Binding(get: { feedback }, set: { feedback = $0 }),
+                              prompt: Text("Denial instructions (optional)").foregroundColor(secondary), axis: .vertical)
+                        .textFieldStyle(.plain).lineLimit(1...3).font(.system(size: 12))
+                        .padding(.vertical, 7)
+                        .overlay(alignment: .bottom) { Rectangle().fill(feedbackFocused ? Palette.accent : secondary.opacity(0.65)).frame(height: feedbackFocused ? 2 : 1) }
+                        .focused($feedbackFocused)
+                    if feedback.utf16.count > 4000 {
+                        Text("Keep instructions within 4,000 characters.").font(.system(size: 12)).foregroundStyle(Palette.amber)
+                    }
                 }
                 if !(request.permissionOptions ?? []).isEmpty {
+                    let horizontal = wide && (request.permissionOptions?.count ?? 0) <= 2
+                    let layout = horizontal ? AnyLayout(HStackLayout(alignment: .top, spacing: 24)) : AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                    layout { ForEach(request.permissionOptions ?? []) { option in scopeAction(option) } }
+                        .padding(.top, 6)
                     Text("Remembered approvals skip future prompts within their scope.")
                         .font(.system(size: 11)).foregroundStyle(secondary).fixedSize(horizontal: false, vertical: true)
                 }
@@ -349,6 +344,14 @@ struct RequestEditor: View {
                     .disabled(!request.accepts(decision: "answer", answers: answers))
             }
         }.disabled(store.sending.contains(request.id) || !session.connected)
+    }
+    private var denialAction: some View {
+        Button(request.kind == "question" ? "Decline" : (denialFeedback == nil ? "Deny" : "Deny with instructions")) {
+            store.reply(session: session.id, request: request, decision: "deny", feedback: denialFeedback)
+        }.buttonStyle(ReplyButtonStyle(primary: false, highlighted: keyboardChoice == .deny))
+            .keyboardShortcut(shortcut(for: .deny)).id(ReplyChoice.deny)
+            .disabled(store.sending.contains(request.id) || !session.connected ||
+                      !request.accepts(decision: "deny", answers: [:], feedback: denialFeedback))
     }
     private func scopeAction(_ option: PermissionOption) -> some View {
         let layout = floating ? AnyLayout(HStackLayout(alignment: .top, spacing: 12)) : AnyLayout(VStackLayout(alignment: .leading, spacing: 5))
@@ -380,8 +383,10 @@ struct RequestEditor: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(option.label).font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                                 .padding(.horizontal, 9).padding(.vertical, 5)
-                                .foregroundStyle(keyboardChoice == .option(question: question.id, label: option.label) ? Palette.highlightInk : Palette.ink)
-                                .background(keyboardChoice == .option(question: question.id, label: option.label) ? Palette.accent : .clear, in: Capsule())
+                                .foregroundStyle(Palette.ink)
+                                .background(selected ? Palette.accent.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 6))
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(
+                                    keyboardChoice == .option(question: question.id, label: option.label) ? Palette.accent : .clear, lineWidth: 2))
                             if !option.description.isEmpty { Text(option.description).font(.system(size: 11)).foregroundStyle(secondary).fixedSize(horizontal: false, vertical: true) }
                         }
                         Spacer(minLength: 0)
@@ -399,7 +404,8 @@ struct RequestEditor: View {
                 TextField(question.options.isEmpty ? "Your answer" : "Type your own answer", text: Binding(
                     get: { freeText[question.id] ?? "" },
                     set: { freeText[question.id] = $0; if !question.multiple && !$0.isEmpty { selections[question.id] = [] } }
-                ), axis: .vertical).textFieldStyle(.plain).font(.system(size: 13)).lineLimit(2...5)
+                ), prompt: Text(question.options.isEmpty ? "Your answer" : "Type your own answer").foregroundColor(secondary),
+                          axis: .vertical).textFieldStyle(.plain).font(.system(size: 13)).lineLimit(2...5)
                     .padding(.vertical, 9)
                     .accessibilityLabel(question.text)
                     .focused($answerFocused, equals: question.id)
@@ -420,7 +426,8 @@ struct ReplyButtonStyle: ButtonStyle {
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 12).padding(.vertical, 8)
             .foregroundStyle(filled ? Palette.highlightInk : Palette.ink)
-            .background(filled ? Palette.accent : Color.clear, in: Capsule())
+            .background(filled ? Palette.accent : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(filled ? .clear : Palette.line, lineWidth: 1))
             .opacity(!enabled ? 0.4 : (configuration.isPressed ? 0.7 : 1))
     }
 }
@@ -462,7 +469,7 @@ struct FloatingView: View {
                 }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Palette.noticeMuted)
             }
         }.padding(24).background(floatingSurface).clipShape(RoundedRectangle(cornerRadius: 26))
-            .foregroundStyle(Palette.ink).preferredColorScheme(.dark).tint(Palette.accent)
+            .foregroundStyle(Palette.ink).preferredColorScheme(.light).tint(Palette.accent)
     }
     private var floatingSurface: Color {
         let id = store.steeringSessionID ?? store.floatingRequests.first(where: { $0.request.id == store.replyWorkspace.floatingID })?.session.id ?? store.floatingRequests.first?.session.id
@@ -502,6 +509,6 @@ struct SettingsView: View {
             Text("History contains session labels and decisions, not answers. Conversation previews stay on this Mac unless you explicitly request an AI description; that sends a limited excerpt through your Copilot account.")
                 .font(.system(size: 10)).foregroundStyle(Palette.muted)
             Button("Remove disconnected sessions") { store.clearDisconnected() }
-        }.padding(28).frame(width: 550).background(Palette.background).foregroundStyle(Palette.ink).preferredColorScheme(.dark).tint(Palette.accent)
+        }.padding(28).frame(width: 550).background(Palette.background).foregroundStyle(Palette.ink).preferredColorScheme(.light).tint(Palette.accent)
     }
 }

@@ -4,13 +4,13 @@
 
 A native macOS app for answering Claude Code and Copilot requests without switching back to a terminal.
 
-The control center groups live agents into **Connected** and **Not connected**, with saved chats in their own tab. Select a session to see its decisions, activity and settings. A session-colored floating panel brings permission requests, choices, multi-select questions, and text fields to your current desktop.
+The sidebar puts **Needs you** first, then connected agents you're monitoring. **Not connected** stays separate, and saved chats have their own tab. Select a session, then use **Decision**, **Activity**, or **Session settings**. A session-colored floating panel brings permission requests, choices, multi-select questions, and text fields to your current desktop.
 
 Notify appears in the Dock and Cmd-Tab. Agent launchers start it in the background without opening the control center or reactivating an already-running app. Closing the control center keeps monitoring active; click the Dock icon to reopen it. Floating requests remain visible when another app is active. Use **Options > Keep in Dock** on its Dock icon to pin it; Notify does not change Dock preferences.
 
 ## Session workspace and useful notifications
 
-Each chat has a stable color shared by its session row, activity header and the entire floating notification. Change it using **Session color** in the **Session** tab; **Reset** restores the automatic accent. The panel uses a dark shade of that color with light readable text, including its choice and input surfaces. Colors are stored locally and follow the saved chat when it reconnects or resumes. Warning/error colors remain separate.
+Each chat has a stable color shared by its session row, activity header and the entire floating notification. Change it using **Session color** in **Session settings**; **Reset** restores the automatic accent. The panel uses a soft tint with dark readable text. Colors are stored locally and follow the saved chat when it reconnects or resumes. Warning/error colors remain separate.
 
 Floating cards show the chat title and project/agent above the full request. **Session > Open session** selects that exact chat. **Expand** enlarges the panel in place. Sending a reply keeps the card visible until acknowledgment; delivery failures appear inline, not in a blocking control-center popup. Replayed pending prompts do not repeatedly notify, and new arrivals preserve your selected question and draft.
 
@@ -139,7 +139,7 @@ The SDK's existing permission rules can resolve operations before Notify sees th
 
 ## Steer an attached Copilot session
 
-Choose **Steer an Agent** from Notify's menu-bar menu, or **Steer / Auto-yes in floating panel** from session details. The floating panel stays available even when no permission is pending. Select the target chat, read its latest activity, and type a direction:
+Choose **Steer an Agent** from Notify's menu-bar menu, or **Send instruction** from session details. The floating panel stays available even when no permission is pending. Select the target chat, read its latest activity, and type a direction:
 
 - **Queue** submits the direction for the next turn.
 - **Interrupt** asks for confirmation, interrupts the main turn while preserving queued prompts/background work, then submits the new direction.

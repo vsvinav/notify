@@ -32,7 +32,7 @@ import Vision
         ])
         let request = try JSONDecoder().decode(AgentRequest.self, from: data)
         let host = NSHostingView(rootView: RequestEditor(store: store, session: session, request: request)
-            .padding(20).background(Palette.surface).preferredColorScheme(.dark))
+            .padding(20).background(Palette.surface).preferredColorScheme(.light))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 410, height: 430),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = host
@@ -48,6 +48,62 @@ import Vision
                 NSApp.sendEvent(event)
             }
             NSApp.updateWindows()
+        }
+        func enterSearch(_ query: String, in view: NSView) {
+            guard let field = descendants(view).compactMap({ $0 as? NSTextField }).first(where: {
+                $0.placeholderString == "Search sessions"
+            }) else { preconditionFailure("Session search must remain a native editable field") }
+            field.stringValue = query
+            field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
+        }
+        do {
+            let selectionStore = Store(directory: fixtureRoot.appendingPathComponent("selection"), defaults: defaults)
+            defer { selectionStore.stop() }
+            func receiveSelection(_ packet: [String: Any]) throws {
+                selectionStore.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: JSONSerialization.data(withJSONObject: packet)))
+            }
+            try receiveSelection(["type": "hello", "sessionID": session.id, "agent": "copilot", "cwd": "/example"])
+            try receiveSelection(["type": "request", "sessionID": session.id, "request": try JSONSerialization.jsonObject(with: data)])
+            try receiveSelection(["type": "hello", "sessionID": "unconnected", "agent": "copilot", "cwd": "/other"])
+            selectionStore.server.onDisconnect("unconnected")
+            selectionStore.select("unconnected", request: "stale")
+            selectionStore.waitingOnly = true
+            let selectionHost = NSHostingView(rootView: DashboardView(store: selectionStore))
+            let selectionWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 620),
+                                           styleMask: [.borderless], backing: .buffered, defer: false)
+            selectionWindow.isReleasedWhenClosed = false
+            selectionWindow.contentView = selectionHost
+            func settleSelection() {
+                for _ in 0..<10 {
+                    selectionHost.layoutSubtreeIfNeeded()
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+                }
+            }
+            settleSelection()
+            precondition(selectionStore.selectedID == session.id && selectionStore.selectedRequestID == nil,
+                         "Filtering must select a visible waiting session, not retain an unrelated disconnected detail")
+            selectionStore.server.onDisconnect(session.id)
+            settleSelection()
+            precondition(selectionStore.selectedID == nil && selectionStore.selectedRequestID == nil,
+                         "No matching connected requests must clear actionable session details")
+            selectionStore.waitingOnly = false
+            settleSelection()
+            try receiveSelection(["type": "hello", "sessionID": "automatic-session", "agent": "copilot", "cwd": "/automatic"])
+            settleSelection()
+            precondition(selectionStore.selectedID == "automatic-session",
+                         "An automatic setup selection must yield when connected work becomes available")
+            selectionStore.select("unconnected")
+            try receiveSelection(["type": "hello", "sessionID": "new-session", "agent": "copilot", "cwd": "/new"])
+            settleSelection()
+            precondition(selectionStore.selectedID == "unconnected", "A new session must not steal an explicit visible selection")
+            enterSearch("no-such-session", in: selectionHost)
+            settleSelection()
+            precondition(selectionStore.selectedID == nil, "Search with no matches must not leave unrelated decisions actionable")
+            selectionStore.select("new-session")
+            settleSelection()
+            precondition(selectionStore.selectedID == "new-session",
+                         "Opening a session from a notification must reveal it through active search filters")
+            selectionWindow.contentView = nil
         }
         let scrolls = descendants(host).compactMap { $0 as? NSScrollView }
         guard let scroll = scrolls.first, let document = scroll.documentView else {
@@ -125,16 +181,18 @@ import Vision
         let redCard = snapshot(0xEF4444), blueCard = snapshot(0x4488FF)
         store.setColor(0xF29A78, for: session)
         let warmSurface = NSColor(store.sessionSurface(session)).usingColorSpace(.sRGB)!
-        precondition(warmSurface.redComponent > 0.50, "The approved notification needs a rich session color, not the rejected nearly-black tint")
+        precondition(warmSurface.redComponent > 0.90, "The lighter notification must retain a soft session tint")
         func luminance(_ color: NSColor) -> Double {
             func linear(_ value: Double) -> Double { value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4) }
             return 0.2126 * linear(color.redComponent) + 0.7152 * linear(color.greenComponent) + 0.0722 * linear(color.blueComponent)
         }
-        let noticeText = NSColor(srgbRed: 1, green: 234.0 / 255, blue: 223.0 / 255, alpha: 1)
+        let noticeText = NSColor(Palette.noticeMuted).usingColorSpace(.sRGB)!
+        precondition(luminance(noticeText) < 0.25, "Light notifications need dark, readable detail text")
         for color: UInt32 in [0xFFFFFF, 0xFFFF00, 0x00FF00, 0xF29A78, 0x408ED8, 0] {
             store.setColor(color, for: session)
             let surface = NSColor(store.sessionSurface(session)).usingColorSpace(.sRGB)!
-            precondition((luminance(noticeText) + 0.05) / (luminance(surface) + 0.05) >= 4.5,
+            let textLuminance = luminance(noticeText), surfaceLuminance = luminance(surface)
+            precondition((max(textLuminance, surfaceLuminance) + 0.05) / (min(textLuminance, surfaceLuminance) + 0.05) >= 4.5,
                          "User-selected session colors must keep notification detail text readable")
         }
         var changedInteriorPixels = 0
@@ -245,6 +303,18 @@ import Vision
             dashboard.layoutSubtreeIfNeeded()
             RunLoop.current.run(until: Date().addingTimeInterval(0.02))
         }
+        func showActivity(in view: NSView) {
+            guard let tabs = descendants(view).compactMap({ $0 as? NSSegmentedControl }).first(where: {
+                $0.segmentCount == 3 && $0.label(forSegment: 1) == "Activity"
+            }) else { preconditionFailure("Session navigation must expose recognizable native tabs") }
+            tabs.selectedSegment = 1
+            precondition(tabs.sendAction(tabs.action, to: tabs.target), "Activity navigation must respond")
+            for _ in 0..<10 {
+                view.layoutSubtreeIfNeeded()
+                RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            }
+        }
+        showActivity(in: dashboard)
         precondition(descendants(dashboard).compactMap { $0 as? NSScrollView }.count >= 2,
                      "Session list and selected activity need independent scroll regions")
         print("Native workspace layout, activity selection and notification replay checks passed")
@@ -303,6 +373,15 @@ import Vision
                     capture.layoutSubtreeIfNeeded()
                     RunLoop.current.run(until: Date().addingTimeInterval(0.025))
                 }
+                if name.hasPrefix("control-center-activity") { showActivity(in: capture) }
+                if name == "control-center-no-results.png" {
+                    enterSearch("missing-project", in: capture)
+                    for _ in 0..<10 {
+                        capture.layoutSubtreeIfNeeded()
+                        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+                    }
+                    precondition(visual.selectedID == nil, "No-results captures must not show an unrelated session")
+                }
                 precondition(capture.bounds.size == NSSize(width: width, height: height), "Capture must match its requested shipping size")
                 if name == "floating-diff.png" {
                     let scroll = descendants(capture).compactMap { $0 as? NSScrollView }.first!
@@ -311,13 +390,32 @@ import Vision
                 let bitmap = capture.bitmapImageRepForCachingDisplay(in: capture.bounds)!
                 capture.cacheDisplay(in: capture.bounds, to: bitmap)
                 try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(name))
+                if name == "control-center-no-results.png" || name == "control-center-activity-waiting.png" || name == "floating-command.png" {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let lines = recognition.results ?? []
+                    let text = lines.compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+                    if name == "control-center-no-results.png" {
+                        precondition(text.contains("No matching sessions") && !text.contains("caught up"),
+                                     "Combined search and waiting filters must not falsely announce all-clear. Found: \(text)")
+                    } else if name == "control-center-activity-waiting.png" {
+                        precondition(text.contains("Decision waiting") && text.contains("Review"),
+                                     "Activity with a pending request must show an actionable Review banner")
+                    } else {
+                        let allow = lines.first { $0.topCandidates(1).first?.string == "Allow once" }
+                        let deny = lines.first { $0.topCandidates(1).first?.string == "Deny" }
+                        precondition(allow != nil && deny != nil && abs(allow!.boundingBox.midY - deny!.boundingBox.midY) < 0.035,
+                                     "The one-time Allow and Deny actions must be grouped on the same row")
+                    }
+                }
                 if name == "control-center-connections.png" {
                     let recognition = VNRecognizeTextRequest()
                     recognition.recognitionLevel = .accurate
                     try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
                     let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
-                    precondition(text.contains("Connected") && text.contains("Not connected") && text.contains("Disconnected"),
-                                 "Rendered connection groups and disconnected labels must be readable. Found: \(text)")
+                    precondition(text.contains("Connected") && text.contains("Not connected"),
+                                 "Rendered connection groups must remain findable. Found: \(text)")
                 }
             }
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center.png")
@@ -325,6 +423,18 @@ import Vision
             visual.server.onDisconnect("visual-6")
             visual.server.onDisconnect("visual-7")
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center-connections.png")
+            try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center-activity-waiting.png")
+            visual.waitingOnly = true
+            try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-no-results.png")
+            visual.waitingOnly = false
+            visual.select("visual-6")
+            try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-disconnected.png")
+            visual.select("visual-0", request: "visual-request")
+            let empty = Store(directory: fixtureRoot.appendingPathComponent("empty"), defaults: defaults)
+            try capture(DashboardView(store: empty), width: 960, height: 620, name: "control-center-empty.png")
+            empty.waitingOnly = true
+            try capture(DashboardView(store: empty), width: 960, height: 620, name: "control-center-no-decisions.png")
+            empty.stop()
             try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 560, name: "floating-command.png")
             window.makeKey()
             let enter = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
@@ -334,7 +444,7 @@ import Vision
             precondition(visual.requestErrors["visual-request"] != nil, "Return must dispatch the exact pending request (the fixture has no transport)")
             visual.requestErrors.removeValue(forKey: "visual-request")
             guard let instructions = descendants(window.contentView!).compactMap({ $0 as? NSTextField }).first(where: {
-                $0.placeholderString?.hasPrefix("Tell Copilot") == true
+                $0.placeholderString == "Denial instructions (optional)"
             }) else { preconditionFailure("Denial instructions must be a native editable field") }
             window.makeFirstResponder(instructions)
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
@@ -454,7 +564,7 @@ import Vision
             RunLoop.current.run(until: Date().addingTimeInterval(0.02))
         }
         let instructions = descendants(replyPanel.contentView!).compactMap { $0 as? NSTextField }.first {
-            $0.placeholderString?.hasPrefix("Tell Copilot") == true
+            $0.placeholderString == "Denial instructions (optional)"
         }!
         NSApp.activate()
         pumpNativeEvents()
@@ -499,13 +609,34 @@ import Vision
         precondition((replyPanel.firstResponder as? NSTextView)?.isEditable == true && store.requestErrors["keyboard-question"] == nil,
                      "Choosing Other with Return must focus the real answer input")
         assertReturnReleased("Editing Other must restore ordinary keyboard input")
-        replyPanel.makeFirstResponder(nil)
-        store.floatingEnabled = false
-        assertReturnReleased("Hidden notifications must release their global keys")
+        let nextKeyboardRequest = try JSONSerialization.data(withJSONObject: [
+            "type": "request", "sessionID": session.id,
+            "request": ["id": "keyboard-next", "kind": "permission", "title": "Next decision",
+                        "detail": "", "autoEligible": false, "questions": []]
+        ])
+        store.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: nextKeyboardRequest))
         let keyboardResolved = try JSONSerialization.data(withJSONObject: [
             "type": "resolved", "sessionID": session.id, "requestID": "keyboard-question", "decision": "answer"
         ])
         store.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: keyboardResolved))
+        for _ in 0..<12 {
+            replyPanel.contentView?.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.025))
+            pumpNativeEvents()
+        }
+        precondition(store.activeFloatingRequest?.request.id == "keyboard-next", "Resolving an edited question must show the next request")
+        sendReturn(UInt32(kEventHotKeyPressed), key: UInt32(kVK_DownArrow))
+        sendReturn(UInt32(kEventHotKeyReleased), key: UInt32(kVK_DownArrow))
+        sendReturn(UInt32(kEventHotKeyPressed))
+        sendReturn(UInt32(kEventHotKeyReleased))
+        precondition(store.requestErrors["keyboard-next"] != nil,
+                     "Arrows and Return must rearm after the previous question's Other editor disappears")
+        let nextResolved = try JSONSerialization.data(withJSONObject: [
+            "type": "resolved", "sessionID": session.id, "requestID": "keyboard-next", "decision": "deny"
+        ])
+        store.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: nextResolved))
+        store.floatingEnabled = false
+        assertReturnReleased("Hidden notifications must release their global keys")
         precondition(NSApp.dockTile.badgeLabel == String(previousWaiting + 1), "Snoozing a card must not erase its pending Dock count")
         store.automaticallySending.insert("dock-test")
         store.onAttentionChange?()

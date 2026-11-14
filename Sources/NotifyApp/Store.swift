@@ -20,6 +20,7 @@ final class Store: ObservableObject {
     @Published private(set) var registry = SessionRegistry()
     @Published var selectedID: String?
     @Published var selectedRequestID: String?
+    private(set) var selectionIsExplicit = false
     @Published var waitingOnly = false
     @Published var error: String?
     @Published var requestErrors: [String: String] = [:]
@@ -260,7 +261,21 @@ final class Store: ObservableObject {
         discoveryTimer = timer
         timer.resume()
     }
-    func select(_ id: String, request: String? = nil) { selectedID = id; selectedRequestID = request }
+    func select(_ id: String, request: String? = nil) {
+        selectionIsExplicit = true
+        selectedRequestID = request
+        selectedID = id
+    }
+    func reconcileSelection(in visible: [SessionRecord]) {
+        if selectionIsExplicit, visible.contains(where: { $0.id == selectedID }) { return }
+        let preferred = visible.first { $0.connected && !$0.requests.isEmpty }
+            ?? visible.first { $0.connected && !$0.needsSetup } ?? visible.first
+        selectionIsExplicit = false
+        if selectedID != preferred?.id {
+            selectedRequestID = nil
+            selectedID = preferred?.id
+        }
+    }
     var activeFloatingRequest: (session: SessionRecord, request: AgentRequest)? {
         let requests = floatingRequests
         return requests.first { $0.request.id == replyWorkspace.floatingID } ?? requests.first

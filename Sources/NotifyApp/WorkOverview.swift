@@ -7,10 +7,13 @@ struct WorkOverview: View {
     @State private var filter = "Live"
     @State private var search = ""
     @State private var order: [String] = []
+    @State private var showDisconnected = false
+    private var connected: [SessionRecord] { visible.filter { $0.connected && !$0.needsSetup } }
+    private var disconnected: [SessionRecord] { visible.filter { !$0.connected || $0.needsSetup } }
     private var visible: [SessionRecord] {
         let records = store.sessions.filter { session in
             (filter == "Saved" ? session.isSaved : !session.isSaved) &&
-            (!store.waitingOnly || !session.requests.isEmpty) &&
+            (!store.waitingOnly || (session.connected && !session.requests.isEmpty)) &&
             (search.isEmpty || "\(session.name) \(session.cwd) \(session.summary)".localizedCaseInsensitiveContains(search))
         }
         return records.sorted {
@@ -20,77 +23,112 @@ struct WorkOverview: View {
         }
     }
     var body: some View {
-        GeometryReader { geometry in
+        HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 18) {
                 HStack {
-                    Text("Notify").font(.system(size: 19, weight: .medium))
+                    Text("Sessions").font(.system(size: 22, weight: .semibold))
                     Spacer()
-                    ForEach(["Live", "Saved"], id: \.self) { value in
-                        Button(value) { filter = value }.buttonStyle(.plain)
-                            .foregroundStyle(filter == value ? Palette.accent : Palette.muted)
-                            .accessibilityAddTraits(filter == value ? .isSelected : [])
-                    }
-                    HStack(spacing: 7) {
-                        Image(systemName: "magnifyingglass").foregroundStyle(Palette.muted)
-                        TextField("Find a session", text: $search).textFieldStyle(.plain)
-                    }.frame(width: 170).padding(.horizontal, 12)
-                    Button("Settings") { store.settingsVisible = true }
-                        .buttonStyle(.plain).foregroundStyle(Palette.muted)
+                    Button { store.settingsVisible = true } label: { Image(systemName: "gearshape") }
+                        .buttonStyle(.borderless)
                         .accessibilityLabel("Notify settings")
-                }.font(.system(size: 12))
-                HStack(alignment: .firstTextBaseline) {
-                    Text(filter == "Saved" ? "Pick up where you left off." : "Your sessions, at a glance.")
-                        .font(.system(size: 17, weight: .regular))
-                    Spacer()
-                    Button("\(store.waitingCount) need you") { store.waitingOnly.toggle() }
-                        .buttonStyle(.plain).foregroundStyle(store.waitingOnly ? Palette.ink : Palette.accent)
-                        .accessibilityLabel(store.waitingOnly ? "Show all sessions" : "Show sessions needing you")
-                        .font(.system(size: 12))
-                }.padding(.top, 4)
+                }
+                Picker("Session source", selection: $filter) {
+                    Text("Live").tag("Live")
+                    Text("Saved").tag("Saved")
+                }.pickerStyle(.segmented).labelsHidden()
+                TextField("Search sessions", text: $search,
+                          prompt: Text("Search sessions").foregroundColor(Palette.muted))
+                    .textFieldStyle(.roundedBorder)
+                if filter == "Live" {
+                    Toggle("Needs you only (\(store.waitingCount))", isOn: $store.waitingOnly)
+                        .toggleStyle(.checkbox).font(.system(size: 12))
+                }
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 19) {
+                    VStack(alignment: .leading, spacing: 24) {
                         if visible.isEmpty {
-                            Text(search.isEmpty ? "No sessions in this view. Connect an agent or browse saved chats." : "No matching tasks or projects.")
+                            Text(!search.isEmpty ? "No matching sessions." : store.waitingOnly ? "Nothing waiting on you." : "No sessions in this view.")
                                 .font(.system(size: 13)).foregroundStyle(Palette.muted).padding(.vertical, 12)
                         } else if filter == "Saved" {
                             sessionGroup("Saved chats", records: visible)
                         } else {
-                            let connected = visible.filter { $0.connected && !$0.needsSetup }
-                            let disconnected = visible.filter { !$0.connected || $0.needsSetup }
-                            sessionGroup("Connected", records: connected)
-                            if !disconnected.isEmpty { sessionGroup("Not connected", records: disconnected) }
+                            if !connected.isEmpty {
+                                Text("Connected · \(connected.count)").font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Palette.muted).accessibilityAddTraits(.isHeader)
+                                let waiting = connected.filter { !$0.requests.isEmpty }
+                                if !waiting.isEmpty { sessionGroup("Needs you", records: waiting) }
+                                let monitoring = connected.filter { $0.requests.isEmpty }
+                                if !monitoring.isEmpty { sessionGroup("Monitoring", records: monitoring) }
+                            }
+                            if connected.isEmpty {
+                                Text("No connected sessions yet. Select a terminal below to see how to connect it.")
+                                    .font(.system(size: 13)).foregroundStyle(Palette.muted)
+                            }
                         }
                     }
-                }.frame(height: min(260, max(120, 120 + (geometry.size.height - 620) * 0.65)))
-                    .scrollIndicators(.visible)
-                Divider().padding(.vertical, 3)
-                if let selected = store.selected {
+                }.scrollIndicators(.visible)
+                    .frame(maxHeight: filter == "Live" && connected.isEmpty && !disconnected.isEmpty ? 65 : .infinity)
+                if filter == "Live", !disconnected.isEmpty {
+                    Divider()
+                    DisclosureGroup("Not connected · \(disconnected.count)", isExpanded: $showDisconnected) {
+                        ScrollView { sessionRows(disconnected).padding(.top, 8) }
+                            .frame(maxHeight: connected.isEmpty ? .infinity : 190)
+                    }.font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.muted)
+                }
+            }.padding(20).frame(width: 272).background(Palette.sidebar)
+            Divider()
+            VStack(alignment: .leading, spacing: 18) {
+                if let selected = store.selected, visible.contains(where: { $0.id == selected.id }) {
                     WorkDetail(store: store, session: selected).id(selected.id)
                 } else {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Stay with your work.").font(.system(size: 24, weight: .regular))
-                        Text("Select a session to review its activity, answer a question, or open its terminal.")
+                        Text(!search.isEmpty ? "No matching sessions." : store.waitingOnly ? "You're all caught up." : "Your work starts in the terminal.")
+                            .font(.system(size: 26, weight: .semibold))
+                        Text(!search.isEmpty ? "Try a session name or project folder, or clear your search." :
+                                store.waitingOnly ? "Connected agents will appear here when they need an answer." :
+                                "Connect a running Copilot terminal, or start an agent with the Notify launcher.")
                             .font(.system(size: 13)).foregroundStyle(Palette.muted)
+                        if !search.isEmpty || store.waitingOnly {
+                            Button("Show all sessions") { search = ""; store.waitingOnly = false }
+                        } else {
+                            Text(filter == "Saved" ? "Saved Copilot chats appear here after discovery." : "~/.local/bin/notify setup-copilot")
+                                .font(.system(size: 14, design: .monospaced)).textSelection(.enabled)
+                        }
                     }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
-            }.padding(.horizontal, 30).padding(.vertical, 22).background(Palette.surface)
+            }.padding(26).frame(maxWidth: .infinity, maxHeight: .infinity).background(Palette.surface)
         }
-        .onAppear { updateOrder() }
+        .onAppear {
+            updateOrder()
+            showDisconnected = connected.isEmpty || store.selected?.connected == false
+            store.reconcileSelection(in: visible)
+        }
         .onChange(of: store.sessions.map(\.id).sorted()) { updateOrder() }
+        .onChange(of: connected.isEmpty) { if connected.isEmpty { showDisconnected = true } }
+        .onChange(of: visible.map { "\($0.id):\($0.connected):\($0.requests.count)" }) { store.reconcileSelection(in: visible) }
         .onChange(of: filter) { if filter == "Saved" { store.waitingOnly = false } }
+        .onChange(of: store.selectedID) {
+            guard store.selectionIsExplicit, let selected = store.selected else { return }
+            if !visible.contains(where: { $0.id == selected.id }) {
+                filter = selected.isSaved ? "Saved" : "Live"
+                search = ""
+                store.waitingOnly = false
+            }
+            if !selected.connected { showDisconnected = true }
+        }
     }
     private func sessionGroup(_ title: String, records: [SessionRecord]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("\(title) · \(records.count)").font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Palette.muted).accessibilityAddTraits(.isHeader)
-            if records.isEmpty {
-                Text("No connected sessions yet.").font(.system(size: 12)).foregroundStyle(Palette.muted)
-            }
-            LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: 9) {
-                ForEach(records) { session in
-                    Button { store.select(session.id) } label: { WorkRow(store: store, session: session) }
-                        .buttonStyle(.plain)
-                }
+            Text(title).font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(title == "Needs you" ? Palette.accent : Palette.muted).accessibilityAddTraits(.isHeader)
+            sessionRows(records)
+        }
+    }
+    private func sessionRows(_ records: [SessionRecord]) -> some View {
+        LazyVStack(spacing: 5) {
+            ForEach(records) { session in
+                Button { store.select(session.id) } label: { WorkRow(store: store, session: session) }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(store.selectedID == session.id ? .isSelected : [])
             }
         }
     }
@@ -106,16 +144,22 @@ private struct WorkRow: View {
     let session: SessionRecord
     var body: some View {
         HStack(spacing: 11) {
-                Circle().fill(store.sessionColor(session))
-                    .frame(width: store.selectedID == session.id ? 10 : 7, height: store.selectedID == session.id ? 10 : 7)
+                Circle().fill(store.sessionColor(session)).frame(width: 8, height: 8)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(session.name).font(.system(size: 13, weight: .regular)).lineLimit(1)
-                    Text("\(session.projectLabel) · \(session.needsSetup ? "Needs setup" : stateName(session.state))")
+                    Text(session.name).font(.system(size: 13, weight: .semibold)).lineLimit(2)
+                    Text("\(agentName(session.agent)) · \(session.projectLabel)")
                         .font(.system(size: 11)).foregroundStyle(Palette.muted).lineLimit(1)
+                    Text(session.needsSetup ? "Needs setup" : !session.connected ? "Disconnected" :
+                            session.requests.first?.title ?? stateName(session.state))
+                        .font(.system(size: 12)).foregroundStyle(Palette.muted).lineLimit(2)
                 }
                 Spacer(minLength: 0)
-        }.padding(.vertical, 3).frame(maxWidth: .infinity, alignment: .leading)
-            .foregroundStyle(store.selectedID == session.id ? Palette.accent : Palette.ink)
+                if store.selectedID == session.id {
+                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .bold)).foregroundStyle(Palette.accent)
+                }
+        }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
+            .foregroundStyle(Palette.ink)
+            .background(store.selectedID == session.id ? Palette.raised : .clear, in: RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
             .help("\(session.name)\n\(agentName(session.agent)) · \(session.cwd)\n\(session.workHeadline)")
     }
@@ -126,24 +170,33 @@ private struct WorkDetail: View {
     let session: SessionRecord
     @State private var tab = "Decision"
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .top, spacing: 12) {
-                Circle().fill(store.sessionColor(session)).frame(width: 7, height: 7).padding(.top, 8)
-                Text("\(session.name) · \(agentName(session.agent))")
-                    .font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.accent).textSelection(.enabled)
-                Spacer()
-                TerminalSessionButton(store: store, session: session).buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Palette.muted)
-            }
-            HStack(spacing: 20) {
-                ForEach(["Decision", "Activity", "Session"], id: \.self) { value in
-                    Button(value == "Decision" && session.requests.isEmpty ? "Overview" : value) { tab = value }
-                        .buttonStyle(.plain).foregroundStyle(tab == value ? Palette.ink : Palette.muted)
-                        .accessibilityAddTraits(tab == value ? .isSelected : [])
+                Circle().fill(store.sessionColor(session)).frame(width: 10, height: 10).padding(.top, 8)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(session.name).font(.system(size: 21, weight: .semibold)).lineLimit(2).textSelection(.enabled)
+                    Text("\(agentName(session.agent)) · \(session.projectLabel) · \(session.needsSetup ? "Needs setup" : stateName(session.state))")
+                        .font(.system(size: 12)).foregroundStyle(Palette.muted)
                 }
                 Spacer()
-                Button("Steer") { store.showSteering(session.id) }.disabled(!session.connected || !session.canSteer)
-                    .buttonStyle(.plain).foregroundStyle(Palette.muted)
-            }.font(.system(size: 12))
+            }
+            HStack(spacing: 10) {
+                TerminalSessionButton(store: store, session: session)
+                Button("Send instruction") { store.showSteering(session.id) }.disabled(!session.connected || !session.canSteer)
+                Spacer()
+            }.controlSize(.regular)
+            Picker("Session view", selection: $tab) {
+                Text("Decision").tag("Decision")
+                Text("Activity").tag("Activity")
+                Text("Session settings").tag("Session")
+            }.pickerStyle(.segmented).labelsHidden()
+            if tab != "Decision", session.connected, !session.requests.isEmpty {
+                HStack {
+                    Label("Decision waiting", systemImage: "questionmark.circle").font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    Button("Review") { tab = "Decision" }
+                }.padding(12).background(Palette.raised, in: RoundedRectangle(cornerRadius: 8))
+            }
             if let error = store.sessionErrors[session.id] {
                 Text(error).font(.system(size: 13)).foregroundStyle(Palette.amber).textSelection(.enabled)
             }
@@ -192,11 +245,13 @@ private struct WorkDetail: View {
                 RequestEditor(store: store, session: session, request: request, wide: true).id(request.id)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(session.workHeadline).font(.system(size: 19, weight: .medium)).textSelection(.enabled)
+                    Text("Nothing waiting on you.").font(.system(size: 25, weight: .semibold))
+                    Text(session.workHeadline).font(.system(size: 15, weight: .medium)).textSelection(.enabled)
                     Text(session.baseState == "ready" ? "The agent is idle. This does not confirm that its task or tests succeeded." :
-                            "No decision is waiting on you. Activity below is what the agent has actually reported.")
+                            "The agent is connected. Its reported progress is in Activity.")
                         .font(.system(size: 14)).foregroundStyle(Palette.muted)
-                    SessionTimeline(store: store, showsHeader: false)
+                    Button("View activity") { tab = "Activity" }
+                    Spacer()
                 }
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
