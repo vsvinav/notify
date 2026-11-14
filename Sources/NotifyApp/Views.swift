@@ -304,11 +304,11 @@ struct RequestEditor: View {
     }
     private func heading(_ reasons: [ContextField]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(.init(request.title)).font(floating ? .system(size: 28, weight: .regular) : WorkspaceType.text(26))
+            Text(.init(request.title)).font(WorkspaceType.text(floating ? 28 : 26))
                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
             ForEach(reasons) { reason in
-                Text(reason.value).font(.system(size: 13)).foregroundStyle(secondary)
+                Text(reason.value).font(WorkspaceType.text(13)).foregroundStyle(secondary)
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             }
         }
@@ -336,7 +336,7 @@ struct RequestEditor: View {
         }
     }
     private var approvalActions: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: floating ? 10 : 12) {
             if request.kind == "permission" {
                 HStack(spacing: 10) {
                     Button("Allow once") { store.reply(session: session.id, request: request, decision: "allow") }
@@ -389,10 +389,10 @@ struct RequestEditor: View {
                 .keyboardShortcut(shortcut(for: .scope(option.id))).id(ReplyChoice.scope(option.id))
                 .frame(maxWidth: floating ? 160 : nil, alignment: .leading)
                 .help(option.label)
-            Text(option.detail).font(.system(size: 11)).foregroundStyle(secondary)
+            Text(option.detail).font(WorkspaceType.text(11)).foregroundStyle(secondary)
                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-                .multilineTextAlignment(floating ? .trailing : .leading)
-                .frame(maxWidth: .infinity, alignment: floating ? .trailing : .leading)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private func questionField(_ question: AgentQuestion) -> some View {
@@ -449,7 +449,7 @@ struct ReplyButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         let filled = highlighted ?? primary
-        configuration.label.font(.system(size: 13, weight: .medium))
+        configuration.label.font(WorkspaceType.text(13, strong: true))
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 12).padding(.vertical, 8)
             .foregroundStyle(filled ? Palette.highlightInk : Palette.ink)
@@ -462,20 +462,38 @@ struct ReplyButtonStyle: ButtonStyle {
 struct FloatingView: View {
     @ObservedObject var store: Store
     let openCenter: () -> Void
+    @State private var colorHovered = false
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let id = store.steeringSessionID {
                 FloatingSteeringView(store: store, sessionID: id, openCenter: openCenter)
             } else if let item = store.activeFloatingRequest {
                 let index = store.floatingRequests.firstIndex { $0.request.id == store.replyWorkspace.floatingID } ?? 0
-                HStack(spacing: 9) {
-                    Circle().fill(floatingColor).frame(width: 7, height: 7)
+                HStack(spacing: 10) {
+                    Button {
+                        store.floatingColorPickerSessionID = item.session.id
+                    } label: {
+                        Circle().fill(floatingColor)
+                            .overlay(Circle().strokeBorder(Palette.line, lineWidth: 1))
+                            .frame(width: 20, height: 20).padding(6)
+                            .background(colorHovered ? Palette.raised : .clear, in: Circle())
+                            .contentShape(Circle())
+                    }.buttonStyle(.plain)
+                        .onHover { colorHovered = $0 }
+                        .accessibilityLabel("Change session color")
+                        .help("Change color for \(item.session.name)")
+                        .popover(isPresented: Binding(
+                            get: { store.floatingColorPickerSessionID == item.session.id },
+                            set: { if !$0 { store.floatingColorPickerSessionID = nil } }
+                        )) {
+                            SessionColorChoices(store: store, sessionID: item.session.id)
+                        }
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(item.session.name).font(.system(size: 16, weight: .medium)).lineLimit(2).help(item.session.name)
-                        Text("\(item.session.projectLabel) · \(agentName(item.session.agent))").font(.system(size: 11)).foregroundStyle(Palette.noticeMuted)
+                        Text(item.session.name).font(WorkspaceType.text(18, strong: true)).lineLimit(2).help(item.session.name)
+                        Text("\(item.session.projectLabel) · \(agentName(item.session.agent))").font(WorkspaceType.text(11)).foregroundStyle(Palette.noticeMuted)
                     }
                     Spacer()
-                    Text("\(min(index + 1, store.floatingRequests.count)) of \(store.floatingRequests.count)").font(.system(size: 11)).foregroundStyle(Palette.noticeMuted)
+                    Text("\(min(index + 1, store.floatingRequests.count)) of \(store.floatingRequests.count)").font(WorkspaceType.text(11)).foregroundStyle(Palette.noticeMuted)
                 }
                 .padding(.bottom, 7)
                 if store.automation.enabled.contains(item.session.id) { AutoYesWarning() }
@@ -489,22 +507,11 @@ struct FloatingView: View {
                         Button("Open in iTerm2") { store.openTerminal(item.session) }.disabled(item.session.ownerPID == nil)
                         Button("Steer") { store.showSteering(item.session.id) }.disabled(!item.session.canSteer)
                     }
-                    Button {
-                        store.floatingColorPickerSessionID = item.session.id
-                    } label: {
-                        Label("Color", systemImage: "paintpalette")
-                    }
-                    .popover(isPresented: Binding(
-                        get: { store.floatingColorPickerSessionID == item.session.id },
-                        set: { if !$0 { store.floatingColorPickerSessionID = nil } }
-                    )) {
-                        SessionColorChoices(store: store, sessionID: item.session.id)
-                    }
                     Spacer()
                     if store.floatingRequests.count > 1 {
                         Button("Next request") { store.replyWorkspace.next(requestIDs: store.floatingRequests.map { $0.request.id }) }
                     }
-                }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Palette.noticeMuted)
+                }.buttonStyle(.plain).font(WorkspaceType.text(12)).foregroundStyle(Palette.noticeMuted)
             }
         }.padding(24).background(floatingSurface).clipShape(RoundedRectangle(cornerRadius: 26))
             .foregroundStyle(Palette.ink).tint(Palette.accent)
@@ -527,6 +534,19 @@ struct SettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack { Text("Settings").font(.system(size: 23, weight: .semibold)); Spacer(); Button("Done") { store.settingsVisible = false } }
+            ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Appearance").font(WorkspaceType.text(14, strong: true))
+                Picker("Appearance", selection: $store.appearanceMode) {
+                    ForEach(AppearanceMode.allCases, id: \.self) { mode in
+                        Text(mode.rawValue.capitalized).tag(mode)
+                    }
+                }.pickerStyle(.segmented).labelsHidden()
+                Text("Only changes Notify. System follows your Mac's appearance.")
+                    .font(.system(size: 11)).foregroundStyle(Palette.muted)
+            }
+            Divider()
             Toggle("Safe auto-yes", isOn: $store.autoYes)
             Text("Only explicitly identified reads of source or documentation files inside the current project qualify. Hidden paths, sensitive names, symlink escapes, commands, writes, and questions stay manual. Existing agent permission rules still apply.")
                 .font(.system(size: 12)).foregroundStyle(Palette.muted).lineSpacing(4)
@@ -550,6 +570,10 @@ struct SettingsView: View {
             Text("History contains session labels and decisions, not answers. Conversation previews stay on this Mac unless you explicitly request an AI description; that sends a limited excerpt through your Copilot account.")
                 .font(.system(size: 10)).foregroundStyle(Palette.muted)
             Button("Remove disconnected sessions") { store.clearDisconnected() }
-        }.padding(28).frame(width: 550).background(Palette.background).foregroundStyle(Palette.ink).tint(Palette.accent)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            }.scrollIndicators(.visible)
+        }.padding(28)
+            .frame(width: 550, height: min(680, (NSScreen.main?.visibleFrame.height ?? 760) - 80))
+            .background(Palette.background).foregroundStyle(Palette.ink).tint(Palette.accent)
     }
 }

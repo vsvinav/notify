@@ -17,7 +17,7 @@ Answer Copilot and Claude Code requests from a small floating panel, without swi
 - **Keep sessions straight.** Drag to reorder, clear connection groups, and shared colors you can change right from a notification.
 - **Watch and steer.** Live activity beside your controls, with a little agent that works, waits, and rests.
 - **Keep your terminal.** Attach to an existing Copilot session without replacing it.
-- **Easy on the eyes.** Muted beige by day, warm charcoal by night. Follows your Mac's appearance.
+- **Easy on the eyes.** Muted beige or warm charcoal. Follow your Mac, or choose Light/Dark in Settings.
 
 <p align="center">
   <picture>

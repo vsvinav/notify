@@ -33,21 +33,33 @@ struct SessionColorPicker: View {
 struct SessionColorChoices: View {
     @ObservedObject var store: Store
     let sessionID: String
+    @State private var colors: [UInt32]
+    @State private var hoveredColor: UInt32?
     private static let names: [UInt32: String] = [
         0xA6C8FF: "Sky", 0xD8AFF5: "Lilac", 0x70D6C4: "Mint", 0xEAAFBC: "Rose",
         0xC1D58D: "Sage", 0xE5BF8C: "Sand", 0xA9B6EF: "Periwinkle", 0x8ACBDF: "Aqua",
         0xF29A78: "Terracotta", 0xB9B0A3: "Stone"
     ]
+    init(store: Store, sessionID: String) {
+        self.store = store
+        self.sessionID = sessionID
+        _colors = State(initialValue: store.registry.sessions[sessionID].map {
+            store.appearance.suggestedColors(for: $0, among: store.sessions)
+        } ?? [])
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Session color").font(WorkspaceType.text(19, strong: true))
+            HStack {
+                Text("Session color").font(WorkspaceType.text(19, strong: true))
+                Spacer()
+                Button("Done") { store.floatingColorPickerSessionID = nil }
+                    .keyboardShortcut(.cancelAction).buttonStyle(.plain)
+                    .font(WorkspaceType.text(12)).foregroundStyle(Palette.accent)
+            }
             if let session = store.registry.sessions[sessionID] {
-                let colors = store.appearance.suggestedColors(for: session, among: store.sessions)
                 let current = store.appearance.color(for: session)
-                Text(session.name).font(.system(size: 12)).lineLimit(2)
-                Text("Least-used colors first, across connected sessions.")
-                    .font(.system(size: 11)).foregroundStyle(Palette.muted)
-                LazyVGrid(columns: Array(repeating: GridItem(.fixed(34), spacing: 12), count: 5), spacing: 12) {
+                Text(session.name).font(WorkspaceType.text(12)).foregroundStyle(Palette.muted).lineLimit(2)
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(40), spacing: 10), count: 5), spacing: 10) {
                     ForEach(colors, id: \.self) { color in
                         Button { store.setColor(color, for: session) } label: {
                             Circle()
@@ -55,23 +67,33 @@ struct SessionColorChoices: View {
                                             green: Double((color >> 8) & 255) / 255,
                                             blue: Double(color & 255) / 255))
                                 .overlay(Circle().strokeBorder(Palette.line, lineWidth: 1))
-                                .overlay {
-                                    if current == color {
-                                        Image(systemName: "checkmark").font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
-                                    }
-                                }.frame(width: 34, height: 34)
+                                .frame(width: 30, height: 30).padding(5)
+                                .overlay(Circle().strokeBorder(current == color ? Palette.accent :
+                                                                hoveredColor == color ? Palette.line : .clear,
+                                                              lineWidth: current == color ? 2 : 1))
+                                .contentShape(Circle())
                         }.buttonStyle(.plain)
+                            .onHover { hoveredColor = $0 ? color : nil }
                             .accessibilityLabel(Self.names[color] ?? String(format: "#%06X", color))
                             .accessibilityAddTraits(current == color ? .isSelected : [])
                             .help(Self.names[color] ?? String(format: "#%06X", color))
                     }
                 }
-                Button("Next least-used color") {
-                    guard let next = colors.first(where: { $0 != current }) else {
-                        store.error = "No alternative session color is available."
-                        return
+                HStack {
+                    Text(Self.names[current] ?? String(format: "#%06X", current))
+                        .font(WorkspaceType.text(13, strong: true))
+                    Spacer()
+                    Button {
+                        guard let next = store.appearance.suggestedColors(for: session, among: store.sessions).first(where: { $0 != current }) else {
+                            store.error = "No alternative session color is available."
+                            return
+                        }
+                        store.setColor(next, for: session)
+                    } label: {
+                        Label("Next color", systemImage: "arrow.triangle.2.circlepath")
                     }
-                    store.setColor(next, for: session)
+                    .buttonStyle(.plain).font(WorkspaceType.text(12)).foregroundStyle(Palette.accent)
+                    .help("Choose the next least-used color across connected sessions")
                 }
                 if let error = store.error {
                     Text(error).font(.system(size: 11)).foregroundStyle(Palette.error)
@@ -80,14 +102,20 @@ struct SessionColorChoices: View {
                 Divider()
                 HStack {
                     Button("Reset automatic") { store.setColor(nil, for: session) }
+                        .buttonStyle(.plain).font(WorkspaceType.text(12)).foregroundStyle(Palette.accent)
                     Spacer()
-                    Button("Done") { store.floatingColorPickerSessionID = nil }.keyboardShortcut(.cancelAction)
+                    Text("Least-used first").font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
                 }
             } else {
                 Text("This session is no longer available.").foregroundStyle(Palette.muted)
             }
         }.padding(20).frame(width: 280).background(Palette.surface)
             .foregroundStyle(Palette.ink).tint(Palette.accent)
+            .onAppear {
+                if let session = store.registry.sessions[sessionID] {
+                    colors = store.appearance.suggestedColors(for: session, among: store.sessions)
+                }
+            }
     }
 }
 

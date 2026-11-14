@@ -16,6 +16,7 @@ import Vision
         try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let suite = "notify-ui-" + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
+        defaults.set("dark", forKey: "appearanceMode")
         let store = Store(directory: fixtureRoot, defaults: defaults)
         precondition(reorderedSessionIDs(["a", "b", "c"], moving: "a", over: "c") == ["b", "c", "a"],
                      "Dragging down must place a session at the target position")
@@ -460,6 +461,7 @@ import Vision
             visual.setColor(0xF29A78, for: visual.selected!)
             func capture<V: View>(_ view: V, width: CGFloat, height: CGFloat, name: String,
                                   appearance: NSAppearance.Name = .aqua) throws {
+                if name.hasPrefix("settings") { visual.appearanceMode = appearance == .darkAqua ? .dark : .light }
                 let capture = NSHostingView(rootView: view)
                 capture.sizingOptions = []
                 window.appearance = NSAppearance(named: appearance)
@@ -662,6 +664,7 @@ import Vision
         }
         let appDelegate = AppDelegate(store: store, backgroundLaunch: true)
         appDelegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+        precondition(NSApp.appearance?.name == .darkAqua, "A saved Dark preference must apply before Notify presents its windows")
         let center = NSApp.windows.first { $0.title == "Notify" }!
         precondition(!center.isVisible, "Launcher startup must not open the control center")
         defer { appDelegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification)) }
@@ -830,9 +833,9 @@ import Vision
         precondition(store.centerVisible == (center.isVisible && center.occlusionState.contains(.visible)),
                      "Reopening must synchronize the illustration clock with the window's current occlusion state")
         precondition(center.appearance == nil && replyPanel.appearance == nil,
-                     "Both app windows must inherit macOS appearance instead of forcing light mode")
-        for appearance: NSAppearance.Name in [.darkAqua, .aqua] {
-            NSApp.appearance = NSAppearance(named: appearance)
+                     "Both windows must inherit Notify's app-wide appearance instead of pinning their own theme")
+        for (mode, appearance): (AppearanceMode, NSAppearance.Name) in [(.dark, .darkAqua), (.light, .aqua)] {
+            store.appearanceMode = mode
             for _ in 0..<10 {
                 center.contentView?.layoutSubtreeIfNeeded()
                 RunLoop.current.run(until: Date().addingTimeInterval(0.025))
@@ -840,7 +843,10 @@ import Vision
             }
             precondition(center.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == appearance &&
                          replyPanel.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == appearance,
-                         "Already-open windows must follow appearance changes without relaunching")
+                         "Already-open windows must follow the user's Notify appearance choice without relaunching")
+            let reopened = Store(directory: fixtureRoot, defaults: defaults)
+            precondition(reopened.appearanceMode == mode, "The user's appearance choice must survive reopening")
+            reopened.stop()
             let view = center.contentView!
             let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
             view.cacheDisplay(in: view.bounds, to: bitmap)
@@ -848,6 +854,15 @@ import Vision
             precondition(appearance == .darkAqua ? luminance(background) < 0.15 : luminance(background) > 0.6,
                          "Existing SwiftUI content must repaint after a system appearance change")
         }
+        store.appearanceMode = .system
+        precondition(NSApp.appearance == nil, "System must remove only Notify's appearance override")
+        for _ in 0..<10 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.025))
+            pumpNativeEvents()
+        }
+        precondition(center.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) ==
+                     NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]),
+                     "Returning to System must follow the current Mac appearance")
         for ownedWindow in NSApp.windows { ownedWindow.orderOut(nil) }
         print("Native notification color, Dock badge and reopen checks passed")
         if CommandLine.arguments.contains("--live-discovery") {

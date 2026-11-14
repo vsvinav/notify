@@ -16,6 +16,10 @@ struct AnswerFocus: Equatable {
     let questionID: String
 }
 
+enum AppearanceMode: String, CaseIterable {
+    case system, light, dark
+}
+
 final class Store: ObservableObject {
     @Published private(set) var registry = SessionRegistry()
     @Published var selectedID: String?
@@ -31,6 +35,9 @@ final class Store: ObservableObject {
     private var announcedIDs: [String] = []
     private var replyAttempts: [String: UUID] = [:]
     @Published var settingsVisible = false
+    @Published var appearanceMode: AppearanceMode {
+        didSet { defaults.set(appearanceMode.rawValue, forKey: "appearanceMode") }
+    }
     @Published var centerVisible = false
     @Published var floatingColorPickerSessionID: String? {
         didSet { onAttentionChange?() }
@@ -73,6 +80,8 @@ final class Store: ObservableObject {
 
     init(directory: URL? = nil, defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        let savedAppearance = defaults.string(forKey: "appearanceMode")
+        appearanceMode = savedAppearance.flatMap(AppearanceMode.init(rawValue:)) ?? .system
         sessionOrder = defaults.stringArray(forKey: "sessionOrder") ?? []
         defaults.register(defaults: ["autoYes": true, "floatingEnabled": true, "playSound": false])
         autoYes = defaults.bool(forKey: "autoYes")
@@ -80,6 +89,9 @@ final class Store: ObservableObject {
         playSound = defaults.bool(forKey: "playSound")
         self.directory = directory ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Notify")
         server = LocalServer(directory: self.directory)
+        if let savedAppearance, AppearanceMode(rawValue: savedAppearance) == nil {
+            error = "The saved appearance setting is not recognized. Notify is following the system; choose an appearance in Settings to reset it."
+        }
         do { appearance = try SessionAppearance.load(from: self.directory) }
         catch { self.error = "Session colors could not be loaded: \(error.localizedDescription)" }
         do { descriptions = try DescriptionCache.load(from: self.directory) }
