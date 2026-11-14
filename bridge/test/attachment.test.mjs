@@ -173,6 +173,38 @@ test("broader automatic approval is policy gated and never applies to questions 
   h.attachment.stop();
 });
 
+test("live permissions recover omitted prompt metadata for the exact pending request", async () => {
+  const h = harness(async () => ({ success: true }));
+  const prompt = { kind: "commands", canOfferSessionApproval: true, commandIdentifiers: ["npm test"], fullCommandText: "npm test", intention: "Run tests" };
+  h.session.rpc.managedSettings = { getCurrentSnapshot: async () => ({ source: "none", failClosed: false, managedKeys: [] }) };
+  h.session.rpc.permissions.locations = { resolve: async () => ({ locationKey: "/project" }) };
+  h.session.rpc.permissions.pendingRequests = async () => ({ items: [
+    { requestId: "unrelated", request: { ...prompt, commandIdentifiers: ["different command"] } },
+    { requestId: "live-scope", request: prompt }
+  ] });
+  const calls = [];
+  h.session.rpc.permissions.handlePendingPermissionRequest = async value => { calls.push(value); return { success: true }; };
+  h.emit({ type: "permission.requested", data: { requestId: "live-scope", permissionRequest: { kind: "shell", fullCommandText: "npm test" } } });
+  await tick();
+  const request = h.bridge.pending.requests[0];
+  assert.deepEqual(request.permissionOptions.map(option => option.id), ["session", "project"]);
+  assert.equal(JSON.parse(request.detail).intention, "Run tests");
+  assert.equal(await h.bridge.onReply({ requestID: "live-scope", decision: "allow", permissionOptionID: "session" }), true);
+  assert.deepEqual(calls[0], { requestId: "live-scope", result: { kind: "approve-for-session", approval: { kind: "commands", commandIdentifiers: ["npm test"] } } });
+  h.attachment.stop();
+});
+
+test("failed live prompt lookup reports unavailable choices without inventing scopes", async () => {
+  const h = harness(async () => ({ success: true }));
+  h.session.rpc.managedSettings = { getCurrentSnapshot: async () => ({ source: "none", failClosed: false, managedKeys: [] }) };
+  h.session.rpc.permissions.pendingRequests = async () => { throw new Error("pending lookup unavailable"); };
+  h.emit({ type: "permission.requested", data: { requestId: "lookup-error", permissionRequest: { kind: "shell", fullCommandText: "npm test" } } });
+  await tick();
+  assert.deepEqual(h.bridge.pending.requests[0].permissionOptions, []);
+  assert.match(h.errors.join("\n"), /approval choices.*pending lookup unavailable/i);
+  h.attachment.stop();
+});
+
 test("scoped choices reach the runtime unchanged and policy changes block persistence", async () => {
   const h = harness(async () => ({ success: true }));
   const prompt = { kind: "commands", canOfferSessionApproval: true, commandIdentifiers: ["npm test"], fullCommandText: "npm test", intention: "Run tests" };

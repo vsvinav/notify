@@ -108,10 +108,17 @@ export function attachCopilot(session: CopilotSession, bridge: Bridge) {
         let eligible = { safe: false, session: false };
         try { eligible = await eligibility(event); }
         catch (error) { bridge.error(`Auto-yes unavailable; this request requires manual approval: ${String(error)}`); }
-        const options = await optionsFor(event.data.promptRequest);
+        let prompt = event.data.promptRequest;
+        if (!prompt) {
+          try {
+            const pending = await session.rpc.permissions.pendingRequests();
+            prompt = pending.items.find(item => item.requestId === event.data.requestId)?.request;
+          } catch (error) { bridge.error(`Additional approval choices could not be loaded: ${String(error)}`); }
+        }
+        const options = await optionsFor(prompt);
         return {
           request: { id: event.data.requestId, kind: "permission", title: `Allow ${event.data.permissionRequest.kind}?`,
-            detail: detail(event.data.promptRequest ?? event.data.permissionRequest), questions: [],
+            detail: detail(prompt ?? event.data.permissionRequest), questions: [],
             autoEligible: eligible.safe, sessionAutoEligible: eligible.session, supportsFeedback: true,
             permissionOptions: options.map(({ result, ...option }) => option) },
           respond: async reply => {
