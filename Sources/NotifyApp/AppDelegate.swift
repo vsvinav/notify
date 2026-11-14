@@ -179,6 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(withTitle: "Open Control Center", action: #selector(openCenter), keyEquivalent: "")
         menu.addItem(withTitle: "Show Waiting Requests", action: #selector(showWaiting), keyEquivalent: "")
         menu.addItem(withTitle: "Steer an Agent", action: #selector(showSteering), keyEquivalent: "")
+        menu.addItem(withTitle: "Connect Agents", action: #selector(openSetup), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Settings", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "Quit Notify", action: #selector(quit), keyEquivalent: "q")
@@ -200,11 +201,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !backgroundLaunch { openCenter() }
     }
     @objc func openCenter() {
+        store.offerWelcome()
         NSApp.activate()
         center.makeKeyAndOrderFront(nil)
         store.centerVisible = center.isVisible && center.occlusionState.contains(.visible)
     }
     @objc private func openSettings() { openCenter(); store.settingsVisible = true }
+    @objc private func openSetup() { openCenter(); store.showSetup() }
     @objc private func showWaiting() {
         if store.floatingRequests.isEmpty { openCenter(); store.waitingOnly = true }
         else { positionPanel(); panel.orderFrontRegardless() }
@@ -262,7 +265,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     private var canUseReplyKeys: Bool {
         guard panel?.isVisible == true, store.floatingEnabled, store.steeringSessionID == nil,
-              !store.settingsVisible, store.floatingColorPickerSessionID == nil, let item = store.activeFloatingRequest,
+              !store.settingsVisible, !store.setupVisible, store.floatingColorPickerSessionID == nil, let item = store.activeFloatingRequest,
               item.session.connected, !store.sending.contains(item.request.id) else { return false }
         if NSApp.isActive || panel.isKeyWindow,
            let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isEditable { return false }

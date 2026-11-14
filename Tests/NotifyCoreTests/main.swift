@@ -1,6 +1,66 @@
 import Foundation
 import NotifyCore
 
+do {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("notify-setup-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer {
+        do { try FileManager.default.removeItem(at: root) }
+        catch { preconditionFailure("Could not clean up setup fixture: \(error)") }
+    }
+    let executableDirectory = root.appendingPathComponent("directory/copilot")
+    try FileManager.default.createDirectory(at: executableDirectory, withIntermediateDirectories: true)
+    let bin = root.appendingPathComponent("tools with ' quotes")
+    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+    let fakeCLI = bin.appendingPathComponent("copilot")
+    try Data("#!/bin/sh\nexit 99\n".utf8).write(to: fakeCLI)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fakeCLI.path)
+    precondition(AgentSetup.findExecutable("copilot", path: "relative:\(executableDirectory.deletingLastPathComponent().path):\(bin.path)") == fakeCLI,
+                 "Setup must ignore relative PATH entries and executable directories")
+    precondition(!AgentSetup.supportsNodeVersion("v22.17.0") &&
+                 AgentSetup.supportsNodeVersion("v22.18.0") &&
+                 AgentSetup.supportsNodeVersion("v25.2.1") &&
+                 !AgentSetup.supportsNodeVersion("v22.18.0-rc.1"),
+                 "Setup must distinguish compatible Node releases from old or prerelease runtimes")
+    let launcher = bin.appendingPathComponent("notify")
+    try Data("#!/bin/sh\nprintf '%s' \"$1\"\n".utf8).write(to: launcher)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcher.path)
+    let command = AgentSetup.launchCommand(launcher: launcher, agent: .claude, searchPath: bin.path)
+    let task = Process(), pipe = Pipe()
+    task.executableURL = URL(fileURLWithPath: "/bin/sh")
+    task.arguments = ["-c", command]
+    task.standardOutput = pipe
+    try task.run()
+    let output = pipe.fileHandleForReading.readDataToEndOfFile()
+    task.waitUntilExit()
+    precondition(task.terminationStatus == 0 && String(decoding: output, as: UTF8.self) == "claude",
+                 "Copied commands must safely preserve spaces and quotes in installed paths")
+    let scripts = root.appendingPathComponent("bridge/dist")
+    let targetHome = root.appendingPathComponent("isolated-copilot-home")
+    try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+    let encodedHome = String(decoding: try JSONEncoder().encode(targetHome.path), as: UTF8.self)
+    let setupModule = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("bridge/src/setup.ts")
+    let encodedModule = String(decoding: try JSONEncoder().encode(setupModule.absoluteString), as: UTF8.self)
+    let installer = """
+    if (process.env.COPILOT_HOME !== \(encodedHome)) throw new Error("Installer must use the displayed destination, not inherited COPILOT_HOME");
+    const {setupCopilot} = await import(\(encodedModule));
+    await setupCopilot();
+    """
+    try Data(installer.utf8).write(to: scripts.appendingPathComponent("cli.js"))
+    let snapshot = try AgentSetup.inspect(resources: root, copilotHome: targetHome)
+    try AgentSetup.installCopilot(snapshot)
+    precondition(FileManager.default.fileExists(atPath: snapshot.extensionPath.path), "Native setup must install into its displayed isolated destination")
+    try AgentSetup.installCopilot(snapshot)
+    try Data("// Another extension owns this file".utf8).write(to: snapshot.extensionPath)
+    do {
+        try AgentSetup.installCopilot(snapshot)
+        preconditionFailure("Native setup must preserve an existing extension")
+    } catch {
+        precondition(AgentSetup.failureDescription(error).contains("Not replacing an existing extension"),
+                     "Installer refusal must remain explicit")
+    }
+}
+
 func check(_ condition: @autoclosure () -> Bool, _ message: String) {
     precondition(condition(), message)
 }

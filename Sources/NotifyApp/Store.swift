@@ -35,6 +35,16 @@ final class Store: ObservableObject {
     private var announcedIDs: [String] = []
     private var replyAttempts: [String: UUID] = [:]
     @Published var settingsVisible = false
+    @Published var setupVisible = false {
+        didSet { onAttentionChange?() }
+    }
+    @Published var setupAgent = SetupAgent.copilot
+    @Published var setupSnapshot: AgentSetupSnapshot?
+    @Published var setupError: String?
+    @Published var copilotSetupError: String?
+    @Published private(set) var setupBusy = false
+    @Published private(set) var setupInstalled = false
+    private var welcomePending: Bool
     @Published var appearanceMode: AppearanceMode {
         didSet { defaults.set(appearanceMode.rawValue, forKey: "appearanceMode") }
     }
@@ -88,6 +98,9 @@ final class Store: ObservableObject {
         floatingEnabled = defaults.bool(forKey: "floatingEnabled")
         playSound = defaults.bool(forKey: "playSound")
         self.directory = directory ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Notify")
+        let seenWelcome = defaults.object(forKey: "hasSeenWelcome") as? Bool
+        welcomePending = seenWelcome == false || (seenWelcome == nil && !FileManager.default.fileExists(atPath: self.directory.path))
+        if welcomePending && seenWelcome == nil { defaults.set(false, forKey: "hasSeenWelcome") }
         server = LocalServer(directory: self.directory)
         if let savedAppearance, AppearanceMode(rawValue: savedAppearance) == nil {
             error = "The saved appearance setting is not recognized. Notify is following the system; choose an appearance in Settings to reset it."
@@ -122,6 +135,54 @@ final class Store: ObservableObject {
         }
     }
     var selected: SessionRecord? { selectedID.flatMap { registry.sessions[$0] } }
+    func offerWelcome() {
+        guard welcomePending else { return }
+        welcomePending = false
+        defaults.set(true, forKey: "hasSeenWelcome")
+        if !sessions.contains(where: \.connected) { showSetup() }
+    }
+    func showSetup(_ agent: SetupAgent? = nil) {
+        welcomePending = false
+        defaults.set(true, forKey: "hasSeenWelcome")
+        if let agent { setupAgent = agent }
+        settingsVisible = false
+        setupVisible = true
+    }
+    func setupConnectionCount(_ agent: SetupAgent) -> Int {
+        sessions.filter { $0.agent == agent.rawValue && $0.connected && !$0.needsSetup && !$0.isSaved }.count
+    }
+    func refreshSetup() {
+        guard !setupBusy else { return }
+        setupBusy = true
+        setupError = nil
+        setupInstalled = false
+        setupSnapshot = nil
+        let resources = Bundle.main.resourceURL
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.setupBusy = false }
+            do { self.setupSnapshot = try await Task.detached { try AgentSetup.inspect(resources: resources) }.value }
+            catch { self.setupError = "Could not check agent setup: \(AgentSetup.failureDescription(error))" }
+        }
+    }
+    func installCopilotExtension() {
+        guard !setupBusy, let snapshot = setupSnapshot else { return }
+        setupBusy = true
+        setupInstalled = false
+        copilotSetupError = nil
+        let resources = Bundle.main.resourceURL
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.setupBusy = false }
+            do {
+                self.setupSnapshot = try await Task.detached {
+                    try AgentSetup.installCopilot(snapshot)
+                    return try AgentSetup.inspect(resources: resources, path: snapshot.searchPath, copilotHome: snapshot.copilotHome)
+                }.value
+                self.setupInstalled = true
+            } catch { self.copilotSetupError = "Copilot extension setup did not finish: \(AgentSetup.failureDescription(error))" }
+        }
+    }
     func setColor(_ value: UInt32?, for session: SessionRecord) {
         do { try appearance.set(value, for: session, in: directory) }
         catch { self.error = "Session color could not be saved: \(error.localizedDescription)" }

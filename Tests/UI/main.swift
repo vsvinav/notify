@@ -18,6 +18,29 @@ import Vision
         let defaults = UserDefaults(suiteName: suite)!
         defaults.set("dark", forKey: "appearanceMode")
         let store = Store(directory: fixtureRoot, defaults: defaults)
+        do {
+            let welcomeDefaults = UserDefaults(suiteName: suite + "-welcome")!
+            defer { welcomeDefaults.removePersistentDomain(forName: suite + "-welcome") }
+            let background = Store(directory: fixtureRoot.appendingPathComponent("first-use"), defaults: welcomeDefaults)
+            precondition(!background.setupVisible, "Constructing a Store must never open welcome during background startup")
+            try FileManager.default.createDirectory(at: background.directory, withIntermediateDirectories: true)
+            let first = Store(directory: background.directory, defaults: welcomeDefaults)
+            first.offerWelcome()
+            precondition(first.setupVisible, "First explicit opening must offer setup even after a background-only restart")
+            first.setupVisible = false
+            first.offerWelcome()
+            precondition(!first.setupVisible, "Dismissed welcome must not reopen")
+            let reopened = Store(directory: fixtureRoot.appendingPathComponent("first-use"), defaults: welcomeDefaults)
+            reopened.offerWelcome()
+            precondition(!reopened.setupVisible, "Welcome dismissal must persist across restarts")
+            welcomeDefaults.removeObject(forKey: "hasSeenWelcome")
+            let existing = fixtureRoot.appendingPathComponent("existing-user")
+            try FileManager.default.createDirectory(at: existing, withIntermediateDirectories: true)
+            let upgraded = Store(directory: existing, defaults: welcomeDefaults)
+            upgraded.offerWelcome()
+            precondition(!upgraded.setupVisible, "Existing users must not be forced through welcome after clean shutdown removes discovery")
+            background.stop(); first.stop(); reopened.stop(); upgraded.stop()
+        }
         precondition(reorderedSessionIDs(["a", "b", "c"], moving: "a", over: "c") == ["b", "c", "a"],
                      "Dragging down must place a session at the target position")
         precondition(reorderedSessionIDs(["a", "b", "c"], moving: "c", over: "a") == ["c", "a", "b"],
@@ -268,7 +291,8 @@ import Vision
             }
             precondition(contrast(resolved(Palette.highlightInk, appearance: appearance), resolved(Palette.accent, appearance: appearance)) >= 4.5,
                          "Highlighted actions must remain readable in both appearances")
-            for color: UInt32 in [0xFFFFFF, 0xFFFF00, 0x00FF00, 0xF29A78, 0x408ED8, 0] {
+            for color: UInt32 in [0xFFFFFF, 0xFFFF00, 0x00FF00, 0xF29A78, 0x408ED8, 0]
+                + store.appearance.suggestedColors(for: session, among: []) {
                 store.setColor(color, for: session)
                 let surface = resolved(store.sessionSurface(session), appearance: appearance)
                 for foreground in [Palette.ink, Palette.noticeMuted, Palette.amber, Palette.error, Palette.diffAdded, Palette.diffRemoved] {
@@ -493,6 +517,22 @@ import Vision
                     precondition(luminance(background) < 0.15, "Dark native windows must not contain a forced-light SwiftUI surface: \(name)")
                 }
                 try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(name))
+                if name == "control-center-empty.png" {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+                    precondition(text.contains("Connect agents"),
+                                 "First-use control center must provide a discoverable agent connection action")
+                }
+                if name == "welcome-claude-after-error.png" || name == "welcome-install-error.png" {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+                    precondition(name == "welcome-install-error.png" ? text.contains("refused") : !text.contains("refused"),
+                                 "A Copilot installation failure must remain under Copilot, including when it arrives after switching agents")
+                }
                 if name == "control-center-finished.png" || name == "floating-short-screen.png" {
                     let recognition = VNRecognizeTextRequest()
                     recognition.recognitionLevel = .accurate
@@ -656,6 +696,39 @@ import Vision
             let settingsHeight = NSHostingView(rootView: SettingsView(store: visual)).fittingSize.height.rounded(.up)
             try capture(SettingsView(store: visual), width: 550, height: settingsHeight, name: "settings.png")
             try capture(SettingsView(store: visual), width: 550, height: settingsHeight, name: "settings-dark.png", appearance: .darkAqua)
+            let setupResources = fixtureRoot.appendingPathComponent("setup-resources")
+            let setupBin = setupResources.appendingPathComponent("bin")
+            try FileManager.default.createDirectory(at: setupBin, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: setupResources.appendingPathComponent("bridge/dist"), withIntermediateDirectories: true)
+            for name in ["node", "copilot", "claude", "notify"] {
+                let file = setupBin.appendingPathComponent(name)
+                try Data("#!/bin/sh\nif [ \"$1\" = '--version' ]; then printf 'v22.18.0\\n'; else echo 'Fixture: extension installation was refused' >&2; exit 1; fi\n".utf8).write(to: file)
+                try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: file.path)
+            }
+            try Data().write(to: setupResources.appendingPathComponent("bridge/dist/cli.js"))
+            empty.setupSnapshot = try AgentSetup.inspect(resources: setupResources, path: setupBin.path, copilotHome: fixtureRoot.appendingPathComponent("copilot-home"))
+            try capture(AgentSetupView(store: empty), width: 960, height: 620, name: "welcome-copilot.png")
+            try capture(AgentSetupView(store: empty), width: 960, height: 620, name: "welcome-copilot-dark.png", appearance: .darkAqua)
+            empty.setupAgent = .claude
+            try capture(AgentSetupView(store: empty), width: 960, height: 620, name: "welcome-claude.png")
+            try capture(AgentSetupView(store: empty), width: 960, height: 620, name: "welcome-claude-dark.png", appearance: .darkAqua)
+            precondition(empty.setupConnectionCount(.copilot) == 0 && empty.setupConnectionCount(.claude) == 0,
+                         "Installed tools must never be labeled connected")
+            empty.setupSnapshot = try AgentSetup.inspect(resources: nil, path: "", copilotHome: fixtureRoot.appendingPathComponent("missing-home"))
+            try capture(AgentSetupView(store: empty), width: 960, height: 620, name: "welcome-missing.png")
+            empty.setupSnapshot = try AgentSetup.inspect(resources: setupResources, path: setupBin.path, copilotHome: fixtureRoot.appendingPathComponent("copilot-home"))
+            empty.setupAgent = .copilot
+            empty.installCopilotExtension()
+            empty.setupAgent = .claude
+            let setupDeadline = Date().addingTimeInterval(5)
+            while empty.setupBusy && Date() < setupDeadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+            precondition(!empty.setupBusy, "Fixture installer must finish")
+            try capture(AgentSetupView(store: empty), width: 960, height: 620, name: "welcome-claude-after-error.png")
+            empty.setupAgent = .copilot
+            try capture(AgentSetupView(store: empty), width: 960, height: 620, name: "welcome-install-error.png")
+            visual.setupSnapshot = try AgentSetup.inspect(resources: setupResources, path: setupBin.path, copilotHome: fixtureRoot.appendingPathComponent("copilot-home"))
+            precondition(visual.setupConnectionCount(.copilot) > 0, "Only live bridge sessions count as connected")
+            try capture(AgentSetupView(store: visual), width: 960, height: 620, name: "welcome-connected.png")
             visual.showSteering("visual-2")
             try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 560, name: "floating-steering.png")
             try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 560, name: "floating-steering-dark.png", appearance: .darkAqua)
@@ -735,6 +808,16 @@ import Vision
         _ = replyPanel.performKeyEquivalent(with: pickerReturn)
         precondition(store.requestErrors["dock-test"] == nil, "A color picker must suppress native default approval actions as well as global hotkeys")
         store.floatingColorPickerSessionID = nil
+        store.setupVisible = true
+        for _ in 0..<8 {
+            replyPanel.contentView?.layoutSubtreeIfNeeded()
+            pumpNativeEvents()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+        assertReturnReleased("Agent setup must not let Return accidentally approve a floating request")
+        _ = replyPanel.performKeyEquivalent(with: pickerReturn)
+        precondition(store.requestErrors["dock-test"] == nil, "Setup must suppress native default approval actions")
+        store.setupVisible = false
         for _ in 0..<8 {
             replyPanel.contentView?.layoutSubtreeIfNeeded()
             RunLoop.current.run(until: Date().addingTimeInterval(0.02))

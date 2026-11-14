@@ -82,6 +82,9 @@ struct WorkOverview: View {
                             .frame(maxHeight: connected.isEmpty ? .infinity : 190)
                     }.font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.muted)
                 }
+                Button { store.showSetup() } label: {
+                    Label("Connect agents", systemImage: "plus")
+                }.buttonStyle(.borderless).font(WorkspaceType.text(13, strong: true))
             }.padding(18).frame(width: 232).background(Palette.sidebar)
             Divider()
             VStack(alignment: .leading, spacing: 18) {
@@ -98,8 +101,13 @@ struct WorkOverview: View {
                         if !search.isEmpty || store.waitingOnly {
                             Button("Show all sessions") { search = ""; store.waitingOnly = false }
                         } else {
-                            Text(filter == "Saved" ? "Saved Copilot chats appear here after discovery." : "~/.local/bin/notify setup-copilot")
-                                .font(.system(size: 14, design: .monospaced)).textSelection(.enabled)
+                            if filter == "Saved" {
+                                Text("Saved Copilot chats appear here after discovery.")
+                                    .font(.system(size: 13)).foregroundStyle(Palette.muted)
+                            } else {
+                                Button("Connect agents") { store.showSetup() }
+                                    .buttonStyle(.borderedProminent)
+                            }
                         }
                     }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
@@ -295,6 +303,7 @@ private struct WorkDetail: View {
                     VStack(alignment: .leading, spacing: 16) {
                         Text("Connect this running terminal").font(.title2)
                         Text("This session is running, but Notify is not connected to its requests or activity.")
+                        Button("Set up Copilot connection") { store.showSetup(.copilot) }
                         Text("If experimental mode is already enabled, open /extensions manage in that terminal, enable notify, close the manager, then approve permission access. If the extension is missing, ask Copilot to reload extensions.")
                         Text("Do not enable experimental mode during active work: this Copilot version restarts its UI when the setting changes.")
                             .foregroundStyle(Palette.amber)

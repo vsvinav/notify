@@ -82,7 +82,10 @@ struct SmallLabel: View {
 struct DashboardView: View {
     @ObservedObject var store: Store
     var body: some View {
-        WorkOverview(store: store)
+        Group {
+            if store.setupVisible { AgentSetupView(store: store) }
+            else { WorkOverview(store: store) }
+        }
         .background(Palette.background)
         .foregroundStyle(Palette.ink)
         .tint(Palette.accent)
@@ -239,7 +242,7 @@ struct RequestEditor: View {
     private var keyboardChoice: ReplyChoice { store.replyWorkspace.choice(for: request) }
     private var secondary: Color { floating ? Palette.noticeMuted : Palette.muted }
     private func shortcut(for choice: ReplyChoice) -> KeyboardShortcut? {
-        !feedbackFocused && !store.editingReplyText && store.floatingColorPickerSessionID == nil && keyboardChoice == choice ? .defaultAction : nil
+        !feedbackFocused && !store.editingReplyText && !store.setupVisible && store.floatingColorPickerSessionID == nil && keyboardChoice == choice ? .defaultAction : nil
     }
     var body: some View {
         let fields = RequestContext.fields(from: request.detail, isQuestion: request.kind == "question")
@@ -536,6 +539,8 @@ struct SettingsView: View {
             HStack { Text("Settings").font(.system(size: 23, weight: .semibold)); Spacer(); Button("Done") { store.settingsVisible = false } }
             ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+            Button("Connect agents") { store.showSetup() }
+                .font(WorkspaceType.text(14, strong: true))
             VStack(alignment: .leading, spacing: 8) {
                 Text("Appearance").font(WorkspaceType.text(14, strong: true))
                 Picker("Appearance", selection: $store.appearanceMode) {

@@ -38,7 +38,10 @@ struct SessionColorChoices: View {
     private static let names: [UInt32: String] = [
         0xA6C8FF: "Sky", 0xD8AFF5: "Lilac", 0x70D6C4: "Mint", 0xEAAFBC: "Rose",
         0xC1D58D: "Sage", 0xE5BF8C: "Sand", 0xA9B6EF: "Periwinkle", 0x8ACBDF: "Aqua",
-        0xF29A78: "Terracotta", 0xB9B0A3: "Stone"
+        0xF29A78: "Terracotta", 0xB9B0A3: "Stone",
+        0x4772C4: "Cobalt", 0x338D91: "Teal", 0x4D7E64: "Pine", 0x898642: "Olive",
+        0xC59639: "Ochre", 0xD17C41: "Tangerine", 0xB65D50: "Brick", 0xAC5278: "Berry",
+        0x805D9B: "Plum", 0x647485: "Slate"
     ]
     init(store: Store, sessionID: String) {
         self.store = store

@@ -18,7 +18,7 @@ Drag session rows to reorder them within their current group. The order is remem
 
 Floating cards show the chat title and project/agent above the full request. **Session > Open session** selects that exact chat. **Expand** enlarges the panel in place. Sending a reply keeps the card visible until acknowledgment; delivery failures appear inline, not in a blocking control-center popup. Replayed pending prompts do not repeatedly notify, and new arrivals preserve your selected question and draft.
 
-Click the **colored circle beside the session title** on a floating notification to choose from ten swatches. **Next color** cycles to the next least-used color; swatches stay in place while choosing. Usage counts other connected chats once, even if they have multiple records. The same saved color updates the control center immediately. **Reset automatic** restores the original stable color. Approval shortcuts pause while this picker is open. **More request details** jumps to supplied command/path evidence on shorter panels.
+Click the **colored circle beside the session title** on a floating notification to choose from twenty swatches: soft pastels plus richer cobalt, teal, pine, olive, ochre, tangerine, brick, berry, plum and slate. **Next color** cycles to the next least-used color; swatches stay in place while choosing. Usage counts other connected chats once, even if they have multiple records. The same saved color updates the control center immediately. Existing colors are preserved; **Reset automatic** restores the original stable color. Approval shortcuts pause while this picker is open. **More request details** jumps to supplied command/path evidence on shorter panels.
 
 The updated original-Copilot extension supplies the **Live activity** timeline: user/assistant messages, tool commands/results and provider-published reasoning where available. Subagent events are labeled separately. Tool snippets are visible immediately; expand entries for full details. Use **Follow live** or **Latest activity** to catch up. Disconnected sessions show **Recent activity** instead. Older connections retain their existing text preview until you explicitly reload extensions in that terminal.
 
@@ -73,6 +73,18 @@ notify demo
 **The launcher uses SDK-backed terminal chat, not the original full-screen CLI interface.** It uses the installed agent executables and their authentication. To keep an original Copilot terminal instead, use the extension below.
 
 `notify demo` exercises permission and multi-field question replies without a model call or executing the example command. The native app opens when the launcher starts. Drag the floating panel to reposition it; use the menu-bar icon to reopen the control center.
+
+## Connect agents
+
+Choose **Connect agents** in the sidebar, main Settings, or menu-bar menu. New users see this welcome flow on their first explicit control-center opening; background launches never open it, and returning users are not forced through it.
+
+Setup finds Copilot, Claude Code and Node in the app's PATH and standard user/Homebrew locations. It checks Node's version without signing in or starting an agent. **Installed CLI found** is not **Connected**: connection status comes from live bridge sessions.
+
+For Copilot, **Install extension** asks before adding the local extension at the displayed path. Existing files are never replaced. Enable Notify and grant permission access in the original terminal yourself, as described below. The app does not toggle experimental mode or restart terminals.
+
+For Claude, copy the launch command and run it from your project folder. Commands use the installed app's absolute launcher path, preserve your terminal PATH, and can be inspected before copying. A CLI installed only in a custom terminal environment may not be found by the app; the copied command can still use that environment. Existing Claude-terminal attachment and other agent adapters are not implemented.
+
+**Check again** refreshes prerequisites; it does not change configuration. Accounts, models and API keys remain with the agent. Global approval shortcuts pause while setup is open. **Back to sessions** exits setup without disconnecting anything.
 
 ## Existing Copilot terminals
 

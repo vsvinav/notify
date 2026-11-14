@@ -14,15 +14,20 @@ Answer Copilot and Claude Code requests from a small floating panel, without swi
 - **Know who needs you.** See the agent, project, and request before you respond.
 - **Answer right there.** Approve, deny, pick an option, or write your own answer.
 - **Keep your hands on the keyboard.** Up/Down choose; Return activates the highlighted choice.
-- **Keep sessions straight.** Drag to reorder, clear connection groups, and shared colors you can change right from a notification.
+- **Keep sessions straight.** Drag to reorder, clear connection groups, and 20 shared colors—from soft pastels to richer earth and jewel tones.
 - **Watch and steer.** Live activity beside your controls, with a little agent that works, waits, and rests.
 - **Keep your terminal.** Attach to an existing Copilot session without replacing it.
+- **Connect without guesswork.** Guided setup finds installed agents and shows when a session actually connects.
 - **Easy on the eyes.** Muted beige or warm charcoal. Follow your Mac, or choose Light/Dark in Settings.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/notification-dark.png">
     <img src="docs/images/notification.png" alt="A session-colored notification with the command, permission scopes, and reply controls" width="360">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/session-colors-dark.png">
+    <img src="docs/images/session-colors.png" alt="Twenty session colors mixing soft pastels with deeper earth and jewel tones" width="240">
   </picture>
 </p>
 
@@ -51,23 +56,11 @@ Preview a request without running an agent or spending model credits:
 
 ### Connect your agent
 
-**Already using Copilot?** Install the extension:
+Open **Connect agents** in Notify. Setup checks your tools, installs the Copilot extension with your permission, or gives you a launch command to run from your project folder.
 
-```sh
-~/.local/bin/notify setup-copilot
-```
+Copilot can keep its original terminal. Claude currently uses a new SDK-backed chat; existing Claude terminals cannot attach yet. Accounts and model settings stay in your agent.
 
-In Copilot, enable **notify** in `/extensions manage`, close the manager with Esc, and grant permission access. Experimental mode must already be enabled; don't toggle it during active work. [Connection details →](docs/guide.md#existing-copilot-terminals)
-
-**Starting fresh?** Launch from your project folder:
-
-```sh
-~/.local/bin/notify claude
-# or
-~/.local/bin/notify copilot
-```
-
-These are SDK-backed terminal chats, not the original full-screen CLIs. Existing Claude terminals cannot attach yet.
+[Connection details and terminal commands →](docs/guide.md#connect-agents)
 
 ---
 
