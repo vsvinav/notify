@@ -124,6 +124,35 @@ check(reloadedAppearance.color(for: resumedColor) == 0xC89FEB, "Color follows ca
 check(reloadedAppearance.overrides["other"] == nil, "Color changes cannot affect other sessions")
 try appearance.set(nil, for: resumedColor, in: appearanceRoot)
 check(appearance.color(for: colored) == originalColor, "Reset must restore the deterministic accent")
+let suggestions = appearance.suggestedColors(for: colored, among: [])
+var occupied: [SessionRecord] = []
+for (index, color) in suggestions.enumerated() {
+    var peer = SessionRecord(id: "color-peer-\(index)", agent: "copilot", cwd: "/project")
+    peer.sourceSessionID = "color-chat-\(index)"
+    try appearance.set(color, for: peer, in: appearanceRoot)
+    occupied.append(peer)
+}
+var duplicate = SessionRecord(id: "same-chat-another-transport", agent: "copilot", cwd: "/project")
+duplicate.sourceSessionID = occupied[0].sourceSessionID
+occupied.append(duplicate)
+var offline = SessionRecord(id: "offline-color", agent: "copilot", cwd: "/project")
+offline.connected = false
+try appearance.set(suggestions[0], for: offline, in: appearanceRoot)
+occupied.append(offline)
+check(appearance.suggestedColors(for: colored, among: occupied).first == suggestions[0],
+      "Color usage must count connected canonical sessions once, ignoring disconnected copies")
+let extraColorPeer = SessionRecord(id: "extra-color-peer", agent: "copilot", cwd: "/project")
+try appearance.set(suggestions[0], for: extraColorPeer, in: appearanceRoot)
+occupied.append(extraColorPeer)
+check(appearance.suggestedColors(for: colored, among: occupied).first == suggestions[1],
+      "The next suggestion must prefer a less-used color over its normal cycling order")
+var visited = Set<UInt32>()
+for _ in suggestions.indices {
+    let current = appearance.color(for: colored)
+    let next = appearance.suggestedColors(for: colored, among: []).first { $0 != current }!
+    check(visited.insert(next).inserted, "Least-used cycling must traverse all unused choices, not bounce between two colors")
+    try appearance.set(next, for: colored, in: appearanceRoot)
+}
 try FileManager.default.removeItem(at: appearanceRoot)
 
 func activity(_ id: String, detail: String = "Observed output") throws -> ActivityEntry {

@@ -22,6 +22,7 @@ final class Store: ObservableObject {
     @Published var selectedRequestID: String?
     private(set) var selectionIsExplicit = false
     @Published var waitingOnly = false
+    @Published private(set) var sessionOrder: [String]
     @Published var error: String?
     @Published var requestErrors: [String: String] = [:]
     @Published var sessionErrors: [String: String] = [:]
@@ -30,6 +31,10 @@ final class Store: ObservableObject {
     private var announcedIDs: [String] = []
     private var replyAttempts: [String: UUID] = [:]
     @Published var settingsVisible = false
+    @Published var centerVisible = false
+    @Published var floatingColorPickerSessionID: String? {
+        didSet { onAttentionChange?() }
+    }
     @Published var editingReplyText = false
     @Published var answerFocus: AnswerFocus?
     @Published var floatingExpanded = false {
@@ -68,6 +73,7 @@ final class Store: ObservableObject {
 
     init(directory: URL? = nil, defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        sessionOrder = defaults.stringArray(forKey: "sessionOrder") ?? []
         defaults.register(defaults: ["autoYes": true, "floatingEnabled": true, "playSound": false])
         autoYes = defaults.bool(forKey: "autoYes")
         floatingEnabled = defaults.bool(forKey: "floatingEnabled")
@@ -107,6 +113,17 @@ final class Store: ObservableObject {
     func setColor(_ value: UInt32?, for session: SessionRecord) {
         do { try appearance.set(value, for: session, in: directory) }
         catch { self.error = "Session color could not be saved: \(error.localizedDescription)" }
+    }
+    func rememberSessionOrder(_ ids: [String]) {
+        guard ids.allSatisfy({ registry.sessions[$0] != nil }) else {
+            error = "Session order could not be saved because a session is no longer available."
+            return
+        }
+        var seen = Set<String>()
+        let keys = ids.compactMap { registry.sessions[$0] }.map { $0.sourceSessionID ?? $0.id }
+            .filter { seen.insert($0).inserted }
+        sessionOrder = keys + sessionOrder.filter { seen.insert($0).inserted }
+        defaults.set(sessionOrder, forKey: "sessionOrder")
     }
     func openTerminal(_ session: SessionRecord, resume: Bool = false) {
         guard !terminalBusy.contains(session.id), !launching.contains(session.id) else { return }

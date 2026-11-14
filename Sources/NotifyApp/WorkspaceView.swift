@@ -30,6 +30,67 @@ struct SessionColorPicker: View {
     }
 }
 
+struct SessionColorChoices: View {
+    @ObservedObject var store: Store
+    let sessionID: String
+    private static let names: [UInt32: String] = [
+        0xA6C8FF: "Sky", 0xD8AFF5: "Lilac", 0x70D6C4: "Mint", 0xEAAFBC: "Rose",
+        0xC1D58D: "Sage", 0xE5BF8C: "Sand", 0xA9B6EF: "Periwinkle", 0x8ACBDF: "Aqua",
+        0xF29A78: "Terracotta", 0xB9B0A3: "Stone"
+    ]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Session color").font(WorkspaceType.text(19, strong: true))
+            if let session = store.registry.sessions[sessionID] {
+                let colors = store.appearance.suggestedColors(for: session, among: store.sessions)
+                let current = store.appearance.color(for: session)
+                Text(session.name).font(.system(size: 12)).lineLimit(2)
+                Text("Least-used colors first, across connected sessions.")
+                    .font(.system(size: 11)).foregroundStyle(Palette.muted)
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(34), spacing: 12), count: 5), spacing: 12) {
+                    ForEach(colors, id: \.self) { color in
+                        Button { store.setColor(color, for: session) } label: {
+                            Circle()
+                                .fill(Color(red: Double((color >> 16) & 255) / 255,
+                                            green: Double((color >> 8) & 255) / 255,
+                                            blue: Double(color & 255) / 255))
+                                .overlay(Circle().strokeBorder(Palette.line, lineWidth: 1))
+                                .overlay {
+                                    if current == color {
+                                        Image(systemName: "checkmark").font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
+                                    }
+                                }.frame(width: 34, height: 34)
+                        }.buttonStyle(.plain)
+                            .accessibilityLabel(Self.names[color] ?? String(format: "#%06X", color))
+                            .accessibilityAddTraits(current == color ? .isSelected : [])
+                            .help(Self.names[color] ?? String(format: "#%06X", color))
+                    }
+                }
+                Button("Next least-used color") {
+                    guard let next = colors.first(where: { $0 != current }) else {
+                        store.error = "No alternative session color is available."
+                        return
+                    }
+                    store.setColor(next, for: session)
+                }
+                if let error = store.error {
+                    Text(error).font(.system(size: 11)).foregroundStyle(Palette.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Divider()
+                HStack {
+                    Button("Reset automatic") { store.setColor(nil, for: session) }
+                    Spacer()
+                    Button("Done") { store.floatingColorPickerSessionID = nil }.keyboardShortcut(.cancelAction)
+                }
+            } else {
+                Text("This session is no longer available.").foregroundStyle(Palette.muted)
+            }
+        }.padding(20).frame(width: 280).background(Palette.surface)
+            .foregroundStyle(Palette.ink).tint(Palette.accent)
+    }
+}
+
 struct SessionBrowser: View {
     @ObservedObject var store: Store
     @State private var search = ""
@@ -182,6 +243,12 @@ private struct ActivityTimeline: View {
                                 })
                         }.padding(.vertical, 10)
                     }.coordinateSpace(name: "activity")
+                        .onAppear {
+                            DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
+                        }
+                        .onChange(of: follow) { _, enabled in
+                            if enabled { proxy.scrollTo("bottom", anchor: .bottom) }
+                        }
                         .onPreferenceChange(ActivityBottomKey.self) { y in nearBottom = y < geometry.size.height + 80 }
                         .onChange(of: session.activity.entries) { _, _ in
                             if follow && nearBottom { proxy.scrollTo("bottom", anchor: .bottom) }
@@ -206,6 +273,7 @@ private struct ActivityTimeline: View {
 
 private struct ActivityRow: View {
     let entry: ActivityEntry
+    @State private var expanded = false
     private var icon: String {
         switch entry.kind {
         case "user": return "person"
@@ -225,7 +293,12 @@ private struct ActivityRow: View {
             }
             if let agent = entry.agentID { Text("Subagent / \(agent.prefix(8))").font(.system(size: 10)).foregroundStyle(Palette.muted) }
             if entry.kind == "tool" || entry.kind == "reasoning" {
-                DisclosureGroup(entry.kind == "reasoning" ? "Read published reasoning" : "Command / result") {
+                if entry.kind == "tool" && !expanded {
+                    Text(String(entry.detail.prefix(600))).font(.system(size: 12, design: .monospaced))
+                        .lineLimit(3).foregroundStyle(Palette.muted).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                DisclosureGroup(entry.kind == "reasoning" ? "Read published reasoning" : "Command / result", isExpanded: $expanded) {
                     Text(entry.detail).font(.system(size: 12, design: entry.kind == "tool" ? .monospaced : .default))
                         .fixedSize(horizontal: false, vertical: true).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                 }.font(.system(size: 11))

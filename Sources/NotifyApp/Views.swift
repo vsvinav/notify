@@ -239,7 +239,7 @@ struct RequestEditor: View {
     private var keyboardChoice: ReplyChoice { store.replyWorkspace.choice(for: request) }
     private var secondary: Color { floating ? Palette.noticeMuted : Palette.muted }
     private func shortcut(for choice: ReplyChoice) -> KeyboardShortcut? {
-        !feedbackFocused && !store.editingReplyText && keyboardChoice == choice ? .defaultAction : nil
+        !feedbackFocused && !store.editingReplyText && store.floatingColorPickerSessionID == nil && keyboardChoice == choice ? .defaultAction : nil
     }
     var body: some View {
         let fields = RequestContext.fields(from: request.detail, isQuestion: request.kind == "question")
@@ -259,7 +259,7 @@ struct RequestEditor: View {
                         if request.kind == "question" {
                             ForEach(request.questions) { question in questionField(question) }
                         }
-                        context(evidence)
+                        context(evidence).id("request-evidence")
                     }
                     if !session.output.isEmpty {
                         DisclosureGroup("Recent conversation") {
@@ -269,6 +269,13 @@ struct RequestEditor: View {
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.frame(minHeight: wide ? 60 : 95, maxHeight: .infinity).scrollIndicators(.visible)
+            if floating && !evidence.isEmpty {
+                Button {
+                    proxy.scrollTo("request-evidence", anchor: .top)
+                } label: {
+                    Label("More request details", systemImage: "arrow.down.doc")
+                }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Palette.accent)
+            }
             if let error = store.requestErrors[request.id] ?? store.sessionErrors[session.id] ?? store.error {
                 Text(error).font(.system(size: 12)).foregroundStyle(Palette.amber)
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
@@ -297,7 +304,7 @@ struct RequestEditor: View {
     }
     private func heading(_ reasons: [ContextField]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(.init(request.title)).font(.system(size: 28, weight: .regular))
+            Text(.init(request.title)).font(floating ? .system(size: 28, weight: .regular) : WorkspaceType.text(26))
                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
             ForEach(reasons) { reason in
@@ -464,7 +471,7 @@ struct FloatingView: View {
                 HStack(spacing: 9) {
                     Circle().fill(floatingColor).frame(width: 7, height: 7)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(item.session.name).font(.system(size: 13, weight: .medium)).lineLimit(2).help(item.session.name)
+                        Text(item.session.name).font(.system(size: 16, weight: .medium)).lineLimit(2).help(item.session.name)
                         Text("\(item.session.projectLabel) · \(agentName(item.session.agent))").font(.system(size: 11)).foregroundStyle(Palette.noticeMuted)
                     }
                     Spacer()
@@ -482,6 +489,17 @@ struct FloatingView: View {
                         Button("Open in iTerm2") { store.openTerminal(item.session) }.disabled(item.session.ownerPID == nil)
                         Button("Steer") { store.showSteering(item.session.id) }.disabled(!item.session.canSteer)
                     }
+                    Button {
+                        store.floatingColorPickerSessionID = item.session.id
+                    } label: {
+                        Label("Color", systemImage: "paintpalette")
+                    }
+                    .popover(isPresented: Binding(
+                        get: { store.floatingColorPickerSessionID == item.session.id },
+                        set: { if !$0 { store.floatingColorPickerSessionID = nil } }
+                    )) {
+                        SessionColorChoices(store: store, sessionID: item.session.id)
+                    }
                     Spacer()
                     if store.floatingRequests.count > 1 {
                         Button("Next request") { store.replyWorkspace.next(requestIDs: store.floatingRequests.map { $0.request.id }) }
@@ -490,6 +508,9 @@ struct FloatingView: View {
             }
         }.padding(24).background(floatingSurface).clipShape(RoundedRectangle(cornerRadius: 26))
             .foregroundStyle(Palette.ink).tint(Palette.accent)
+            .onChange(of: store.activeFloatingRequest?.session.id) { _, id in
+                if let pickerID = store.floatingColorPickerSessionID, pickerID != id { store.floatingColorPickerSessionID = nil }
+            }
     }
     private var floatingSurface: Color {
         let id = store.steeringSessionID ?? store.floatingRequests.first(where: { $0.request.id == store.replyWorkspace.floatingID })?.session.id ?? store.floatingRequests.first?.session.id

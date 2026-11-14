@@ -4,17 +4,23 @@
 
 A native macOS app for answering Claude Code and Copilot requests without switching back to a terminal.
 
-The sidebar puts **Needs you** first, then connected agents you're monitoring. **Not connected** stays separate, and saved chats have their own tab. Select a session, then use **Decision**, **Activity**, or **Session settings**. A session-colored floating panel brings permission requests, choices, multi-select questions, and text fields to your current desktop.
+The sidebar puts **Needs you** first, then connected agents you're monitoring. **Not connected** stays separate, and saved chats have their own tab. Select a session, then use **Decision**, **Controls**, or **Settings**. Live activity stays visible on the right while you answer or steer. A session-colored floating panel brings permission requests, choices, multi-select questions, and text fields to your current desktop.
 
 Notify appears in the Dock and Cmd-Tab. Agent launchers start it in the background without opening the control center or reactivating an already-running app. Closing the control center keeps monitoring active; click the Dock icon to reopen it. Floating requests remain visible when another app is active. Use **Options > Keep in Dock** on its Dock icon to pin it; Notify does not change Dock preferences.
 
 ## Session workspace and useful notifications
 
-Notify follows macOS appearance automatically, including changes while it's running: muted beige and taupe in light mode, warm charcoal and sand in dark mode. Each chat has a stable color shared by its session row, activity header and floating notification. Change it using **Session color** in **Session settings**; **Reset** restores the automatic accent. Notifications use a subtle session tint with contrasting text in both modes. Colors are stored locally and follow the saved chat when it reconnects or resumes. Warning/error colors remain separate.
+Notify follows macOS appearance automatically, including changes while it's running: muted beige and taupe in light mode, warm charcoal and sand in dark mode. Each chat has a stable color shared by its session row and floating notification. Change it using **Session color** in the session's **Settings** tab; **Reset** restores the automatic accent. Notifications use a subtle session tint with contrasting text in both modes. Colors are stored locally and follow the saved chat when it reconnects or resumes. Warning/error colors remain separate.
+
+The illustrated agent reflects observed state: working, thinking when reasoning is reported, needing your answer, or at rest. **Response finished** means a main reply completed and the agent became idle, not that every task or test succeeded. Motion pauses when the control center is hidden and respects macOS Reduce Motion. **Controls** puts Queue, Interrupt and Stop beside the activity feed; unsupported connections explain why these controls are unavailable.
+
+Drag session rows to reorder them within their current group. The order is remembered across app restarts and follows the original chat identity. Move up/down actions are also available to accessibility tools; reordering never changes connection or waiting status.
 
 Floating cards show the chat title and project/agent above the full request. **Session > Open session** selects that exact chat. **Expand** enlarges the panel in place. Sending a reply keeps the card visible until acknowledgment; delivery failures appear inline, not in a blocking control-center popup. Replayed pending prompts do not repeatedly notify, and new arrivals preserve your selected question and draft.
 
-The updated original-Copilot extension supplies an **Activity** timeline: user/assistant messages, tool commands/results and provider-published reasoning where available. Subagent events are labeled separately. Expand entries to read details; use **Follow live** or **Latest activity** to catch up. Idle does not mean the task or tests succeeded. Older connections retain their existing text preview until you explicitly reload extensions in that terminal.
+Use **Color** on a floating notification to choose from ten swatches or cycle to the next least-used color. Usage counts other connected chats once, even if they have multiple records. The same saved color updates the control center immediately. **Reset automatic** restores the original stable color. Approval shortcuts pause while this picker is open. **More request details** jumps to supplied command/path evidence on shorter panels.
+
+The updated original-Copilot extension supplies the **Live activity** timeline: user/assistant messages, tool commands/results and provider-published reasoning where available. Subagent events are labeled separately. Tool snippets are visible immediately; expand entries for full details. Use **Follow live** or **Latest activity** to catch up. Disconnected sessions show **Recent activity** instead. Older connections retain their existing text preview until you explicitly reload extensions in that terminal.
 
 Activity is a bounded in-memory preview (up to 300 entries and 512 KiB of retained native text per session); individual event previews are limited too. Earlier history remains with the original CLI. Notify does not invent reasoning, test results or progress, nor spend model credits to generate this timeline.
 

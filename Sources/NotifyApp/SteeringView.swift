@@ -69,6 +69,7 @@ struct SteeringEditor: View {
     @ObservedObject var store: Store
     let session: SessionRecord
     var floating = false
+    var compact = false
     private var secondary: Color { floating ? Palette.noticeMuted : Palette.muted }
     @State private var confirmAction: String?
     private var draft: String { store.steeringWorkspace.drafts[session.id] ?? "" }
@@ -78,7 +79,9 @@ struct SteeringEditor: View {
     private var validText: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.utf16.count <= 16000 }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if !compact {
             SessionAutoYesView(store: store, session: session)
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     if !session.connected || !session.canSteer {
@@ -92,6 +95,7 @@ struct SteeringEditor: View {
                             .foregroundStyle(["unknown", "failed"].contains(receipt.status) ? Palette.amber : secondary)
                             .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                     }
+                    if !compact {
                     Text("Agent activity").font(.system(size: 11)).foregroundStyle(secondary)
                     Text(session.summary.isEmpty ? stateName(session.state) : session.summary).font(.system(size: 11))
                         .fixedSize(horizontal: false, vertical: true)
@@ -99,11 +103,12 @@ struct SteeringEditor: View {
                         Text(String(session.output.suffix(8000))).font(.system(size: 11)).foregroundStyle(secondary)
                             .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                     }
+                    }
                     if let error = store.sessionErrors[session.id] ?? store.error {
                         Text(error).font(.system(size: 11)).foregroundStyle(Palette.amber).fixedSize(horizontal: false, vertical: true)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
-            }.frame(minHeight: 45, maxHeight: .infinity).scrollIndicators(.visible)
+            }.frame(minHeight: compact ? 0 : 45, maxHeight: compact ? 90 : .infinity).scrollIndicators(.visible)
             TextField("Direction for this agent...", text: Binding(
                 get: { draft }, set: { store.steeringWorkspace.drafts[session.id] = $0 }
             ), axis: .vertical).lineLimit(3...6).textFieldStyle(.plain).font(.system(size: 12))

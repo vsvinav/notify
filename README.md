@@ -14,7 +14,8 @@ Answer Copilot and Claude Code requests from a small floating panel, without swi
 - **Know who needs you.** See the agent, project, and request before you respond.
 - **Answer right there.** Approve, deny, pick an option, or write your own answer.
 - **Keep your hands on the keyboard.** Up/Down choose; Return activates the highlighted choice.
-- **Keep sessions straight.** Individual colors, clear connection groups, and recent activity.
+- **Keep sessions straight.** Drag to reorder, clear connection groups, and shared colors you can change right from a notification.
+- **Watch and steer.** Live activity beside your controls, with a little agent that works, waits, and rests.
 - **Keep your terminal.** Attach to an existing Copilot session without replacing it.
 - **Easy on the eyes.** Muted beige by day, warm charcoal by night. Follows your Mac's appearance.
 

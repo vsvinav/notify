@@ -195,6 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func openCenter() {
         NSApp.activate()
         center.makeKeyAndOrderFront(nil)
+        store.centerVisible = center.isVisible && center.occlusionState.contains(.visible)
     }
     @objc private func openSettings() { openCenter(); store.settingsVisible = true }
     @objc private func showWaiting() {
@@ -254,7 +255,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     private var canUseReplyKeys: Bool {
         guard panel?.isVisible == true, store.floatingEnabled, store.steeringSessionID == nil,
-              !store.settingsVisible, let item = store.activeFloatingRequest,
+              !store.settingsVisible, store.floatingColorPickerSessionID == nil, let item = store.activeFloatingRequest,
               item.session.connected, !store.sending.contains(item.request.id) else { return false }
         if NSApp.isActive || panel.isKeyWindow,
            let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isEditable { return false }
@@ -275,6 +276,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.answerFocus = AnswerFocus(requestID: requestID, questionID: questionID)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === center else { return }
+        store.centerVisible = window.isVisible && window.occlusionState.contains(.visible)
+    }
+    func windowWillClose(_ notification: Notification) {
+        if let window = notification.object as? NSWindow, window === center { store.centerVisible = false }
+    }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         openCenter()
         return true

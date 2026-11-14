@@ -17,6 +17,30 @@ import Vision
         let suite = "notify-ui-" + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         let store = Store(directory: fixtureRoot, defaults: defaults)
+        precondition(reorderedSessionIDs(["a", "b", "c"], moving: "a", over: "c") == ["b", "c", "a"],
+                     "Dragging down must place a session at the target position")
+        precondition(reorderedSessionIDs(["a", "b", "c"], moving: "c", over: "a") == ["c", "a", "b"],
+                     "Dragging up must preserve the other sessions' relative order")
+        precondition(reorderedSessionIDs(["a", "b"], moving: "external", over: "b") == nil,
+                     "Unrelated text drops must not mutate session order")
+        do {
+            let orderingStore = Store(directory: fixtureRoot.appendingPathComponent("ordering"), defaults: defaults)
+            defer { orderingStore.stop(); defaults.removeObject(forKey: "sessionOrder") }
+            let savedOrderIDs = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"]
+            for (index, id) in ["first", "second"].enumerated() {
+                for packet: [String: Any] in [
+                    ["type": "hello", "sessionID": id, "agent": "copilot", "cwd": "/fixture"],
+                    ["type": "metadata", "sessionID": id, "title": id, "sourceSessionID": savedOrderIDs[index]]
+                ] {
+                    orderingStore.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: JSONSerialization.data(withJSONObject: packet)))
+                }
+            }
+            orderingStore.rememberSessionOrder(["second", "first"])
+            let reopened = Store(directory: fixtureRoot.appendingPathComponent("ordering"), defaults: defaults)
+            defer { reopened.stop() }
+            precondition(reopened.sessionOrder == Array(savedOrderIDs.reversed()),
+                         "Manual order must persist under canonical chat identities, not transient connections")
+        }
         defer {
             store.stop()
             defaults.removePersistentDomain(forName: suite)
@@ -32,6 +56,39 @@ import Vision
                            "options": [["label": "Yes", "description": "Finish this request"]]]]
         ])
         let request = try JSONDecoder().decode(AgentRequest.self, from: data)
+        var presenceSession = session
+        precondition(AgentPresence(session: presenceSession) == .resting, "Idle alone is not a completion claim")
+        presenceSession.baseState = "working"
+        let reasoningData = try JSONSerialization.data(withJSONObject: [
+            "id": "presence-reason", "kind": "reasoning", "title": "Published reasoning", "detail": "Fixture",
+            "status": "running", "timestamp": "2026-11-14T18:00:00Z"
+        ])
+        try presenceSession.activity.receive(JSONDecoder().decode(ActivityEntry.self, from: reasoningData))
+        precondition(AgentPresence(session: presenceSession) == .thinking, "Thinking requires actual running reasoning")
+        presenceSession.requests = [request]
+        precondition(AgentPresence(session: presenceSession) == .waiting, "A decision must override prior thinking")
+        presenceSession.connected = false
+        precondition(AgentPresence(session: presenceSession) == .disconnected, "Disconnected agents must not appear actively waiting or thinking")
+        presenceSession.connected = true
+        presenceSession.requests = []
+        presenceSession.baseState = "ready"
+        precondition(AgentPresence(session: presenceSession) == .resting, "Idle must stop a stale reasoning animation")
+        let presenceResponseData = try JSONSerialization.data(withJSONObject: [
+            "id": "presence-response", "kind": "assistant", "title": "Agent response", "detail": "Fixture reply",
+            "status": "complete", "timestamp": "2026-11-14T18:01:00Z"
+        ])
+        try presenceSession.activity.receive(JSONDecoder().decode(ActivityEntry.self, from: presenceResponseData))
+        precondition(AgentPresence(session: presenceSession) == .finished, "A completed main response plus idle may show response finished")
+        presenceSession.baseState = "working"
+        precondition(AgentPresence(session: presenceSession) == .working, "An old finished response must not label new work as done")
+        presenceSession.baseState = "unrecognized"
+        precondition(!AgentPresence(session: presenceSession).animates(visible: true, reduceMotion: false),
+                     "Unknown runtime states must not invent working activity")
+        precondition(!AgentPresence.working.animates(visible: false, reduceMotion: false) &&
+                     !AgentPresence.thinking.animates(visible: true, reduceMotion: true) &&
+                     !AgentPresence.resting.animates(visible: true, reduceMotion: false) &&
+                     AgentPresence.working.animates(visible: true, reduceMotion: false),
+                     "Only visible working/thinking agents may animate, respecting Reduce Motion")
         let host = NSHostingView(rootView: RequestEditor(store: store, session: session, request: request)
             .padding(20).background(Palette.surface).preferredColorScheme(.light))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 410, height: 430),
@@ -333,12 +390,20 @@ import Vision
             dashboard.layoutSubtreeIfNeeded()
             RunLoop.current.run(until: Date().addingTimeInterval(0.02))
         }
+        let workspaceBitmap = dashboard.bitmapImageRepForCachingDisplay(in: dashboard.bounds)!
+        dashboard.cacheDisplay(in: dashboard.bounds, to: workspaceBitmap)
+        let workspaceText = VNRecognizeTextRequest()
+        workspaceText.recognitionLevel = .accurate
+        try VNImageRequestHandler(cgImage: workspaceBitmap.cgImage!, options: [:]).perform([workspaceText])
+        let workspaceLabels = (workspaceText.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+        precondition(workspaceLabels.contains("Live activity") && workspaceLabels.contains("Controls"),
+                     "The workspace must expose live activity alongside direct agent controls, not hide them in separate screens")
         func showActivity(in view: NSView) {
             guard let tabs = descendants(view).compactMap({ $0 as? NSSegmentedControl }).first(where: {
-                $0.segmentCount == 3 && $0.label(forSegment: 1) == "Activity"
+                $0.segmentCount == 3 && $0.label(forSegment: 1) == "Controls"
             }) else { preconditionFailure("Session navigation must expose recognizable native tabs") }
             tabs.selectedSegment = 1
-            precondition(tabs.sendAction(tabs.action, to: tabs.target), "Activity navigation must respond")
+            precondition(tabs.sendAction(tabs.action, to: tabs.target), "Controls navigation must respond without hiding live activity")
             for _ in 0..<10 {
                 view.layoutSubtreeIfNeeded()
                 RunLoop.current.run(until: Date().addingTimeInterval(0.02))
@@ -426,6 +491,28 @@ import Vision
                     precondition(luminance(background) < 0.15, "Dark native windows must not contain a forced-light SwiftUI surface: \(name)")
                 }
                 try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(name))
+                if name == "control-center-finished.png" || name == "floating-short-screen.png" {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+                    precondition(name == "control-center-finished.png" ? text.contains("Updated the focus order") :
+                                    text.contains("More request details"),
+                                 "Latest output and overflowed decision evidence must remain discoverable: \(name)")
+                }
+                if name == "control-center.png" || name == "control-center-disconnected.png" {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let right = (recognition.results ?? []).filter { $0.boundingBox.minX > 0.68 }
+                        .compactMap { $0.topCandidates(1).first?.string }
+                    if name == "control-center.png" {
+                        precondition(right.joined(separator: " ").contains("Read the relevant"),
+                                     "Actual tool activity must be readable without expanding every entry. Found: \(right)")
+                    } else {
+                        precondition(right.contains("Disconnected"), "The agent state must not wrap in the middle of a word")
+                    }
+                }
                 if name == "control-center-no-results.png" || name == "control-center-activity-waiting.png" || name == "floating-command.png" {
                     let recognition = VNRecognizeTextRequest()
                     recognition.recognitionLevel = .accurate
@@ -475,6 +562,11 @@ import Vision
             empty.stop()
             try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 560, name: "floating-command.png")
             try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 560, name: "floating-command-dark.png", appearance: .darkAqua)
+            let colorChoices = SessionColorChoices(store: visual, sessionID: "visual-0")
+            let colorsHeight = NSHostingView(rootView: colorChoices).fittingSize.height.rounded(.up)
+            try capture(colorChoices, width: 280, height: colorsHeight, name: "session-color-picker.png")
+            try capture(colorChoices, width: 280, height: colorsHeight, name: "session-color-picker-dark.png", appearance: .darkAqua)
+            try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 560, name: "floating-command.png")
             window.makeKey()
             let enter = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                          windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
@@ -541,6 +633,24 @@ import Vision
                 ]])
             }
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center-activity.png")
+            try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-controls-small.png")
+            try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-controls-dark.png", appearance: .darkAqua)
+            try receive(["type": "activity", "sessionID": "visual-2", "activity": [
+                "id": "new-reason", "kind": "reasoning", "title": "Published reasoning",
+                "detail": "Comparing focus order against the visible menu.", "status": "running",
+                "timestamp": ISO8601DateFormatter().string(from: Date())
+            ]])
+            try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-thinking.png")
+            try receive(["type": "activity", "sessionID": "visual-2", "activity": [
+                "id": "new-response", "kind": "assistant", "title": "Agent response",
+                "detail": "Updated the focus order. The keyboard check passed.", "status": "complete",
+                "timestamp": ISO8601DateFormatter().string(from: Date())
+            ]])
+            try receive(["type": "state", "sessionID": "visual-2", "state": "ready", "text": "Agent idle"])
+            try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-finished.png")
+            visual.select("visual-1", request: "visual-question")
+            try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-question.png")
+            visual.select("visual-2")
             let settingsHeight = NSHostingView(rootView: SettingsView(store: visual)).fittingSize.height.rounded(.up)
             try capture(SettingsView(store: visual), width: 550, height: settingsHeight, name: "settings.png")
             try capture(SettingsView(store: visual), width: 550, height: settingsHeight, name: "settings-dark.png", appearance: .darkAqua)
@@ -609,6 +719,19 @@ import Vision
         store.sending.remove("dock-test")
         store.onAttentionChange?()
         let replyPanel = NSApp.windows.compactMap { $0 as? ReplyPanel }.first!
+        store.floatingColorPickerSessionID = session.id
+        for _ in 0..<8 {
+            replyPanel.contentView?.layoutSubtreeIfNeeded()
+            pumpNativeEvents()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+        assertReturnReleased("Choosing a session color must release permission Return shortcuts")
+        let pickerReturn = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                            windowNumber: replyPanel.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
+                                            isARepeat: false, keyCode: 36)!
+        _ = replyPanel.performKeyEquivalent(with: pickerReturn)
+        precondition(store.requestErrors["dock-test"] == nil, "A color picker must suppress native default approval actions as well as global hotkeys")
+        store.floatingColorPickerSessionID = nil
         for _ in 0..<8 {
             replyPanel.contentView?.layoutSubtreeIfNeeded()
             RunLoop.current.run(until: Date().addingTimeInterval(0.02))
@@ -694,11 +817,18 @@ import Vision
         precondition(!replyPanel.becomesKeyOnlyIfNeeded && !replyPanel.hidesOnDeactivate,
                      "Clicking a card must permit keyboard focus without hiding it on app switches")
         center.performClose(nil)
+        precondition(!store.centerVisible, "Closing the center must stop its illustration clock")
         precondition(!center.isVisible && !appDelegate.applicationShouldTerminateAfterLastWindowClosed(NSApp), "Closing the workspace must keep monitoring")
         NSApp.activate()
         pumpNativeEvents()
         _ = appDelegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
         precondition(center.isVisible, "Dock reopening must restore a closed workspace")
+        for _ in 0..<10 {
+            pumpNativeEvents()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+        precondition(store.centerVisible == (center.isVisible && center.occlusionState.contains(.visible)),
+                     "Reopening must synchronize the illustration clock with the window's current occlusion state")
         precondition(center.appearance == nil && replyPanel.appearance == nil,
                      "Both app windows must inherit macOS appearance instead of forcing light mode")
         for appearance: NSAppearance.Name in [.darkAqua, .aqua] {

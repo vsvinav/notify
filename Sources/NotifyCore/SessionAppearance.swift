@@ -4,6 +4,24 @@ public struct SessionAppearance {
     public private(set) var overrides: [String: UInt32] = [:]
     public init() {}
     private static let palette: [UInt32] = [0xA6C8FF, 0xD8AFF5, 0x70D6C4, 0xEAAFBC, 0xC1D58D, 0xE5BF8C, 0xA9B6EF, 0x8ACBDF]
+    private static let choices = palette + [0xF29A78, 0xB9B0A3]
+
+    public func suggestedColors(for session: SessionRecord, among sessions: [SessionRecord]) -> [UInt32] {
+        let key = session.sourceSessionID ?? session.id
+        var seen: Set<String> = [key]
+        var usage: [UInt32: Int] = [:]
+        for peer in sessions where peer.connected && !peer.isSaved && !peer.needsSetup {
+            guard seen.insert(peer.sourceSessionID ?? peer.id).inserted else { continue }
+            usage[color(for: peer), default: 0] += 1
+        }
+        let current = Self.choices.firstIndex(of: color(for: session)) ?? -1
+        let count = Self.choices.count
+        return Self.choices.enumerated().sorted { left, right in
+            let a = usage[left.element, default: 0], b = usage[right.element, default: 0]
+            if a != b { return a < b }
+            return (left.offset - current + count - 1) % count < (right.offset - current + count - 1) % count
+        }.map(\.element)
+    }
 
     public func color(for session: SessionRecord) -> UInt32 {
         let key = session.sourceSessionID ?? session.id
