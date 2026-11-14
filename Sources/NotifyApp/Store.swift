@@ -279,11 +279,33 @@ final class Store: ObservableObject {
         } catch { self.error = "Could not change Auto-yes: \(error.localizedDescription)" }
     }
     private func disableSessionAutoYes(_ id: String, reason: String) {
-        guard automation.enabled.contains(id) else { return }
+        guard automation.activeIDs.contains(id) else { return }
+        let mode = automation.dangerous.contains(id) ? "Dangerous Auto-yes" : "session Auto-yes"
         automation.disable(id)
         if let session = registry.sessions[id] {
-            do { try record(session: session, action: "Disabled session Auto-yes: \(reason)", automatic: false) }
+            do { try record(session: session, action: "Disabled \(mode): \(reason)", automatic: false) }
             catch { self.error = "Auto-yes is off, but its audit entry could not be saved: \(error.localizedDescription)" }
+        }
+    }
+    func setSessionDangerousAutoYes(_ id: String, enabled: Bool) {
+        guard let session = registry.sessions[id] else { error = "This session is no longer available."; return }
+        if !enabled { automation.disable(id) }
+        do {
+            var next = automation
+            try next.setDangerousEnabled(enabled, for: session)
+            try record(session: session, action: enabled ? "Enabled Dangerous Auto-yes, including waiting eligible tools" : "Disabled Dangerous Auto-yes", automatic: false)
+            automation = next
+            if enabled {
+                for request in session.requests where !sending.contains(request.id) {
+                    guard automation.dangerous.contains(id) else { break }
+                    if automation.scope(for: request, session: session, safeEnabled: false, muted: false) == "session" {
+                        reply(session: id, request: request, decision: "allow", automatic: true, approvalScope: "session")
+                    }
+                }
+            }
+        } catch {
+            self.error = enabled ? "Could not enable Dangerous Auto-yes: \(error.localizedDescription)" :
+                "Dangerous Auto-yes is off, but its audit entry could not be saved: \(error.localizedDescription)"
         }
     }
     func description(for session: SessionRecord) -> SessionDescription? {
@@ -315,7 +337,7 @@ final class Store: ObservableObject {
     }
     func stop() {
         mobile.stop()
-        for id in Array(automation.enabled) { disableSessionAutoYes(id, reason: "app closing") }
+        for id in automation.activeIDs { disableSessionAutoYes(id, reason: "app closing") }
         discoveryTimer?.cancel(); descriptionRunner.cancel(); server.stop()
     }
     var activeRequest: AgentRequest? {
@@ -546,7 +568,8 @@ final class Store: ObservableObject {
                 guard let current = session.requests.first(where: { $0.id == request.id }),
                       let scope = automation.scope(for: current, session: session, safeEnabled: autoYes, muted: mutedSessions.contains(id)),
                       scope == approvalScope, decision == "allow" else { throw ProtocolError.invalid }
-                try record(session: session, action: scope == "session" ? "Session Auto-yes: permission approval dispatched" : "Allow once: verified in-project source read (dispatched)", automatic: true)
+                let mode = automation.dangerous.contains(id) ? "Dangerous Auto-yes" : "Session Auto-yes"
+                try record(session: session, action: scope == "session" ? "\(mode): permission approval dispatched" : "Allow once: verified in-project source read (dispatched)", automatic: true)
             }
             sending.insert(request.id)
             if automatic { automaticallySending.insert(request.id) }

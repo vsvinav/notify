@@ -183,6 +183,16 @@ Only new, policy-eligible tool permissions qualify. Questions, browser consent, 
 
 This broader setting is separate from safe-read approval. It is never persisted, and turns off on disconnect/reconnect, app restart, Stop, approval errors, or failed/uncertain steering. Turning it off cannot recall approvals already dispatched or undo their effects. Use manual approval for sensitive projects.
 
+### Dangerous Auto-yes
+
+For a capable attached Copilot session, open its **Settings** tab and enable the separate **Dangerous Auto-yes** switch. It requires explicit confirmation for that session and replaces normal Session Auto-yes; enabling the normal mode replaces it in turn.
+
+**This also approves currently waiting eligible tool permissions**, then continues with future eligible tools. Destructive commands and external actions may run without another prompt. A project label does not confine filesystem access. The control center keeps a red warning and **Turn off** action above every session tab, with a red session-row marker; floating requests and the floating composer show the warning too.
+
+Both session modes use the same adapter-advertised eligibility and runtime-policy checks. Dangerous mode does not invent question answers, complete browser actions, bypass restrictions, grant remembered scopes, or make unsupported integrations available. Questions and restricted requests can still interrupt unattended work.
+
+Opt-in and each automatic dispatch are audited before sending. Audit/delivery failure stops further automatic approvals. **Turn off** works even if the audit cannot be saved. Disconnect, restart, Stop, lost capability and agent/steering errors reset the mode. Already-sent approvals cannot be recalled. Approval hotkeys pause while a native confirmation sheet or modal is open.
+
 ## Phone connections
 
 In main **Settings > Phone connections**, enable **Allow phone connections**, then choose **Pair a phone**. The companion supports an installable web app shared by iPhone and Android, not separate App Store apps.

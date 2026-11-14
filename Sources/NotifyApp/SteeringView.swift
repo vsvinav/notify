@@ -8,10 +8,31 @@ struct AutoYesWarning: View {
     }
 }
 
+struct DangerousAutoYesWarning: View {
+    @ObservedObject var store: Store
+    let sessionID: String
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Label {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Dangerous Auto-yes is ON").font(.system(size: 12, weight: .semibold))
+                    Text("Approves tools, including destructive actions.").font(.system(size: 11))
+                }
+            } icon: { Image(systemName: "exclamationmark.triangle.fill") }
+            Spacer(minLength: 0)
+            Button("Turn off") { store.setSessionDangerousAutoYes(sessionID, enabled: false) }
+                .controlSize(.small)
+        }.foregroundStyle(Palette.error).padding(10)
+            .background(Palette.error.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
 struct SessionAutoYesView: View {
     @ObservedObject var store: Store
     let session: SessionRecord
+    var showsDangerWarning = true
     @State private var confirming = false
+    @State private var confirmingDangerous = false
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Toggle("Session Auto-yes (not recommended)", isOn: Binding(
@@ -19,13 +40,30 @@ struct SessionAutoYesView: View {
                 set: { if $0 { confirming = true } else { store.setSessionAutoYes(session.id, enabled: false) } }
             )).toggleStyle(.switch).controlSize(.small).font(.system(size: 11))
                 .disabled(!session.connected || !session.canAutoYes)
+                .alert("Enable Auto-yes for this session?", isPresented: $confirming) {
+                    Button("Cancel", role: .cancel) {}
+                    Button("Enable Auto-yes", role: .destructive) { store.setSessionAutoYes(session.id, enabled: true) }
+                } message: {
+                    Text("Not recommended. AI can make mistakes.\n\nNew eligible tool permissions in “\(session.name)” will be approved automatically. Commands may modify or delete files or perform external actions. Questions, existing prompts, managed restrictions and sandbox bypasses remain manual.\n\nTurns off on disconnect, app restart, Stop, or an approval/steering error. Turning it off cannot undo approvals already sent. Safe-read approval is a separate setting.")
+                }
             if store.automation.enabled.contains(session.id) { AutoYesWarning() }
-        }
-        .alert("Enable Auto-yes for this session?", isPresented: $confirming) {
-            Button("Cancel", role: .cancel) {}
-            Button("Enable Auto-yes", role: .destructive) { store.setSessionAutoYes(session.id, enabled: true) }
-        } message: {
-            Text("Not recommended. AI can make mistakes.\n\nNew eligible tool permissions in “\(session.name)” will be approved automatically. Commands may modify or delete files or perform external actions. Questions, existing prompts, managed restrictions and sandbox bypasses remain manual.\n\nTurns off on disconnect, app restart, Stop, or an approval/steering error. Turning it off cannot undo approvals already sent. Safe-read approval is a separate setting.")
+            Toggle("Dangerous Auto-yes", isOn: Binding(
+                get: { store.automation.dangerous.contains(session.id) },
+                set: { if $0 { confirmingDangerous = true } else { store.setSessionDangerousAutoYes(session.id, enabled: false) } }
+            )).toggleStyle(.switch).controlSize(.small).font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Palette.error)
+                .disabled(!session.connected || !session.canAutoYes)
+                .alert("Enable Dangerous Auto-yes?", isPresented: $confirmingDangerous) {
+                    Button("Cancel", role: .cancel) {}
+                    Button("Enable dangerous mode", role: .destructive) { store.setSessionDangerousAutoYes(session.id, enabled: true) }
+                } message: {
+                    Text("For “\(session.name)” only.\n\nApproves currently waiting and future eligible tool permissions, including commands that delete files or perform external actions. This project name does not limit access to its files.\n\nQuestions, browser actions and agent-enforced restrictions stay manual. Normal Session Auto-yes will turn off.\n\nResets on disconnect, restart, Stop or delivery/steering error. Turning it off cannot undo approvals already sent.")
+                }
+            if store.automation.dangerous.contains(session.id), showsDangerWarning {
+                DangerousAutoYesWarning(store: store, sessionID: session.id)
+            }
+            Text("Includes waiting eligible tools. Questions and restricted requests still need you.")
+                .font(.system(size: 11)).foregroundStyle(Palette.muted)
         }
     }
 }

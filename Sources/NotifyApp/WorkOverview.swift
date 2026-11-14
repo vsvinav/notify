@@ -204,6 +204,10 @@ private struct WorkRow: View {
                     Text(session.needsSetup ? "Needs setup" : !session.connected ? "Disconnected" :
                             session.requests.first?.title ?? stateName(session.state))
                         .font(WorkspaceType.text(12)).foregroundStyle(Palette.muted).lineLimit(2)
+                    if store.automation.dangerous.contains(session.id) {
+                        Label("Dangerous Auto-yes", systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.error)
+                    }
                 }
                 Spacer(minLength: 0)
                 Image(systemName: hovering ? "line.3.horizontal" : store.selectedID == session.id ? "chevron.right" : AgentPresence(session: session).symbol)
@@ -238,6 +242,9 @@ private struct WorkDetail: View {
                 }
                 Spacer(minLength: 12)
                 TerminalSessionButton(store: store, session: session).padding(.top, 10)
+            }
+            if store.automation.dangerous.contains(session.id) {
+                DangerousAutoYesWarning(store: store, sessionID: session.id)
             }
             GeometryReader { geometry in
                 HStack(alignment: .top, spacing: 20) {
@@ -289,7 +296,7 @@ private struct WorkDetail: View {
                         Text(session.cwd).font(.system(size: 13, design: .monospaced)).textSelection(.enabled)
                         SessionColorPicker(store: store, session: session)
                         SessionDescriptionView(store: store, session: session)
-                        SessionAutoYesView(store: store, session: session)
+                        SessionAutoYesView(store: store, session: session, showsDangerWarning: false)
                         Toggle("Allow verified safe reads", isOn: Binding(get: { !store.mutedSessions.contains(session.id) }, set: {
                             if $0 { store.mutedSessions.remove(session.id) } else { store.mutedSessions.insert(session.id) }
                         })).disabled(!session.connected)

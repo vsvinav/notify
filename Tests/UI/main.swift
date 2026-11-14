@@ -18,6 +18,74 @@ import Vision
         let defaults = UserDefaults(suiteName: suite)!
         defaults.set("dark", forKey: "appearanceMode")
         let store = Store(directory: fixtureRoot, defaults: defaults)
+        do {
+            let automated = Store(directory: fixtureRoot.appendingPathComponent("automation"), defaults: defaults)
+            let client = Process()
+            defer { if client.isRunning { client.terminate() }; automated.stop() }
+            func waitForAutomation(line: UInt = #line, _ predicate: () -> Bool) {
+                let deadline = Date().addingTimeInterval(10)
+                while !predicate() && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.025)) }
+                precondition(predicate(), "Synthetic automation fixture at \(line) failed: \(automated.error ?? "no error")")
+            }
+            var ready = false
+            automated.server.onReady = { ready = true }
+            try automated.server.start()
+            waitForAutomation { ready }
+            client.executableURL = AgentSetup.findExecutable("node", path: AgentSetup.searchPath)
+            client.arguments = ["Tests/UI/automation-fixture.mjs", automated.directory.path]
+            var environment = ProcessInfo.processInfo.environment
+            environment["NODE_TLS_REJECT_UNAUTHORIZED"] = "1"
+            client.environment = environment
+            try client.run()
+            let id = "automation-fixture"
+            waitForAutomation { automated.pending.count == 4 }
+            automated.setSessionAutoYes(id, enabled: true)
+            precondition(automated.automation.enabled.contains(id), "Fixture must advertise a supported automation capability")
+            precondition(automated.pending.count == 4 && automated.sending.isEmpty, "Normal Auto-yes must leave existing prompts alone")
+            automated.setSessionDangerousAutoYes(id, enabled: true)
+            waitForAutomation { automated.pending.count == 2 && automated.sending.isEmpty }
+            precondition(automated.automation.dangerous.contains(id) && automated.automation.enabled.isEmpty)
+            precondition(Set(automated.pending.map(\.request.id)) == ["restricted", "manual-question"],
+                         "Dangerous mode must preserve questions and ineligible requests")
+            func sendEvent(_ value: [String: Any]) throws {
+                automated.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: JSONSerialization.data(withJSONObject: value)))
+            }
+            try sendEvent(["type": "request", "sessionID": id, "request": [
+                "id": "future-tool", "kind": "permission", "title": "Future synthetic tool", "detail": "",
+                "autoEligible": false, "sessionAutoEligible": true, "questions": []
+            ]])
+            waitForAutomation { !automated.sending.contains("future-tool") && automated.pending.count == 2 }
+            struct AutomatedReply: Decodable { let automatic: Bool; let approvalScope: String }
+            let replies = try String(contentsOf: automated.directory.appendingPathComponent("replies.jsonl"), encoding: .utf8)
+                .split(separator: "\n").map { try JSONDecoder().decode(AutomatedReply.self, from: Data($0.utf8)) }
+            precondition(replies.count == 3 && replies.allSatisfy { $0.automatic && $0.approvalScope == "session" },
+                         "Waiting and future tools must use the existing checked automatic approval path")
+            precondition(automated.audit.filter { $0.automatic && $0.action.contains("Dangerous Auto-yes") }.count == 3)
+            automated.setSessionAutoYes(id, enabled: true)
+            precondition(automated.automation.dangerous.isEmpty && automated.automation.enabled.contains(id))
+            automated.setSessionDangerousAutoYes(id, enabled: true)
+            automated.steer(id, action: "stop")
+            precondition(automated.automation.activeIDs.isEmpty, "Stop must disable dangerous mode")
+            automated.setSessionDangerousAutoYes(id, enabled: true)
+            try sendEvent(["type": "error", "sessionID": id, "text": "Synthetic delivery failure"])
+            precondition(automated.automation.activeIDs.isEmpty, "Agent errors must disable dangerous mode")
+            automated.setSessionDangerousAutoYes(id, enabled: true)
+            let history = automated.directory.appendingPathComponent("history.json")
+            try FileManager.default.removeItem(at: history)
+            try FileManager.default.createDirectory(at: history, withIntermediateDirectories: false)
+            automated.setSessionDangerousAutoYes(id, enabled: false)
+            precondition(automated.automation.activeIDs.isEmpty && automated.error != nil, "Off must work even when its audit cannot be saved")
+            automated.setSessionDangerousAutoYes(id, enabled: true)
+            precondition(automated.automation.dangerous.isEmpty, "Failed opt-in audit must not enable dangerous mode")
+            try FileManager.default.removeItem(at: history)
+            automated.setSessionDangerousAutoYes(id, enabled: true)
+            let reopened = Store(directory: automated.directory, defaults: defaults)
+            precondition(reopened.automation.activeIDs.isEmpty, "Dangerous opt-in must not survive app restart")
+            reopened.stop()
+            client.terminate()
+            waitForAutomation { automated.registry.sessions[id]?.connected == false }
+            precondition(automated.automation.activeIDs.isEmpty, "Disconnect must disable dangerous mode")
+        }
         if let path = ProcessInfo.processInfo.environment["NOTIFY_MOBILE_RESOURCES"] {
             let phone = Store(directory: fixtureRoot.appendingPathComponent("https-mobile"), defaults: defaults,
                               mobileResources: URL(fileURLWithPath: path))
@@ -661,6 +729,21 @@ import Vision
                     precondition(recognition.results?.contains { $0.payloadStringValue == "http://fixture.local:9444" } == true,
                                  "The phone setup QR must remain scannable in both appearances: \(name)")
                 }
+                if name == "session-automation.png" {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").lowercased()
+                    precondition(text.contains("dangerous"), "Dangerous Auto-yes must be a separate visible per-session control")
+                }
+                if name.contains("dangerous") {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").lowercased()
+                    precondition(text.contains("dangerous") && text.contains("turn off"),
+                                 "Dangerous mode needs a persistent warning and visible Off action: \(name)")
+                }
                 if name == "settings.png" {
                     let recognition = VNRecognizeTextRequest()
                     recognition.recognitionLevel = .accurate
@@ -889,6 +972,20 @@ import Vision
             visual.select("visual-1", request: "visual-question")
             try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-question.png")
             visual.select("visual-2")
+            try capture(SessionAutoYesView(store: visual, session: visual.selected!).padding(24).background(Palette.background),
+                        width: 550, height: 220, name: "session-automation.png")
+            try receive(["type": "capabilities", "sessionID": "visual-2", "sessionAutoYes": true, "steering": true])
+            visual.setSessionDangerousAutoYes("visual-2", enabled: true)
+            for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                try capture(DashboardView(store: visual), width: 960, height: 620,
+                            name: "control-center-dangerous-\(name).png", appearance: appearance)
+            }
+            visual.setSessionDangerousAutoYes("visual-2", enabled: false)
+            try receive(["type": "capabilities", "sessionID": "visual-0", "sessionAutoYes": true, "steering": true])
+            visual.setSessionDangerousAutoYes("visual-0", enabled: true)
+            visual.replyWorkspace.next(requestIDs: ["visual-request"])
+            try capture(FloatingView(store: visual, openCenter: {}), width: 600, height: 760, name: "floating-dangerous.png")
+            visual.setSessionDangerousAutoYes("visual-0", enabled: false)
             let settingsHeight = NSHostingView(rootView: SettingsView(store: visual)).fittingSize.height.rounded(.up)
             try capture(SettingsView(store: visual), width: 550, height: settingsHeight, name: "settings.png")
             try capture(SettingsView(store: visual), width: 550, height: settingsHeight, name: "settings-dark.png", appearance: .darkAqua)
@@ -1034,14 +1131,14 @@ import Vision
         store.steeringSessionID = nil
         NSApp.keyWindow?.makeFirstResponder(nil)
         store.onAttentionChange?()
-        func sendReturn(_ kind: UInt32, key: UInt32 = UInt32(kVK_Return)) {
+        func sendReturn(_ kind: UInt32, key: UInt32 = UInt32(kVK_Return), handled: Bool = true) {
             var event: EventRef?
             precondition(CreateEvent(nil, OSType(kEventClassKeyboard), kind, 0, 0, &event) == noErr)
             var identity = EventHotKeyID(signature: 0x4e745274, id: key)
             precondition(SetEventParameter(event, UInt32(kEventParamDirectObject), UInt32(typeEventHotKeyID),
                                           MemoryLayout<EventHotKeyID>.size, &identity) == noErr)
-            precondition(SendEventToEventTarget(event, GetApplicationEventTarget()) == noErr,
-                         "A visible notification must own the global Return hotkey")
+            precondition(SendEventToEventTarget(event, GetApplicationEventTarget()) == (handled ? noErr : OSStatus(eventNotHandledErr)),
+                         handled ? "A visible notification must own the global Return hotkey" : "A confirmation must release the global Return hotkey")
         }
         sendReturn(UInt32(kEventHotKeyPressed))
         precondition(store.requestErrors["dock-test"] != nil,
@@ -1074,6 +1171,17 @@ import Vision
         store.sending.remove("dock-test")
         store.onAttentionChange?()
         let replyPanel = NSApp.windows.compactMap { $0 as? ReplyPanel }.first!
+        let confirmation = NSAlert()
+        confirmation.messageText = "Synthetic dangerous-mode confirmation"
+        confirmation.addButton(withTitle: "Cancel")
+        window.beginSheet(confirmation.window)
+        for _ in 0..<8 { pumpNativeEvents(); RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+        assertReturnReleased("Confirming an approval mode must not approve a waiting request in another window")
+        sendReturn(UInt32(kEventHotKeyPressed), handled: false)
+        sendReturn(UInt32(kEventHotKeyReleased), handled: false)
+        precondition(store.requestErrors["dock-test"] == nil, "A confirmation sheet must isolate global approval keys")
+        window.endSheet(confirmation.window)
+        confirmation.window.orderOut(nil)
         store.floatingColorPickerSessionID = session.id
         for _ in 0..<8 {
             replyPanel.contentView?.layoutSubtreeIfNeeded()

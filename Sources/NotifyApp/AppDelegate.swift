@@ -265,7 +265,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     private var canUseReplyKeys: Bool {
         guard panel?.isVisible == true, store.floatingEnabled, store.steeringSessionID == nil,
-              !store.settingsVisible, !store.setupVisible, store.floatingColorPickerSessionID == nil, let item = store.activeFloatingRequest,
+              !store.settingsVisible, !store.setupVisible, NSApp.modalWindow == nil,
+              !NSApp.windows.contains(where: { $0.attachedSheet != nil }),
+              store.floatingColorPickerSessionID == nil, let item = store.activeFloatingRequest,
               item.session.connected, !store.sending.contains(item.request.id) else { return false }
         if NSApp.isActive || panel.isKeyWindow,
            let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isEditable { return false }

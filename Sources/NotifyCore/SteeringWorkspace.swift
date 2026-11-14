@@ -41,17 +41,31 @@ public struct SteeringWorkspace {
 
 public struct SessionAutomation {
     public private(set) var enabled = Set<String>()
+    public private(set) var dangerous = Set<String>()
+    public var activeIDs: Set<String> { enabled.union(dangerous) }
     public init() {}
     public mutating func setEnabled(_ value: Bool, for session: SessionRecord) throws {
         if value {
             guard session.connected, session.canAutoYes else { throw ProtocolError.invalid }
+            dangerous.remove(session.id)
             enabled.insert(session.id)
         } else { enabled.remove(session.id) }
     }
-    public mutating func disable(_ id: String) { enabled.remove(id) }
+    public mutating func setDangerousEnabled(_ value: Bool, for session: SessionRecord) throws {
+        if value {
+            guard session.connected, session.canAutoYes else { throw ProtocolError.invalid }
+            enabled.remove(session.id)
+            dangerous.insert(session.id)
+        } else { dangerous.remove(session.id) }
+    }
+    public mutating func disable(_ id: String) {
+        enabled.remove(id)
+        dangerous.remove(id)
+    }
     public func scope(for request: AgentRequest, session: SessionRecord, safeEnabled: Bool, muted: Bool) -> String? {
         guard session.connected, request.kind == "permission" else { return nil }
-        if session.canAutoYes && enabled.contains(session.id) && request.sessionAutoEligible == true { return "session" }
+        if session.canAutoYes && (enabled.contains(session.id) || dangerous.contains(session.id)),
+           request.sessionAutoEligible == true { return "session" }
         if safeEnabled && !muted && request.autoEligible { return "safe-read" }
         return nil
     }

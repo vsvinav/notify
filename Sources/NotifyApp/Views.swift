@@ -545,7 +545,9 @@ struct FloatingView: View {
                     Text("\(min(index + 1, store.floatingRequests.count)) of \(store.floatingRequests.count)").font(WorkspaceType.text(11)).foregroundStyle(Palette.noticeMuted)
                 }
                 .padding(.bottom, 7)
-                if store.automation.enabled.contains(item.session.id) { AutoYesWarning() }
+                if store.automation.dangerous.contains(item.session.id) {
+                    DangerousAutoYesWarning(store: store, sessionID: item.session.id)
+                } else if store.automation.enabled.contains(item.session.id) { AutoYesWarning() }
                 RequestEditor(store: store, session: item.session, request: item.request, floating: true).id(item.request.id)
                 Divider()
                 Text("↑ ↓ choose · Return selects").font(.system(size: 10)).foregroundStyle(Palette.noticeMuted)
