@@ -3,23 +3,44 @@ import AppKit
 import NotifyCore
 
 enum Palette {
-    static let background = Color(red: 247.0 / 255, green: 245.0 / 255, blue: 250.0 / 255)
-    static let surface = Color.white
-    static let sidebar = Color(red: 244.0 / 255, green: 241.0 / 255, blue: 248.0 / 255)
-    static let raised = Color(red: 238.0 / 255, green: 232.0 / 255, blue: 246.0 / 255)
-    static let ink = Color(red: 37.0 / 255, green: 39.0 / 255, blue: 51.0 / 255)
-    static let line = ink.opacity(0.18)
-    static let muted = Color(red: 101.0 / 255, green: 91.0 / 255, blue: 115.0 / 255)
-    static let accent = Color(red: 106.0 / 255, green: 74.0 / 255, blue: 173.0 / 255)
-    static let highlightInk = Color.white
-    static let noticeMuted = Color(red: 87.0 / 255, green: 74.0 / 255, blue: 101.0 / 255)
-    static let amber = Color(red: 122.0 / 255, green: 73.0 / 255, blue: 27.0 / 255)
+    static let background = adaptive(0xEAE3D8, 0x211F1C)
+    static let surface = adaptive(0xF3EEE5, 0x292622)
+    static let sidebar = adaptive(0xE7DFD2, 0x24211E)
+    static let raised = adaptive(0xDCD0BE, 0x3C352C)
+    static let ink = adaptive(0x34302A, 0xE9E0D2)
+    static let line = adaptive(0x796B5A, 0xA18F78)
+    static let muted = adaptive(0x60564B, 0xBFB2A0)
+    static let accent = adaptive(0x765C3C, 0xCFAD7E)
+    static let highlightInk = adaptive(0xFBF7F0, 0x27221C)
+    static let noticeMuted = adaptive(0x594F44, 0xC4B7A5)
+    static let amber = adaptive(0x754718, 0xE1BB82)
+    static let error = adaptive(0x873B37, 0xE4A294)
+    static let diffAdded = adaptive(0x335C3E, 0xA8C6A0)
+    static let diffRemoved = adaptive(0x873B37, 0xDDA69E)
+
+    static func notificationSurface(for color: UInt32) -> Color {
+        adaptive(0xF0E8DC, 0x2C2823, tint: color)
+    }
+
+    private static func adaptive(_ light: UInt32, _ dark: UInt32, tint: UInt32? = nil) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            let rgb = isDark ? dark : light
+            func channel(_ shift: UInt32) -> CGFloat {
+                let base = CGFloat((rgb >> shift) & 255) / 255
+                guard let tint else { return base }
+                let amount: CGFloat = isDark ? 0.12 : 0.10
+                return base * (1 - amount) + CGFloat((tint >> shift) & 255) / 255 * amount
+            }
+            return NSColor(srgbRed: channel(16), green: channel(8), blue: channel(0), alpha: 1)
+        })
+    }
     static func state(_ state: String) -> Color {
         switch state {
         case "waiting": return amber
         case "working", "starting": return muted
         case "ready": return accent
-        case "error": return .red
+        case "error": return error
         default: return muted
         }
     }
@@ -48,7 +69,7 @@ struct AgentIcon: View {
             .font(.system(size: 16, weight: .medium))
             .foregroundStyle(agent == "claude" ? Palette.amber : Palette.accent)
             .frame(width: 32, height: 32)
-            .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+            .background(Palette.raised, in: RoundedRectangle(cornerRadius: 8))
             .accessibilityLabel(agentName(agent))
     }
 }
@@ -64,7 +85,6 @@ struct DashboardView: View {
         WorkOverview(store: store)
         .background(Palette.background)
         .foregroundStyle(Palette.ink)
-        .preferredColorScheme(.light)
         .tint(Palette.accent)
         .sheet(isPresented: $store.settingsVisible) { SettingsView(store: store) }
         .safeAreaInset(edge: .bottom) {
@@ -160,7 +180,7 @@ struct ReadableContext: View {
                                 let added = line.hasPrefix("+") && !line.hasPrefix("+++")
                                 let removed = line.hasPrefix("-") && !line.hasPrefix("---")
                                 Text(line.isEmpty ? " " : line).font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(added ? Color(red: 0.13, green: 0.36, blue: 0.23) : (removed ? Color(red: 0.52, green: 0.13, blue: 0.22) : Palette.ink))
+                                    .foregroundStyle(added ? Palette.diffAdded : (removed ? Palette.diffRemoved : Palette.ink))
                                     .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }.textSelection(.enabled)
@@ -469,7 +489,7 @@ struct FloatingView: View {
                 }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Palette.noticeMuted)
             }
         }.padding(24).background(floatingSurface).clipShape(RoundedRectangle(cornerRadius: 26))
-            .foregroundStyle(Palette.ink).preferredColorScheme(.light).tint(Palette.accent)
+            .foregroundStyle(Palette.ink).tint(Palette.accent)
     }
     private var floatingSurface: Color {
         let id = store.steeringSessionID ?? store.floatingRequests.first(where: { $0.request.id == store.replyWorkspace.floatingID })?.session.id ?? store.floatingRequests.first?.session.id
@@ -509,6 +529,6 @@ struct SettingsView: View {
             Text("History contains session labels and decisions, not answers. Conversation previews stay on this Mac unless you explicitly request an AI description; that sends a limited excerpt through your Copilot account.")
                 .font(.system(size: 10)).foregroundStyle(Palette.muted)
             Button("Remove disconnected sessions") { store.clearDisconnected() }
-        }.padding(28).frame(width: 550).background(Palette.background).foregroundStyle(Palette.ink).preferredColorScheme(.light).tint(Palette.accent)
+        }.padding(28).frame(width: 550).background(Palette.background).foregroundStyle(Palette.ink).tint(Palette.accent)
     }
 }

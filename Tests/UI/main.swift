@@ -8,6 +8,7 @@ import Vision
     @MainActor static func main() throws {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.accessory)
+        NSApp.appearance = NSAppearance(named: .aqua)
         NSApp.finishLaunching()
         let plist = try PropertyListSerialization.propertyList(from: Data(contentsOf: URL(fileURLWithPath: "resources/Info.plist")), format: nil) as! [String: Any]
         precondition(plist["LSUIElement"] as? Bool != true, "Notify must be a normal Dock application, not a hidden menu-bar agent")
@@ -180,20 +181,49 @@ import Vision
         }
         let redCard = snapshot(0xEF4444), blueCard = snapshot(0x4488FF)
         store.setColor(0xF29A78, for: session)
-        let warmSurface = NSColor(store.sessionSurface(session)).usingColorSpace(.sRGB)!
-        precondition(warmSurface.redComponent > 0.90, "The lighter notification must retain a soft session tint")
         func luminance(_ color: NSColor) -> Double {
             func linear(_ value: Double) -> Double { value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4) }
             return 0.2126 * linear(color.redComponent) + 0.7152 * linear(color.greenComponent) + 0.0722 * linear(color.blueComponent)
         }
-        let noticeText = NSColor(Palette.noticeMuted).usingColorSpace(.sRGB)!
-        precondition(luminance(noticeText) < 0.25, "Light notifications need dark, readable detail text")
-        for color: UInt32 in [0xFFFFFF, 0xFFFF00, 0x00FF00, 0xF29A78, 0x408ED8, 0] {
-            store.setColor(color, for: session)
-            let surface = NSColor(store.sessionSurface(session)).usingColorSpace(.sRGB)!
-            let textLuminance = luminance(noticeText), surfaceLuminance = luminance(surface)
-            precondition((max(textLuminance, surfaceLuminance) + 0.05) / (min(textLuminance, surfaceLuminance) + 0.05) >= 4.5,
-                         "User-selected session colors must keep notification detail text readable")
+        func resolved(_ color: Color, appearance: NSAppearance.Name) -> NSColor {
+            var result: NSColor?
+            NSAppearance(named: appearance)!.performAsCurrentDrawingAppearance {
+                result = NSColor(color).usingColorSpace(.sRGB)
+            }
+            return result!
+        }
+        func contrast(_ foreground: NSColor, _ background: NSColor) -> Double {
+            let a = luminance(foreground), b = luminance(background)
+            return (max(a, b) + 0.05) / (min(a, b) + 0.05)
+        }
+        precondition(luminance(resolved(Palette.surface, appearance: .darkAqua)) < 0.15,
+                     "Dark macOS appearance must produce a genuinely dark workspace")
+        let lightSurface = resolved(Palette.surface, appearance: .aqua)
+        precondition(lightSurface.redComponent > lightSurface.blueComponent + 0.035,
+                     "Light mode must use warm beige rather than stark white")
+        for appearance: NSAppearance.Name in [.aqua, .darkAqua] {
+            for background in [Palette.surface, Palette.sidebar, Palette.raised] {
+                for foreground in [Palette.ink, Palette.muted] {
+                    precondition(contrast(resolved(foreground, appearance: appearance), resolved(background, appearance: appearance)) >= 4.5,
+                                 "Workspace text must remain readable in both appearances")
+                }
+            }
+            precondition(contrast(resolved(Palette.highlightInk, appearance: appearance), resolved(Palette.accent, appearance: appearance)) >= 4.5,
+                         "Highlighted actions must remain readable in both appearances")
+            for color: UInt32 in [0xFFFFFF, 0xFFFF00, 0x00FF00, 0xF29A78, 0x408ED8, 0] {
+                store.setColor(color, for: session)
+                let surface = resolved(store.sessionSurface(session), appearance: appearance)
+                for foreground in [Palette.ink, Palette.noticeMuted, Palette.amber, Palette.error, Palette.diffAdded, Palette.diffRemoved] {
+                    precondition(contrast(resolved(foreground, appearance: appearance), surface) >= 4.5,
+                                 "Every session tint must preserve text and warning contrast in both appearances")
+                }
+                for foreground in [Palette.line, Palette.accent] {
+                    precondition(contrast(resolved(foreground, appearance: appearance), surface) >= 3,
+                                 "Control outlines and keyboard focus must remain visible over session tints")
+                }
+                precondition(appearance == .aqua ? luminance(surface) > 0.6 : luminance(surface) < 0.15,
+                             "Session color must not overpower the system appearance")
+            }
         }
         var changedInteriorPixels = 0
         for x in stride(from: redCard.pixelsWide / 5, to: redCard.pixelsWide * 4 / 5, by: 4) {
@@ -363,9 +393,11 @@ import Vision
             visual.select("visual-0", request: "visual-request")
             visual.replyWorkspace.update(requestIDs: ["visual-request", "visual-question"])
             visual.setColor(0xF29A78, for: visual.selected!)
-            func capture<V: View>(_ view: V, width: CGFloat, height: CGFloat, name: String) throws {
+            func capture<V: View>(_ view: V, width: CGFloat, height: CGFloat, name: String,
+                                  appearance: NSAppearance.Name = .aqua) throws {
                 let capture = NSHostingView(rootView: view)
                 capture.sizingOptions = []
+                window.appearance = NSAppearance(named: appearance)
                 window.contentView = capture
                 capture.frame = NSRect(x: 0, y: 0, width: width, height: height)
                 window.setContentSize(NSSize(width: width, height: height))
@@ -389,6 +421,10 @@ import Vision
                 }
                 let bitmap = capture.bitmapImageRepForCachingDisplay(in: capture.bounds)!
                 capture.cacheDisplay(in: capture.bounds, to: bitmap)
+                if appearance == .darkAqua {
+                    let background = bitmap.colorAt(x: bitmap.pixelsWide - 16, y: bitmap.pixelsHigh / 2)!.usingColorSpace(.sRGB)!
+                    precondition(luminance(background) < 0.15, "Dark native windows must not contain a forced-light SwiftUI surface: \(name)")
+                }
                 try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(name))
                 if name == "control-center-no-results.png" || name == "control-center-activity-waiting.png" || name == "floating-command.png" {
                     let recognition = VNRecognizeTextRequest()
@@ -420,6 +456,8 @@ import Vision
             }
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center.png")
             try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-small.png")
+            try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center-dark.png", appearance: .darkAqua)
+            try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-small-dark.png", appearance: .darkAqua)
             visual.server.onDisconnect("visual-6")
             visual.server.onDisconnect("visual-7")
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center-connections.png")
@@ -436,6 +474,7 @@ import Vision
             try capture(DashboardView(store: empty), width: 960, height: 620, name: "control-center-no-decisions.png")
             empty.stop()
             try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 560, name: "floating-command.png")
+            try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 560, name: "floating-command-dark.png", appearance: .darkAqua)
             window.makeKey()
             let enter = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                          windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
@@ -451,15 +490,18 @@ import Vision
             _ = window.performKeyEquivalent(with: enter)
             precondition(visual.requestErrors["visual-request"] == nil, "Return must not approve while editing denial instructions")
             try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 500, name: "floating-short-screen.png")
+            try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 500, name: "floating-short-screen-dark.png", appearance: .darkAqua)
             visual.setColor(0x9654CE, for: visual.selected!)
             visual.floatingExpanded = true
             try capture(FloatingView(store: visual, openCenter: {}), width: 600, height: 760, name: "floating-expanded.png")
             try receive(["type": "error", "sessionID": "visual-0", "requestID": "visual-request",
                          "text": "Reply could not be delivered. Check the agent connection before trying again."])
             try capture(FloatingView(store: visual, openCenter: {}), width: 600, height: 760, name: "floating-error.png")
+            try capture(FloatingView(store: visual, openCenter: {}), width: 600, height: 760, name: "floating-error-dark.png", appearance: .darkAqua)
             visual.requestErrors.removeValue(forKey: "visual-request")
             visual.sending.insert("visual-request")
             try capture(FloatingView(store: visual, openCenter: {}), width: 600, height: 760, name: "floating-sending.png")
+            try capture(FloatingView(store: visual, openCenter: {}), width: 600, height: 760, name: "floating-sending-dark.png", appearance: .darkAqua)
             visual.sending.remove("visual-request")
             let diff = "--- a/auth/refresh.ts\n+++ b/auth/refresh.ts\n@@ -8,3 +8,4 @@\n-const token = cache.get(user.id)\n+const token = await refreshToken(user.id)\n+cache.set(user.id, token)\n return token\n"
             let diffDetail = String(data: try JSONSerialization.data(withJSONObject: [
@@ -473,10 +515,12 @@ import Vision
             ]])
             visual.replyWorkspace.next(requestIDs: ["visual-diff"])
             try capture(FloatingView(store: visual, openCenter: {}), width: 600, height: 760, name: "floating-diff.png")
+            try capture(FloatingView(store: visual, openCenter: {}), width: 600, height: 760, name: "floating-diff-dark.png", appearance: .darkAqua)
             visual.floatingExpanded = false
             visual.replyWorkspace.next(requestIDs: ["visual-question"])
             visual.replyWorkspace.drafts["visual-question"] = ReplyDraft(freeText: ["0": "Use banker's rounding for the final total."])
             try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 560, name: "floating-question.png")
+            try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 560, name: "floating-question-dark.png", appearance: .darkAqua)
             let otherFields = descendants(window.contentView!).compactMap { $0 as? NSTextField }
             precondition(otherFields.contains { $0.placeholderString == "Type your own answer" && $0.visibleRect.height > 20 },
                          "A short question must show its editable Other answer, not hide it in a collapsed scroll strip")
@@ -497,6 +541,12 @@ import Vision
                 ]])
             }
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center-activity.png")
+            let settingsHeight = NSHostingView(rootView: SettingsView(store: visual)).fittingSize.height.rounded(.up)
+            try capture(SettingsView(store: visual), width: 550, height: settingsHeight, name: "settings.png")
+            try capture(SettingsView(store: visual), width: 550, height: settingsHeight, name: "settings-dark.png", appearance: .darkAqua)
+            visual.showSteering("visual-2")
+            try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 560, name: "floating-steering.png")
+            try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 560, name: "floating-steering-dark.png", appearance: .darkAqua)
             visual.stop()
             window.contentView = dashboard
         }
@@ -649,6 +699,25 @@ import Vision
         pumpNativeEvents()
         _ = appDelegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
         precondition(center.isVisible, "Dock reopening must restore a closed workspace")
+        precondition(center.appearance == nil && replyPanel.appearance == nil,
+                     "Both app windows must inherit macOS appearance instead of forcing light mode")
+        for appearance: NSAppearance.Name in [.darkAqua, .aqua] {
+            NSApp.appearance = NSAppearance(named: appearance)
+            for _ in 0..<10 {
+                center.contentView?.layoutSubtreeIfNeeded()
+                RunLoop.current.run(until: Date().addingTimeInterval(0.025))
+                pumpNativeEvents()
+            }
+            precondition(center.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == appearance &&
+                         replyPanel.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == appearance,
+                         "Already-open windows must follow appearance changes without relaunching")
+            let view = center.contentView!
+            let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            let background = bitmap.colorAt(x: bitmap.pixelsWide - 16, y: bitmap.pixelsHigh / 2)!.usingColorSpace(.sRGB)!
+            precondition(appearance == .darkAqua ? luminance(background) < 0.15 : luminance(background) > 0.6,
+                         "Existing SwiftUI content must repaint after a system appearance change")
+        }
         for ownedWindow in NSApp.windows { ownedWindow.orderOut(nil) }
         print("Native notification color, Dock badge and reopen checks passed")
         if CommandLine.arguments.contains("--live-discovery") {

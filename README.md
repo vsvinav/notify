@@ -4,7 +4,10 @@
 
 Answer Copilot and Claude Code requests from a small floating panel, without switching back to the terminal.
 
-![Notify's session overview and inline approval controls](docs/images/sessions.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/sessions-dark.png">
+  <img src="docs/images/sessions.png" alt="Notify's session overview and inline approval controls">
+</picture>
 
 ## A little less switching
 
@@ -13,9 +16,13 @@ Answer Copilot and Claude Code requests from a small floating panel, without swi
 - **Keep your hands on the keyboard.** Up/Down choose; Return activates the highlighted choice.
 - **Keep sessions straight.** Individual colors, clear connection groups, and recent activity.
 - **Keep your terminal.** Attach to an existing Copilot session without replacing it.
+- **Easy on the eyes.** Muted beige by day, warm charcoal by night. Follows your Mac's appearance.
 
 <p align="center">
-  <img src="docs/images/notification.png" alt="A session-colored notification with the command, permission scopes, and reply controls" width="360">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/notification-dark.png">
+    <img src="docs/images/notification.png" alt="A session-colored notification with the command, permission scopes, and reply controls" width="360">
+  </picture>
 </p>
 
 <p align="center"><sub>Real app captures with fictional sessions.</sub></p>

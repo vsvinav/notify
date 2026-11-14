@@ -10,7 +10,7 @@ Notify appears in the Dock and Cmd-Tab. Agent launchers start it in the backgrou
 
 ## Session workspace and useful notifications
 
-Each chat has a stable color shared by its session row, activity header and the entire floating notification. Change it using **Session color** in **Session settings**; **Reset** restores the automatic accent. The panel uses a soft tint with dark readable text. Colors are stored locally and follow the saved chat when it reconnects or resumes. Warning/error colors remain separate.
+Notify follows macOS appearance automatically, including changes while it's running: muted beige and taupe in light mode, warm charcoal and sand in dark mode. Each chat has a stable color shared by its session row, activity header and floating notification. Change it using **Session color** in **Session settings**; **Reset** restores the automatic accent. Notifications use a subtle session tint with contrasting text in both modes. Colors are stored locally and follow the saved chat when it reconnects or resumes. Warning/error colors remain separate.
 
 Floating cards show the chat title and project/agent above the full request. **Session > Open session** selects that exact chat. **Expand** enlarges the panel in place. Sending a reply keeps the card visible until acknowledgment; delivery failures appear inline, not in a blocking control-center popup. Replayed pending prompts do not repeatedly notify, and new arrivals preserve your selected question and draft.
 

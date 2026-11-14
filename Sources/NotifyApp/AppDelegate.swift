@@ -144,7 +144,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         center.titleVisibility = .hidden
         center.titlebarAppearsTransparent = true
         center.backgroundColor = NSColor(Palette.surface)
-        center.appearance = NSAppearance(named: .aqua)
         center.contentMinSize = NSSize(width: 960, height: 620)
         center.isReleasedWhenClosed = false
         center.delegate = self
@@ -161,7 +160,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.hidesOnDeactivate = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.appearance = NSAppearance(named: .aqua)
         panel.hasShadow = true
         panel.isMovableByWindowBackground = true
         let floatingHost = NSHostingView(rootView: FloatingView(store: store, openCenter: { [weak self] in self?.openCenter() }))

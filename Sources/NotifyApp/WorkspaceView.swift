@@ -4,10 +4,7 @@ import NotifyCore
 
 extension Store {
     func sessionSurface(_ session: SessionRecord) -> Color {
-        let rgb = appearance.color(for: session)
-        return Color(red: 0.82 + Double((rgb >> 16) & 255) / 255 * 0.18,
-                     green: 0.82 + Double((rgb >> 8) & 255) / 255 * 0.18,
-                     blue: 0.82 + Double(rgb & 255) / 255 * 0.18)
+        Palette.notificationSurface(for: appearance.color(for: session))
     }
     func sessionColor(_ session: SessionRecord) -> Color {
         let rgb = appearance.color(for: session)
