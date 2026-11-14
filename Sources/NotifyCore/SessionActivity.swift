@@ -1,0 +1,38 @@
+import Foundation
+
+public struct ActivityEntry: Codable, Identifiable, Equatable {
+    public let id: String
+    public let kind: String
+    public let title: String
+    public let detail: String
+    public let status: String
+    public let timestamp: String
+    public let agentID: String?
+    public var byteCount: Int { id.utf8.count + title.utf8.count + detail.utf8.count + timestamp.utf8.count + (agentID?.utf8.count ?? 0) + 100 }
+    public var isValid: Bool {
+        !id.isEmpty && id.count <= 256 && !title.isEmpty && title.count <= 300 &&
+        detail.utf8.count <= 65536 && timestamp.count <= 64 && (agentID?.count ?? 0) <= 128 &&
+        ["user", "assistant", "reasoning", "tool", "status"].contains(kind) &&
+        ["running", "complete", "failed", "info"].contains(status)
+    }
+}
+
+public struct SessionActivity {
+    public private(set) var entries: [ActivityEntry] = []
+    public private(set) var truncated = false
+    public private(set) var byteCount = 0
+    public init() {}
+
+    public mutating func receive(_ entry: ActivityEntry) throws {
+        guard entry.isValid else { throw ProtocolError.invalid }
+        if let index = entries.firstIndex(where: { $0.id == entry.id }) {
+            byteCount -= entries[index].byteCount
+            entries[index] = entry
+        } else { entries.append(entry) }
+        byteCount += entry.byteCount
+        while entries.count > 300 || byteCount > 524288 {
+            byteCount -= entries.removeFirst().byteCount
+            truncated = true
+        }
+    }
+}

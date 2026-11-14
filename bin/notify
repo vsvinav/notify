@@ -1,0 +1,17 @@
+#!/bin/bash
+set -euo pipefail
+SCRIPT="$(/usr/bin/perl -MCwd=realpath -e 'print realpath($ARGV[0])' "$0")"
+ROOT="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
+if ! command -v node >/dev/null 2>&1; then
+    printf '%s\n' "Notify requires Node.js 22.18 or newer on PATH." >&2
+    exit 1
+fi
+if [[ "$ROOT" == */Contents/Resources ]]; then
+    APP="$(cd "$ROOT/../.." && pwd)"
+else
+    APP="$ROOT/build/Notify.app"
+fi
+if [[ -d "$APP" ]]; then
+    /usr/bin/open -g "$APP"
+fi
+exec node "$ROOT/bridge/dist/cli.js" "$@"

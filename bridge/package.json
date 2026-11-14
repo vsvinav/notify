@@ -1,0 +1,23 @@
+{
+  "name": "notify-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --experimental-strip-types --test test/protocol.test.ts test/connection.test.ts",
+    "test:integration": "node --experimental-strip-types --test test/integration.test.ts test/cli.test.ts test/lifecycle.test.ts test/attachment.test.mjs test/setup.test.mjs test/summary.test.mjs test/steering.test.mjs test/activity.test.mjs test/permission-options.test.mjs",
+    "test:copilot": "npm run build && node --test test/attachment-runtime.test.mjs test/summary-runtime.test.mjs test/steering-runtime.test.mjs",
+    "pretest:integration": "npm run build",
+    "check": "tsc --noEmit"
+  },
+  "engines": { "node": ">=22.18.0" },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.2.81",
+    "@github/copilot-sdk": "1.0.34"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  }
+}
