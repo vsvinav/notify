@@ -533,6 +533,40 @@ import Vision
                     precondition(name == "welcome-install-error.png" ? text.contains("refused") : !text.contains("refused"),
                                  "A Copilot installation failure must remain under Copilot, including when it arrives after switching agents")
                 }
+                if name == "floating-uri.png" || name == "floating-uri-dark.png" {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let observations = recognition.results ?? []
+                    let target = observations.first { $0.topCandidates(1).first?.string.contains("example.org") == true }
+                    let action = observations.first { $0.topCandidates(1).first?.string.contains("Allow once") == true }
+                    precondition(target != nil && action != nil && target!.boundingBox.height > action!.boundingBox.height * 1.35,
+                                 "The actual URI must be visibly larger than action labels without hiding approval controls")
+                    let text = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+                    precondition(!text.contains("Transport bookkeeper") && text.contains("Request details"),
+                                 "Technical tool metadata must be available behind disclosure, not compete with the URI")
+                }
+                if name == "floating-uri-long.png" || name == "floating-uri-long-dark.png" {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let observations = recognition.results ?? []
+                    let text = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+                    let warning = observations.first { $0.topCandidates(1).first?.string.contains("External resource") == true }
+                    let target = observations.first { $0.topCandidates(1).first?.string.contains("docs://") == true }
+                    precondition(warning != nil && target != nil && warning!.boundingBox.minY > target!.boundingBox.maxY,
+                                 "Explicit warnings must appear above prominent resource targets")
+                    precondition(text.contains("#examples") && text.contains("Allow once") && text.contains("Deny"),
+                                 "Long URIs must wrap through their fragment while approval controls remain available")
+                }
+                if name == "floating-uri-inputs.png" {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+                    precondition(text.contains("POST") && text.contains("Invoice recipient"),
+                                 "Promoting a URI must not hide unknown potentially decision-critical inputs")
+                }
                 if name == "control-center-finished.png" || name == "floating-short-screen.png" {
                     let recognition = VNRecognizeTextRequest()
                     recognition.recognitionLevel = .accurate
@@ -729,6 +763,43 @@ import Vision
             visual.setupSnapshot = try AgentSetup.inspect(resources: setupResources, path: setupBin.path, copilotHome: fixtureRoot.appendingPathComponent("copilot-home"))
             precondition(visual.setupConnectionCount(.copilot) > 0, "Only live bridge sessions count as connected")
             try capture(AgentSetupView(store: visual), width: 960, height: 620, name: "welcome-connected.png")
+            let uriStore = Store(directory: fixtureRoot.appendingPathComponent("uri"), defaults: defaults)
+            try FileManager.default.createDirectory(at: uriStore.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            defer { uriStore.stop() }
+            for packet: [String: Any] in [
+                ["type": "hello", "sessionID": "uri-session", "agent": "copilot", "cwd": "/Projects/docs"],
+                ["type": "metadata", "sessionID": "uri-session", "title": "Check the setup guide"],
+                ["type": "request", "sessionID": "uri-session", "request": [
+                    "id": "uri-request", "kind": "permission", "title": "Read this resource?",
+                    "detail": #"{"toolName":"Transport bookkeeper","serverName":"docs","arguments":{"uri":"https://example.org"},"intention":"Read the public setup guide."}"#,
+                    "autoEligible": false, "questions": []
+                ]]
+            ] {
+                uriStore.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: JSONSerialization.data(withJSONObject: packet)))
+            }
+            try capture(FloatingView(store: uriStore, openCenter: {}), width: 420, height: 560, name: "floating-uri.png")
+            try capture(FloatingView(store: uriStore, openCenter: {}), width: 420, height: 560, name: "floating-uri-dark.png", appearance: .darkAqua)
+            var previousURIRequest = "uri-request"
+            for (name, detail) in [
+                ("long", #"{"toolName":"Transport bookkeeper","warning":"External resource access.","arguments":{"uri":"docs://reference/auth?path=a%2Fb&version=2#examples"}}"#),
+                ("inputs", #"{"uri":"https://example.org","method":"POST","recipient":"Invoice recipient"}"#)
+            ] {
+                for packet: [String: Any] in [
+                    ["type": "resolved", "sessionID": "uri-session", "requestID": previousURIRequest, "decision": "deny"],
+                    ["type": "request", "sessionID": "uri-session", "request": [
+                        "id": "uri-\(name)", "kind": "permission", "title": "Read this resource?", "detail": detail,
+                        "autoEligible": false, "questions": []
+                    ]]
+                ] {
+                    uriStore.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: JSONSerialization.data(withJSONObject: packet)))
+                }
+                previousURIRequest = "uri-\(name)"
+                precondition(uriStore.error == nil, "URI capture fixtures must persist their simulated reply history")
+                try capture(FloatingView(store: uriStore, openCenter: {}), width: 420, height: 500, name: "floating-uri-\(name).png")
+                if name == "long" {
+                    try capture(FloatingView(store: uriStore, openCenter: {}), width: 420, height: 500, name: "floating-uri-long-dark.png", appearance: .darkAqua)
+                }
+            }
             visual.showSteering("visual-2")
             try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 560, name: "floating-steering.png")
             try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 560, name: "floating-steering-dark.png", appearance: .darkAqua)

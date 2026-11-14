@@ -321,6 +321,13 @@ let commandContext = RequestContext.fields(from: #"{"kind":"commands","assistedA
 check(commandContext.first?.label == "Full Command Text", "The actual command must come before runtime metadata")
 check(commandContext.first?.presentation == .code && commandContext.first?.displayLabel == "Command", "Commands need code formatting and a useful label")
 check(commandContext.filter(\.isDecisionDetail).count == 1, "Runtime identifiers must stay available without obscuring the command")
+let uriContext = RequestContext.fields(from: #"{"toolName":"read_resource","serverName":"docs","arguments":{"debug":false,"uri":"docs://reference/auth?version=2#examples"}}"#)
+check(uriContext.first?.value == "docs://reference/auth?version=2#examples",
+      "The exact requested URI must precede tool metadata and secondary arguments")
+let resourceContext = RequestContext.fields(from: #"{"requestSandboxBypass":true,"arguments":{"resourceURI":["https://example.org/a%2Fb?x=1&y=2","file:///project/notes.txt"]},"toolName":"read_resource"}"#)
+check(resourceContext.first?.presentation == .warning, "Prominent resource targets must not outrank explicit warnings")
+check(resourceContext.dropFirst().prefix(2).map(\.value) == ["https://example.org/a%2Fb?x=1&y=2", "file:///project/notes.txt"],
+      "Nested URI arrays must preserve every exact scheme, path, query and fragment")
 let warningContext = RequestContext.fields(from: #"{"fullCommandText":"echo example","requestSandboxBypass":true,"requestSandboxBypassReason":"Network policy blocked this command","managedApprovalRequired":true}"#)
 check(warningContext.first?.label != "Full Command Text", "Explicit policy and sandbox warnings must precede the command")
 check(warningContext.filter { $0.presentation == .warning }.count == 3, "Keep every supplied policy and bypass warning prominent")

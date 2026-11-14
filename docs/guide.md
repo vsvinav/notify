@@ -138,6 +138,8 @@ Full terminal-choice parity is still incomplete: MCP sampling, extension-authori
 
 Long prompts, options and context scroll inside the card while reply buttons remain below. Structured permission context appears as labeled values; question schemas already represented by form controls are not dumped as JSON.
 
+Floating permission cards put the exact URL/URI, command, or file path in larger selectable text before the supplied reason. Addresses retain their scheme, escapes, query and fragment; they are not shortened or opened automatically. Explicit warnings stay above the target. **Request details** expands tool/server identifiers and other known bookkeeping; unknown inputs remain visible because they may affect the decision. Working directories stay visible for commands, paths and non-web resources. **More request details** scrolls to the target when a short panel cannot show everything.
+
 SDK launcher terminals also support this fallback when the app is closed (original Copilot terminals keep their normal controls):
 
 ```text

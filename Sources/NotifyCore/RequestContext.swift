@@ -10,6 +10,16 @@ public struct ContextField: Identifiable {
     private var key: String {
         label.components(separatedBy: " / ").last(where: { Int($0) == nil }) ?? label
     }
+    public var targetLabel: String? {
+        switch key {
+        case "Command", "Full Command Text": return "Command"
+        case "Url", "Urls", "Resource Url", "Target Url": return "URL"
+        case "Uri", "Uris", "Resource Uri", "Target Uri": return "URI"
+        case "File Name", "File Path": return "File"
+        case "Path", "Paths": return "Path"
+        default: return nil
+        }
+    }
     public var presentation: Presentation {
         if ["Warning", "Hook Message", "Request Sandbox Bypass Reason"].contains(key) ||
             (["Request Sandbox Bypass", "Request Sandbox Permissive", "Managed Approval Required"].contains(key) && value == "Yes") {
@@ -23,6 +33,8 @@ public struct ContextField: Identifiable {
     }
     public var displayLabel: String {
         let names = ["Full Command Text": "Command", "File Name": "File", "File Path": "File",
+                     "Url": "URL", "Urls": "URLs", "Resource Url": "Resource URL", "Target Url": "Target URL",
+                     "Uri": "URI", "Uris": "URIs", "Resource Uri": "Resource URI", "Target Uri": "Target URI",
                      "Old String": "Text to replace", "New String": "Replacement text", "New File Contents": "New content",
                      "Diff": "Proposed diff", "Intention": "Supplied reason", "Decision Reason": "Permission reason",
                      "Request Sandbox Bypass": "Run outside the sandbox", "Request Sandbox Permissive": "Permissive sandbox retry",
@@ -34,8 +46,8 @@ public struct ContextField: Identifiable {
     public var isDecisionDetail: Bool { priority < 100 }
     fileprivate var priority: Int {
         if presentation == .warning { return 0 }
-        if ["Command", "Full Command Text"].contains(key) { return 1 }
-        if ["File Name", "File Path", "Path", "Paths", "Cwd", "Working Directory", "Url"].contains(key) { return 2 }
+        if targetLabel == "Command" { return 1 }
+        if targetLabel != nil || ["Cwd", "Working Directory"].contains(key) { return 2 }
         if presentation == .code || presentation == .diff { return 3 }
         if ["Intention", "Reason", "Decision Reason"].contains(key) { return 4 }
         if ["Tool Name", "Server Name"].contains(key) { return 5 }

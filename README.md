@@ -11,7 +11,7 @@ Answer Copilot and Claude Code requests from a small floating panel, without swi
 
 ## A little less switching
 
-- **Know who needs you.** See the agent, project, and request before you respond.
+- **Know what you're approving.** See the agent, project, and prominent URL, path, or command. Expand technical details when needed.
 - **Answer right there.** Approve, deny, pick an option, or write your own answer.
 - **Keep your hands on the keyboard.** Up/Down choose; Return activates the highlighted choice.
 - **Keep sessions straight.** Drag to reorder, clear connection groups, and 20 shared colors—from soft pastels to richer earth and jewel tones.
@@ -23,7 +23,7 @@ Answer Copilot and Claude Code requests from a small floating panel, without swi
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/notification-dark.png">
-    <img src="docs/images/notification.png" alt="A session-colored notification with the command, permission scopes, and reply controls" width="360">
+    <img src="docs/images/notification.png" alt="A session-colored notification with a prominent resource URI, expandable details, and reply controls" width="360">
   </picture>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/session-colors-dark.png">

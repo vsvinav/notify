@@ -170,12 +170,14 @@ struct SessionDescriptionView: View {
 struct ReadableContext: View {
     let fields: [ContextField]
     var floating = false
+    var prominentTargets = false
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 12) {
             ForEach(fields) { field in
                 VStack(alignment: .leading, spacing: 5) {
                     if !field.label.isEmpty {
-                        Text(field.displayLabel).font(.system(size: 10)).foregroundStyle(floating ? Palette.noticeMuted : Palette.muted)
+                        Text(prominentTargets ? field.displayLabel.replacingOccurrences(of: "^(Args|Arguments|Input) / ", with: "", options: .regularExpression) : field.displayLabel)
+                            .font(.system(size: 10)).foregroundStyle(floating ? Palette.noticeMuted : Palette.muted)
                     }
                     if field.presentation == .diff {
                         LazyVStack(alignment: .leading, spacing: 2) {
@@ -189,7 +191,9 @@ struct ReadableContext: View {
                         }.textSelection(.enabled)
                     } else {
                         Text(field.value.isEmpty ? "(empty content)" : field.value)
-                            .font(.system(size: 12, design: field.presentation == .code ? .monospaced : .default))
+                            .font(.system(size: prominentTargets && field.targetLabel != nil ? 20 : 12,
+                                          weight: prominentTargets && field.targetLabel != nil ? .medium : .regular,
+                                          design: field.presentation == .code || prominentTargets && field.targetLabel != nil ? .monospaced : .default))
                             .foregroundStyle(field.presentation == .warning ? Palette.amber : Palette.ink)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
@@ -247,22 +251,26 @@ struct RequestEditor: View {
     var body: some View {
         let fields = RequestContext.fields(from: request.detail, isQuestion: request.kind == "question")
         let reasons = fields.filter { ["Intention", "Reason", "Decision Reason"].contains($0.label) }
-        let evidence = fields.filter { field in !reasons.contains { $0.id == field.id } }
+        let targets = floating && request.kind == "permission" ? fields.filter { $0.targetLabel != nil } : []
+        let highlights = targets.isEmpty ? [] : fields.filter { $0.targetLabel != nil || $0.presentation == .warning }
+        let evidence = fields.filter { field in
+            !reasons.contains { $0.id == field.id } && !highlights.contains { $0.id == field.id }
+        }
         ScrollViewReader { proxy in
         VStack(alignment: .leading, spacing: 11) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if wide && request.kind == "permission" {
                         HStack(alignment: .top, spacing: 32) {
-                            heading(reasons).frame(maxWidth: .infinity, alignment: .leading)
-                            context(evidence).frame(maxWidth: .infinity, alignment: .leading)
+                            heading(reasons, highlights: highlights).frame(maxWidth: .infinity, alignment: .leading)
+                            context(evidence, targets: targets).frame(maxWidth: .infinity, alignment: .leading)
                         }
                     } else {
-                        heading(reasons)
+                        heading(reasons, highlights: highlights)
                         if request.kind == "question" {
                             ForEach(request.questions) { question in questionField(question) }
                         }
-                        context(evidence).id("request-evidence")
+                        context(evidence, targets: targets).id(targets.isEmpty ? "request-evidence" : "secondary-evidence")
                     }
                     if !session.output.isEmpty {
                         DisclosureGroup("Recent conversation") {
@@ -272,7 +280,7 @@ struct RequestEditor: View {
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.frame(minHeight: wide ? 60 : 95, maxHeight: .infinity).scrollIndicators(.visible)
-            if floating && !evidence.isEmpty {
+            if floating && (!evidence.isEmpty || !highlights.isEmpty) {
                 Button {
                     proxy.scrollTo("request-evidence", anchor: .top)
                 } label: {
@@ -305,29 +313,41 @@ struct RequestEditor: View {
             }
         }
     }
-    private func heading(_ reasons: [ContextField]) -> some View {
+    private func heading(_ reasons: [ContextField], highlights: [ContextField]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(.init(request.title)).font(WorkspaceType.text(floating ? 28 : 26))
                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if !highlights.isEmpty {
+                ReadableContext(fields: highlights, floating: floating, prominentTargets: true).id("request-evidence")
+            }
             ForEach(reasons) { reason in
                 Text(reason.value).font(WorkspaceType.text(13)).foregroundStyle(secondary)
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             }
         }
     }
-    @ViewBuilder private func context(_ fields: [ContextField]) -> some View {
+    @ViewBuilder private func context(_ fields: [ContextField], targets: [ContextField]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if request.kind == "permission" {
-                if !session.cwd.isEmpty {
+                let resourceOnly = !targets.isEmpty && targets.allSatisfy {
+                    ["URL", "URI"].contains($0.targetLabel ?? "") &&
+                        ["http", "https"].contains(URLComponents(string: $0.value)?.scheme?.lowercased() ?? "")
+                }
+                if !session.cwd.isEmpty && !resourceOnly {
                     Text(session.cwd).font(.system(size: 11, design: .monospaced)).foregroundStyle(secondary)
                         .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                 }
-                let decisionFields = fields.filter(\.isDecisionDetail)
-                ReadableContext(fields: decisionFields.isEmpty ? fields : decisionFields, floating: floating)
-                let otherFields = fields.filter { !$0.isDecisionDetail }
-                if !decisionFields.isEmpty && !otherFields.isEmpty {
+                let decisionFields = fields.filter {
+                    targets.isEmpty ? $0.isDecisionDetail : !["Tool Name", "Server Name", "Request Id", "Session Id"].contains($0.label)
+                }
+                ReadableContext(fields: decisionFields.isEmpty && targets.isEmpty ? fields : decisionFields, floating: floating)
+                let otherFields = fields.filter { field in !decisionFields.contains { $0.id == field.id } }
+                if (!decisionFields.isEmpty || !targets.isEmpty) && (!otherFields.isEmpty || resourceOnly && !session.cwd.isEmpty) {
                     DisclosureGroup("Request details") {
+                        if resourceOnly && !session.cwd.isEmpty {
+                            Text("Working directory: \(session.cwd)").font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                        }
                         ReadableContext(fields: otherFields, floating: floating).padding(.top, 7)
                     }.font(.system(size: 11)).foregroundStyle(secondary)
                 }
