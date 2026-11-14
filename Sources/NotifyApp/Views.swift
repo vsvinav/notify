@@ -598,6 +598,8 @@ struct SettingsView: View {
                     .font(.system(size: 11)).foregroundStyle(Palette.muted)
             }
             Divider()
+            MobileSettingsView(mobile: store.mobile)
+            Divider()
             Toggle("Safe auto-yes", isOn: $store.autoYes)
             Text("Only explicitly identified reads of source or documentation files inside the current project qualify. Hidden paths, sensitive names, symlink escapes, commands, writes, and questions stay manual. Existing agent permission rules still apply.")
                 .font(.system(size: 12)).foregroundStyle(Palette.muted).lineSpacing(4)

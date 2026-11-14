@@ -82,13 +82,15 @@ final class Store: ObservableObject {
     var onAttentionChange: (() -> Void)?
     let directory: URL
     let server: LocalServer
+    let mobile: MobileConnection
+    private var mobileReplies: [String: MobileReply] = [:]
     private let defaults: UserDefaults
     private var snoozed = Set<String>()
     private var discoveryTimer: DispatchSourceTimer?
     private var lastDiscoveryError: String?
     private let descriptionRunner = DescriptionRunner()
 
-    init(directory: URL? = nil, defaults: UserDefaults = .standard) {
+    init(directory: URL? = nil, defaults: UserDefaults = .standard, mobileResources: URL? = Bundle.main.resourceURL) {
         self.defaults = defaults
         let savedAppearance = defaults.string(forKey: "appearanceMode")
         appearanceMode = savedAppearance.flatMap(AppearanceMode.init(rawValue:)) ?? .system
@@ -102,6 +104,10 @@ final class Store: ObservableObject {
         welcomePending = seenWelcome == false || (seenWelcome == nil && !FileManager.default.fileExists(atPath: self.directory.path))
         if welcomePending && seenWelcome == nil { defaults.set(false, forKey: "hasSeenWelcome") }
         server = LocalServer(directory: self.directory)
+        mobile = MobileConnection(directory: self.directory.appendingPathComponent("mobile"), defaults: defaults, resources: mobileResources)
+        mobile.snapshot = { [weak self] in self?.phoneSnapshot() ?? [] }
+        mobile.onReply = { [weak self] reply in self?.replyFromPhone(reply) }
+        mobile.onUnavailable = { [weak self] in self?.mobileReplies.removeAll() }
         if let savedAppearance, AppearanceMode(rawValue: savedAppearance) == nil {
             error = "The saved appearance setting is not recognized. Notify is following the system; choose an appearance in Settings to reset it."
         }
@@ -119,12 +125,14 @@ final class Store: ObservableObject {
         server.onDisconnect = { [weak self] id in
             guard let self else { return }
             for request in self.registry.sessions[id]?.requests ?? [] {
+                self.finishPhoneReply(request.id, sessionID: id, error: "The agent disconnected. Check the Mac before retrying.")
                 self.sending.remove(request.id)
                 self.automaticallySending.remove(request.id)
             }
             self.disableSessionAutoYes(id, reason: "connection closed")
             self.steeringWorkspace.disconnect(id)
             self.registry.disconnect(id)
+            self.mobile.publish()
             self.onAttentionChange?()
         }
     }
@@ -306,6 +314,7 @@ final class Store: ObservableObject {
         } catch { self.error = "Could not start summary: \(error.localizedDescription)" }
     }
     func stop() {
+        mobile.stop()
         for id in Array(automation.enabled) { disableSessionAutoYes(id, reason: "app closing") }
         discoveryTimer?.cancel(); descriptionRunner.cancel(); server.stop()
     }
@@ -325,6 +334,7 @@ final class Store: ObservableObject {
     func start() {
         do { try server.start() }
         catch { self.error = "Could not start local listener: \(error.localizedDescription)" }
+        mobile.start()
         let home = ProcessInfo.processInfo.environment["COPILOT_HOME"].map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".copilot")
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "notify.discovery", qos: .utility))
@@ -415,6 +425,9 @@ final class Store: ObservableObject {
     private func receive(_ packet: AgentPacket) {
         switch packet.type {
         case "hello":
+            for request in registry.sessions[packet.sessionID]?.requests ?? [] {
+                finishPhoneReply(request.id, sessionID: packet.sessionID, error: "The agent reconnected. Refresh the request before replying.")
+            }
             disableSessionAutoYes(packet.sessionID, reason: "connection reinitialized")
             steeringWorkspace.disconnect(packet.sessionID)
             sending.subtract(registry.sessions[packet.sessionID]?.requests.map(\.id) ?? [])
@@ -470,6 +483,12 @@ final class Store: ObservableObject {
         // Older bridges echoed the incoming reply type after runtime acknowledgment.
         case "resolved", "reply":
             guard let id = packet.requestID else { return }
+            if let phone = mobileReplies[id], phone.sessionID == packet.sessionID {
+                let acknowledged = packet.cancelled != true && packet.automatic != true &&
+                    packet.decision == phone.decision && packet.permissionOptionID == phone.permissionOptionID &&
+                    (packet.answers ?? [:]) == (phone.answers ?? [:]) && packet.feedback == phone.feedback
+                finishPhoneReply(id, sessionID: packet.sessionID, error: acknowledged ? nil : "The agent did not confirm this exact phone answer. Check the Mac.")
+            }
             let wasAutomatic = packet.automatic == true
             if let session = registry.sessions[packet.sessionID],
                session.requests.contains(where: { $0.id == id }), !wasAutomatic, packet.cancelled != true {
@@ -488,16 +507,21 @@ final class Store: ObservableObject {
         case "error":
             disableSessionAutoYes(packet.sessionID, reason: "agent reported an error")
             if let id = packet.requestID, registry.sessions[packet.sessionID]?.requests.contains(where: { $0.id == id }) == true {
+                finishPhoneReply(id, sessionID: packet.sessionID, error: packet.text ?? "The agent could not acknowledge this reply.")
                 requestErrors[id] = packet.text ?? "Reply failed. Check the terminal before retrying."
                 sending.remove(id)
                 automaticallySending.remove(id)
             } else {
+                for request in registry.sessions[packet.sessionID]?.requests ?? [] {
+                    finishPhoneReply(request.id, sessionID: packet.sessionID, error: packet.text ?? "The agent connection reported an error.")
+                }
                 sessionErrors[packet.sessionID] = packet.text ?? "Agent reported an error."
                 sending.subtract(registry.sessions[packet.sessionID]?.requests.map(\.id) ?? [])
                 automaticallySending.subtract(registry.sessions[packet.sessionID]?.requests.map(\.id) ?? [])
             }
         default: error = "Unsupported launcher event: \(packet.type)"
         }
+        if ["hello", "request", "resolved", "reply", "error", "state", "metadata"].contains(packet.type) { mobile.publish() }
         onAttentionChange?()
     }
     private func record(session: SessionRecord, action: String, automatic: Bool) throws {
@@ -541,6 +565,8 @@ final class Store: ObservableObject {
                 self.automaticallySending.remove(request.id)
                 self.disableSessionAutoYes(id, reason: "reply acknowledgment timed out")
                 self.requestErrors[request.id] = "No acknowledgment yet. The reply may have arrived; check the terminal before retrying."
+                self.finishPhoneReply(request.id, sessionID: id, error: self.requestErrors[request.id])
+                self.mobile.publish()
                 self.onAttentionChange?()
             }
             onAttentionChange?()
@@ -550,5 +576,48 @@ final class Store: ObservableObject {
             automaticallySending.remove(request.id)
             self.requestErrors[request.id] = "No approval sent: \(error.localizedDescription)"
         }
+        mobile.publish()
+    }
+
+    func phoneSnapshot() -> [MobileItem] {
+        pending.filter { !automaticallySending.contains($0.request.id) }.map { session, request in
+            MobileItem(sessionID: session.id, sessionName: session.name, project: session.projectLabel, agent: session.agent,
+                color: String(format: "#%06X", appearance.color(for: session)),
+                ticket: mobile.ticket(sessionID: session.id, request: request),
+                notificationID: (session.sourceSessionID ?? session.id) + ":" + request.id,
+                request: request, fields: RequestContext.fields(from: request.detail, isQuestion: request.kind == "question").map(MobileField.init),
+                sending: sending.contains(request.id), error: requestErrors[request.id])
+        }
+    }
+
+    func replyFromPhone(_ response: MobileReply) {
+        guard let session = registry.sessions[response.sessionID],
+              let request = session.requests.first(where: { $0.id == response.requestID }),
+              mobile.accepts(response, request: request),
+              !sending.contains(request.id),
+              !mobileReplies.values.contains(where: { $0.id == response.id }),
+              registry.canReply(sessionID: session.id, requestID: request.id, decision: response.decision,
+                  answers: response.answers ?? [:], permissionOptionID: response.permissionOptionID, feedback: response.feedback) else {
+            mobile.complete(response.id, error: "This phone request expired or its answer is invalid. Refresh before replying.")
+            return
+        }
+        do { try record(session: session, action: "Phone requested: \(response.decision)", automatic: false) }
+        catch {
+            mobile.complete(response.id, error: "No reply sent: approval history could not be saved.")
+            requestErrors[request.id] = "Phone reply blocked: \(error.localizedDescription)"
+            return
+        }
+        mobileReplies[request.id] = response
+        reply(session: session.id, request: request, decision: response.decision,
+              answers: response.answers ?? [:], permissionOptionID: response.permissionOptionID, feedback: response.feedback)
+        if !sending.contains(request.id) {
+            finishPhoneReply(request.id, sessionID: session.id, error: requestErrors[request.id] ?? "The reply was not sent. Check the Mac.")
+        }
+    }
+
+    private func finishPhoneReply(_ requestID: String, sessionID: String, error: String?) {
+        guard let reply = mobileReplies[requestID], reply.sessionID == sessionID else { return }
+        mobileReplies.removeValue(forKey: requestID)
+        mobile.complete(reply.id, error: error)
     }
 }

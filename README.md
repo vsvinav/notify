@@ -19,6 +19,7 @@ Answer Copilot and Claude Code requests from a small floating panel, without swi
 - **Keep your terminal.** Attach to an existing Copilot session without replacing it.
 - **Connect without guesswork.** Guided setup finds installed agents and shows when a session actually connects.
 - **Easy on the eyes.** Muted beige or warm charcoal. Follow your Mac, or choose Light/Dark in Settings.
+- **Connect your phone.** Optional same-network iPhone/Android web companion, with Mac-confirmed pairing and generic background alerts. [Setup and current limits](docs/guide.md#phone-connections).
 
 <p align="center">
   <picture>
@@ -41,12 +42,15 @@ Currently a local build, not a notarized download. Requires **macOS 14+**, **Nod
 
 ```sh
 git clone https://github.com/vsvinav/notify.git
+git clone https://github.com/vsvinav/notify-mobile.git
 cd notify
-(cd bridge && npm ci --ignore-scripts)
-bash scripts/build.sh
+(cd bridge && NODE_TLS_REJECT_UNAUTHORIZED=1 npm ci --ignore-scripts)
+NOTIFY_MOBILE_SOURCE=../notify-mobile bash scripts/build.sh
 bash scripts/install.sh
 open ~/Applications/Notify.app
 ```
+
+The companion repository is currently private. Building the complete app requires access to it; the source path is explicit and its production dependencies are bundled into Notify.
 
 Preview a request without running an agent or spending model credits:
 

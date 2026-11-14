@@ -2,6 +2,15 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+export NODE_TLS_REJECT_UNAUTHORIZED=1
+MOBILE_SOURCE="${NOTIFY_MOBILE_SOURCE:?Set NOTIFY_MOBILE_SOURCE to your notify-mobile checkout}"
+for file in src/main.mjs public/index.html package.json package-lock.json; do
+    if [ ! -f "$MOBILE_SOURCE/$file" ]; then
+        printf 'Missing mobile companion file: %s/%s\n' "$MOBILE_SOURCE" "$file" >&2
+        exit 1
+    fi
+done
+MOBILE_SOURCE="$(cd "$MOBILE_SOURCE" && pwd)"
 swift build -c release --quiet --product Notify
 (cd bridge && npm run build)
 APP="$ROOT/build/Notify.app"
@@ -19,5 +28,19 @@ ditto bridge/dist "$APP/Contents/Resources/bridge/dist"
     --exclude=/.bin --exclude=/typescript --exclude=/@types --exclude=/@img \
     --exclude='/@github/copilot-sdk-*' \
     bridge/node_modules/ "$APP/Contents/Resources/bridge/node_modules/"
+MOBILE="$APP/Contents/Resources/mobile"
+INSTALL_MOBILE_DEPS=0
+if ! cmp -s "$MOBILE_SOURCE/package.json" "$MOBILE/package.json" ||
+   ! cmp -s "$MOBILE_SOURCE/package-lock.json" "$MOBILE/package-lock.json" ||
+   [ ! -d "$MOBILE/node_modules" ]; then
+    INSTALL_MOBILE_DEPS=1
+fi
+mkdir -p "$MOBILE/src" "$MOBILE/public"
+/usr/bin/rsync -a --delete "$MOBILE_SOURCE/src/" "$MOBILE/src/"
+/usr/bin/rsync -a --delete "$MOBILE_SOURCE/public/" "$MOBILE/public/"
+install -m 644 "$MOBILE_SOURCE/package.json" "$MOBILE_SOURCE/package-lock.json" "$MOBILE/"
+if [ "$INSTALL_MOBILE_DEPS" = 1 ] || ! (cd "$MOBILE" && npm ls --omit=dev --silent >/dev/null 2>&1); then
+    (cd "$MOBILE" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund)
+fi
 codesign --force --deep --sign - "$APP"
 printf 'Built %s\n' "$APP"

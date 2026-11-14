@@ -105,6 +105,8 @@ public struct AgentPacket: Decodable {
     public let requestID: String?
     public let decision: String?
     public let permissionOptionID: String?
+    public let answers: [String: [String]]?
+    public let feedback: String?
     public let automatic: Bool?
     public let cancelled: Bool?
     public let title: String?

@@ -18,6 +18,117 @@ import Vision
         let defaults = UserDefaults(suiteName: suite)!
         defaults.set("dark", forKey: "appearanceMode")
         let store = Store(directory: fixtureRoot, defaults: defaults)
+        if let path = ProcessInfo.processInfo.environment["NOTIFY_MOBILE_RESOURCES"] {
+            let phone = Store(directory: fixtureRoot.appendingPathComponent("https-mobile"), defaults: defaults,
+                              mobileResources: URL(fileURLWithPath: path))
+            let client = Process(), input = Pipe(), output = Pipe(), diagnostics = Pipe()
+            defer {
+                if client.isRunning { client.terminate() }
+                phone.mobile.setEnabled(false); phone.stop()
+            }
+            func waitForHTTPS(_ predicate: () -> Bool) {
+                let deadline = Date().addingTimeInterval(25)
+                while !predicate() && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.025)) }
+                precondition(predicate(), "Packaged phone integration failed: \(phone.mobile.error ?? phone.error ?? "timed out")")
+            }
+            var ready = false
+            phone.server.onReady = { ready = true }
+            try phone.server.start()
+            waitForHTTPS { ready }
+            phone.mobile.setEnabled(true)
+            waitForHTTPS { phone.mobile.status != nil }
+            phone.mobile.invite()
+            waitForHTTPS { phone.mobile.status?.pairingCode != nil }
+            client.executableURL = AgentSetup.findExecutable("node", path: AgentSetup.searchPath)
+            client.arguments = ["Tests/UI/mobile-e2e.mjs"]
+            client.standardInput = input; client.standardOutput = output; client.standardError = diagnostics
+            var environment = ProcessInfo.processInfo.environment
+            environment["NODE_TLS_REJECT_UNAUTHORIZED"] = "1"
+            client.environment = environment
+            try client.run()
+            try input.fileHandleForWriting.write(contentsOf: JSONSerialization.data(withJSONObject: [
+                "directory": phone.directory.path, "url": phone.mobile.status!.url, "code": phone.mobile.status!.pairingCode!
+            ]) + Data([10]))
+            try input.fileHandleForWriting.close()
+            waitForHTTPS { phone.mobile.pairing != nil || !client.isRunning }
+            precondition(phone.mobile.pairing?.name == "HTTPS fixture phone", "Only the disposable test phone may be confirmed")
+            phone.mobile.confirmPairing(true)
+            waitForHTTPS { !client.isRunning }
+            let errors = String(decoding: diagnostics.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            precondition(client.terminationStatus == 0, "Real native/HTTPS phone round-trip failed: \(errors)")
+            precondition(String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).contains("\"ok\":true"))
+            print("Packaged HTTPS phone, native Store and agent acknowledgment round-trip passed")
+        }
+        do {
+            let resources = fixtureRoot.appendingPathComponent("mobile-resources")
+            let script = resources.appendingPathComponent("mobile/src/main.mjs")
+            try FileManager.default.createDirectory(at: script.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: URL(fileURLWithPath: "Tests/UI/mobile-fixture.mjs"), to: script)
+            let mobileStore = Store(directory: fixtureRoot.appendingPathComponent("mobile-store"), defaults: defaults, mobileResources: resources)
+            defer { mobileStore.mobile.setEnabled(false); mobileStore.stop() }
+            func waitFor(line: UInt = #line, _ predicate: () throws -> Bool) rethrows {
+                let deadline = Date().addingTimeInterval(10)
+                while !(try predicate()) && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.025)) }
+                let reached = try predicate()
+                precondition(reached, "Native phone fixture at line \(line) failed: \(mobileStore.mobile.error ?? mobileStore.error ?? "no reported error"); \(mobileStore.directory.path)")
+            }
+            var ready = false
+            mobileStore.server.onReady = { ready = true }
+            try mobileStore.server.start()
+            waitFor { ready }
+            mobileStore.mobile.setEnabled(true)
+            waitFor { mobileStore.mobile.status != nil && mobileStore.pending.count == 2 }
+            mobileStore.mobile.publish()
+            let eventsURL = mobileStore.directory.appendingPathComponent("mobile/events.jsonl")
+            struct Event: Decodable {
+                let type: String
+                let id: String?
+                let ok: Bool?
+                let tls: String?
+            }
+            func events() throws -> [Event] {
+                try String(contentsOf: eventsURL, encoding: .utf8).split(separator: "\n").map {
+                    try JSONDecoder().decode(Event.self, from: Data($0.utf8))
+                }
+            }
+            let startupEvents = try events()
+            precondition(startupEvents.first?.tls == "1", "Phone helper must not inherit disabled TLS verification")
+            mobileStore.mobile.invite()
+            waitFor { mobileStore.mobile.pairing != nil }
+            precondition(mobileStore.mobile.pairing?.code == "234567", "Mac must show the comparison code before approving pairing")
+            mobileStore.mobile.confirmPairing(true)
+            mobileStore.mobile.invite()
+            waitFor { mobileStore.mobile.pairing != nil }
+            mobileStore.mobile.revoke("expire-fixture-comparison")
+            waitFor { mobileStore.mobile.pairing == nil }
+            mobileStore.mobile.testPush()
+            waitFor { mobileStore.sending.contains("custom") }
+            try waitFor { try events().contains { $0.type == "agent-reply" } }
+            let beforeAck = try events()
+            precondition(beforeAck.contains { $0.id == "bad-ticket" && $0.ok == false },
+                         "A mismatched phone ticket must be rejected")
+            precondition(!beforeAck.contains { $0.id == "custom-reply" && $0.type == "result" },
+                         "A socket write must not be reported as an acknowledged phone reply")
+            precondition(beforeAck.filter { $0.type == "agent-reply" }.count == 1,
+                         "Only a valid custom answer should reach the agent")
+            mobileStore.mobile.testPush()
+            waitFor { !mobileStore.sending.contains("custom") && mobileStore.pending.count == 1 }
+            try waitFor { try events().contains { $0.id == "custom-reply" } }
+            let afterAck = try events()
+            precondition(afterAck.contains { $0.id == "custom-reply" && $0.ok == true },
+                         "The phone must receive success only after matching runtime acknowledgment")
+            mobileStore.mobile.testPush()
+            try waitFor { try events().contains { $0.id == "fixed-reply" } }
+            let fixedEvents = try events()
+            precondition(fixedEvents.contains { $0.id == "fixed-reply" && $0.ok == false },
+                         "Phone custom answers must not bypass a fixed-choice agent request")
+            precondition(fixedEvents.filter { $0.type == "agent-reply" }.count == 1)
+            mobileStore.mobile.testPush()
+            try waitFor { try events().contains { $0.id == "mismatched-answer" } }
+            let mismatchEvents = try events()
+            precondition(mismatchEvents.contains { $0.id == "mismatched-answer" && $0.ok == false },
+                         "A different terminal answer must not acknowledge the phone's answer")
+        }
         do {
             let welcomeDefaults = UserDefaults(suiteName: suite + "-welcome")!
             defer { welcomeDefaults.removePersistentDomain(forName: suite + "-welcome") }
@@ -543,6 +654,21 @@ import Vision
                     precondition(luminance(background) < 0.15, "Dark native windows must not contain a forced-light SwiftUI surface: \(name)")
                 }
                 try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(name))
+                if name.hasPrefix("phone-pairing-") {
+                    let recognition = VNDetectBarcodesRequest()
+                    recognition.symbologies = [.qr]
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    precondition(recognition.results?.contains { $0.payloadStringValue == "http://fixture.local:9444" } == true,
+                                 "The phone setup QR must remain scannable in both appearances: \(name)")
+                }
+                if name == "settings.png" {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+                    precondition(text.contains("Phone connections") && text.contains("Allow phone connections"),
+                                 "Native Settings must expose mobile connection status and an explicit enable control")
+                }
                 if name.hasPrefix("floating-custom-") {
                     let recognition = VNRecognizeTextRequest()
                     recognition.recognitionLevel = .accurate
@@ -766,6 +892,30 @@ import Vision
             let settingsHeight = NSHostingView(rootView: SettingsView(store: visual)).fittingSize.height.rounded(.up)
             try capture(SettingsView(store: visual), width: 550, height: settingsHeight, name: "settings.png")
             try capture(SettingsView(store: visual), width: 550, height: settingsHeight, name: "settings-dark.png", appearance: .darkAqua)
+            do {
+                let phone = Store(directory: fixtureRoot.appendingPathComponent("phone-visual"), defaults: defaults,
+                                  mobileResources: fixtureRoot.appendingPathComponent("mobile-resources"))
+                defer { phone.mobile.setEnabled(false); phone.stop() }
+                var ready = false
+                phone.server.onReady = { ready = true }
+                try phone.server.start()
+                func waitForPhone(_ predicate: () -> Bool) {
+                    let deadline = Date().addingTimeInterval(10)
+                    while !predicate() && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.025)) }
+                    precondition(predicate(), "The native phone capture fixture failed: \(phone.mobile.error ?? "no error")")
+                }
+                waitForPhone { ready }
+                phone.mobile.setEnabled(true)
+                waitForPhone { phone.mobile.status != nil }
+                phone.mobile.invite()
+                waitForPhone { phone.mobile.pairing != nil && phone.mobile.status?.pairingCode != nil }
+                for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                    phone.appearanceMode = appearance == .aqua ? .light : .dark
+                    try capture(SettingsView(store: phone), width: 550, height: 680, name: "settings-phone-\(name).png", appearance: appearance)
+                    try capture(ScrollView { MobileSettingsView(mobile: phone.mobile).padding(28) }.background(Palette.background).foregroundStyle(Palette.ink).tint(Palette.accent),
+                                width: 550, height: 680, name: "phone-pairing-\(name).png", appearance: appearance)
+                }
+            }
             let setupResources = fixtureRoot.appendingPathComponent("setup-resources")
             let setupBin = setupResources.appendingPathComponent("bin")
             try FileManager.default.createDirectory(at: setupBin, withIntermediateDirectories: true)

@@ -47,10 +47,12 @@ iTerm2 must be installed at `/Applications/iTerm.app`; this local build launches
 cd bridge
 npm ci --ignore-scripts
 cd ..
-bash scripts/build.sh
+NOTIFY_MOBILE_SOURCE=/path/to/notify-mobile bash scripts/build.sh
 bash scripts/install.sh
 open ~/Applications/Notify.app
 ```
+
+Clone the separate private [notify-mobile repository](https://github.com/vsvinav/notify-mobile) first. The build requires that explicit checkout path, bundles its web app and production dependencies, and signs the combined Mac app. Node itself remains a prerequisite. Phone connections are off by default.
 
 The installer creates `~/.local/bin/notify`, without replacing existing apps or launchers. If that directory is not on your PATH:
 
@@ -181,16 +183,33 @@ Only new, policy-eligible tool permissions qualify. Questions, browser consent, 
 
 This broader setting is separate from safe-read approval. It is never persisted, and turns off on disconnect/reconnect, app restart, Stop, approval errors, or failed/uncertain steering. Turning it off cannot recall approvals already dispatched or undo their effects. Use manual approval for sensitive projects.
 
+## Phone connections
+
+In main **Settings > Phone connections**, enable **Allow phone connections**, then choose **Pair a phone**. The companion supports an installable web app shared by iPhone and Android, not separate App Store apps.
+
+Your phone and awake Mac must be on the same local network. Scan the setup QR, compare the certificate's SHA-256 fingerprint with the Mac, and follow the phone's instructions to manually install and trust the local certificate. Notify never installs trust automatically. The HTTP setup page serves only public instructions/certificate material; pairing, request details and replies use HTTPS.
+
+Add Notify to the phone's Home Screen, open that installed app, and enter the Mac's short-lived pairing code there. On iPhone, Safari and Home Screen storage can differ. Compare the confirmation code on both devices before choosing **Confirm phone** on the Mac. Expired comparisons disappear; pairing is never silently approved.
+
+The Mac lists paired phones separately from currently connected browsers and enabled push subscriptions. **Revoke** removes the selected phone's access and push subscription. Remove Notify's certificate profile from the phone's certificate/trust settings as well if you no longer want to trust this Mac.
+
+Allow notifications from a direct tap in the installed phone app. iPhone requires iOS 16.4+ and a Home Screen web app for Web Push. Background alerts use Apple/Google/Mozilla push infrastructure and contain only a generic prompt, never agent request content. **Send test alert** requests a generic alert for subscribed devices; a provider accepting it does not prove delivery.
+
+Phone replies use the same exact choices, custom-answer restrictions and permission scopes as the Mac. They require a fresh live request and matching agent acknowledgment. Disconnects, sleep, revocation, changed requests and uncertain replies fail explicitly; replies are not automatically replayed. There is no remote shell, conversation sync or hosted Notify relay.
+
+**Physical iPhone/Android certificate setup and lock-screen delivery remain unverified.** Browser and local HTTPS checks do not replace a real-device test. Local hostname/network configuration and certificate trust must work on your devices; outside the LAN, an alert may arrive but request details and replies are unavailable.
+
 ## Local data and limits
 
-- Native UI with no embedded browser, server polling, accessibility scraping, or synthesized keystrokes.
-- Local IPC listens only on loopback and requires a random token from a user-private file.
+- Native UI with no embedded browser, accessibility scraping, or synthesized keystrokes. The optional phone companion receives a five-second live-state heartbeat.
+- Agent IPC listens only on loopback and requires a random token from a user-private file. Explicitly enabled phone support uses a separate authenticated same-network HTTPS listener.
 - Settings use macOS preferences. Connection information, session color overrides, the last 200 approval records and up to 200 private cached descriptions live in `~/Library/Application Support/Notify/`.
 - History records session labels and decisions, not answers, commands, or conversation contents. The app keeps only a bounded in-memory conversation preview. The agent CLIs retain their normal session histories.
-- No separate cloud service is added by Notify. The agents and explicitly requested Haiku descriptions communicate with their normal model providers.
+- No hosted Notify relay is added. The agents and explicitly requested Haiku descriptions communicate with their normal model providers; optional generic phone alerts use platform push services.
+- Phone keys, paired-device credentials, push subscriptions and bounded hashed notification identities stay in the private `mobile` subdirectory. Request snapshots are in memory, not saved there.
 - Browser-auth requests require completing the shown URL yourself before confirming. Secret/password prompts are not a supported floating-input workflow; authenticate in the original CLI first.
 - The panel is configured for other Spaces and full-screen apps, but secure desktops, locked screens, and individual full-screen app behavior are controlled by macOS.
-- Library/skill/plugin management, existing Claude attachment, mobile delivery, and a full terminal emulator remain later work.
+- Library/skill/plugin management, existing Claude attachment, internet request/reply relay access, and a full terminal emulator remain later work.
 
 ## Checks
 
@@ -212,3 +231,5 @@ node dist/cli.js copilot --doctor
 The doctor commands initialize the installed runtimes without sending a model prompt. Transport checks exercise actual Swift-to-Node permission and question replies. The Copilot checks hot-load the extension into an existing SDK-owned session and an original terminal UI, including extension consent and a native reply to the same session ID. Steering checks use a loopback-only synthetic OpenAI provider to exercise joined-session queue, interrupt and stop without paid model calls. Summary checks verify a real tool-free runtime setup with a substituted response. UI checks measure native scrolling, composer state, audit failures and mode resets. They use disposable fixtures and never manipulate real running terminals. Live provider output and individual full-screen app behavior still need a manual check.
 
 The app is ad-hoc signed for local use, not notarized for distribution. The build omits duplicate Copilot runtimes and development-only dependencies from the app bundle; the installed CLIs remain required.
+
+After building, `NOTIFY_MOBILE_RESOURCES="$PWD/build/Notify.app/Contents/Resources" bash scripts/check-ui.sh` additionally exercises the actual packaged HTTPS companion, a synthetic phone and the native agent acknowledgment path. It uses disposable credentials and requests, never a real agent approval. The mobile repository has its own service/browser checks.

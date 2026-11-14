@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$HOME/Applications/Notify.app"
 if [[ ! -d "$ROOT/build/Notify.app" ]]; then
-    printf '%s\n' "Build first: bash scripts/build.sh" >&2
+    printf '%s\n' "Build first: NOTIFY_MOBILE_SOURCE=/path/to/notify-mobile bash scripts/build.sh" >&2
     exit 1
 fi
 mkdir -p "$HOME/Applications" "$HOME/.local/bin"
