@@ -2,6 +2,7 @@ import AppKit
 import Carbon
 import SwiftUI
 import NotifyCore
+import Vision
 
 @main struct UIChecks {
     @MainActor static func main() throws {
@@ -122,6 +123,20 @@ import NotifyCore
             return bitmap
         }
         let redCard = snapshot(0xEF4444), blueCard = snapshot(0x4488FF)
+        store.setColor(0xF29A78, for: session)
+        let warmSurface = NSColor(store.sessionSurface(session)).usingColorSpace(.sRGB)!
+        precondition(warmSurface.redComponent > 0.50, "The approved notification needs a rich session color, not the rejected nearly-black tint")
+        func luminance(_ color: NSColor) -> Double {
+            func linear(_ value: Double) -> Double { value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4) }
+            return 0.2126 * linear(color.redComponent) + 0.7152 * linear(color.greenComponent) + 0.0722 * linear(color.blueComponent)
+        }
+        let noticeText = NSColor(srgbRed: 1, green: 234.0 / 255, blue: 223.0 / 255, alpha: 1)
+        for color: UInt32 in [0xFFFFFF, 0xFFFF00, 0x00FF00, 0xF29A78, 0x408ED8, 0] {
+            store.setColor(color, for: session)
+            let surface = NSColor(store.sessionSurface(session)).usingColorSpace(.sRGB)!
+            precondition((luminance(noticeText) + 0.05) / (luminance(surface) + 0.05) >= 4.5,
+                         "User-selected session colors must keep notification detail text readable")
+        }
         var changedInteriorPixels = 0
         for x in stride(from: redCard.pixelsWide / 5, to: redCard.pixelsWide * 4 / 5, by: 4) {
             for y in stride(from: 20, to: redCard.pixelsHigh - 20, by: 4) {
@@ -277,7 +292,7 @@ import NotifyCore
             ]])
             visual.select("visual-0", request: "visual-request")
             visual.replyWorkspace.update(requestIDs: ["visual-request", "visual-question"])
-            visual.setColor(0x408ED8, for: visual.selected!)
+            visual.setColor(0xF29A78, for: visual.selected!)
             func capture<V: View>(_ view: V, width: CGFloat, height: CGFloat, name: String) throws {
                 let capture = NSHostingView(rootView: view)
                 capture.sizingOptions = []
@@ -296,9 +311,20 @@ import NotifyCore
                 let bitmap = capture.bitmapImageRepForCachingDisplay(in: capture.bounds)!
                 capture.cacheDisplay(in: capture.bounds, to: bitmap)
                 try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(name))
+                if name == "control-center-connections.png" {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+                    precondition(text.contains("Connected") && text.contains("Not connected") && text.contains("Disconnected"),
+                                 "Rendered connection groups and disconnected labels must be readable. Found: \(text)")
+                }
             }
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center.png")
             try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-small.png")
+            visual.server.onDisconnect("visual-6")
+            visual.server.onDisconnect("visual-7")
+            try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center-connections.png")
             try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 560, name: "floating-command.png")
             window.makeKey()
             let enter = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
@@ -344,6 +370,12 @@ import NotifyCore
             let otherFields = descendants(window.contentView!).compactMap { $0 as? NSTextField }
             precondition(otherFields.contains { $0.placeholderString == "Type your own answer" && $0.visibleRect.height > 20 },
                          "A short question must show its editable Other answer, not hide it in a collapsed scroll strip")
+            visual.sending.insert("visual-question")
+            try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 560, name: "floating-question-sending.png")
+            let sendingFields = descendants(window.contentView!).compactMap { $0 as? NSTextField }
+            precondition(sendingFields.contains { $0.placeholderString == "Type your own answer" && !$0.isEnabled },
+                         "A dispatched question must keep its answer visible but prevent edits until delivery completes")
+            visual.sending.remove("visual-question")
             visual.select("visual-2")
             for (id, kind, title, text) in [
                 ("reason", "reasoning", "Published reasoning", "The focus order should follow the visible navigation, including the overflow menu."),
@@ -358,8 +390,10 @@ import NotifyCore
             visual.stop()
             window.contentView = dashboard
         }
-        let appDelegate = AppDelegate(store: store)
+        let appDelegate = AppDelegate(store: store, backgroundLaunch: true)
         appDelegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+        let center = NSApp.windows.first { $0.title == "Notify" }!
+        precondition(!center.isVisible, "Launcher startup must not open the control center")
         defer { appDelegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification)) }
         let previousWaiting = store.pending.count
         let dockPacket = try JSONSerialization.data(withJSONObject: [
@@ -369,6 +403,7 @@ import NotifyCore
                         "permissionOptions": [["id": "session", "label": "Always this session", "detail": "Only fixture commands"]]]
         ])
         store.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: dockPacket))
+        precondition(!center.isVisible, "Incoming requests must not open the control center")
         precondition(NSApp.dockTile.badgeLabel == String(previousWaiting + 1), "Dock badge must count pending manual decisions")
         store.replyWorkspace.next(requestIDs: ["dock-test"])
         store.steeringSessionID = nil
@@ -475,11 +510,12 @@ import NotifyCore
         store.automaticallySending.insert("dock-test")
         store.onAttentionChange?()
         precondition(NSApp.dockTile.badgeLabel == (previousWaiting == 0 ? nil : String(previousWaiting)), "Automatic replies must not flash a waiting badge")
-        let center = NSApp.windows.first { $0.title == "Notify" }!
         precondition(!replyPanel.becomesKeyOnlyIfNeeded && !replyPanel.hidesOnDeactivate,
                      "Clicking a card must permit keyboard focus without hiding it on app switches")
         center.performClose(nil)
         precondition(!center.isVisible && !appDelegate.applicationShouldTerminateAfterLastWindowClosed(NSApp), "Closing the workspace must keep monitoring")
+        NSApp.activate()
+        pumpNativeEvents()
         _ = appDelegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
         precondition(center.isVisible, "Dock reopening must restore a closed workspace")
         for ownedWindow in NSApp.windows { ownedWindow.orderOut(nil) }

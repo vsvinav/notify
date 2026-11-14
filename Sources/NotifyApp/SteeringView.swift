@@ -37,7 +37,7 @@ struct FloatingSteeringView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                SmallLabel(text: "Steer an agent")
+                Text("Steer an agent").font(.system(size: 11)).foregroundStyle(Palette.noticeMuted)
                 Spacer()
                 Button("Close") { store.closeSteering() }.buttonStyle(.plain).font(.system(size: 11))
             }
@@ -48,8 +48,8 @@ struct FloatingSteeringView: View {
             }.labelsHidden()
             if let session = store.registry.sessions[sessionID] {
                 Text(session.cwd.isEmpty ? session.name : session.cwd).font(.system(size: 10))
-                    .foregroundStyle(Palette.muted).lineLimit(2).help(session.cwd)
-                SteeringEditor(store: store, session: session).id(session.id)
+                    .foregroundStyle(Palette.noticeMuted).lineLimit(2).help(session.cwd)
+                SteeringEditor(store: store, session: session, floating: true).id(session.id)
             } else {
                 Text("This session is no longer available. Choose another session.").font(.system(size: 12))
                 Spacer()
@@ -60,7 +60,7 @@ struct FloatingSteeringView: View {
                 if !store.floatingRequests.isEmpty {
                     Button("Approvals (\(store.floatingRequests.count))") { store.closeSteering() }
                 }
-            }.buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(Palette.muted)
+            }.buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(Palette.noticeMuted)
         }.frame(maxHeight: .infinity, alignment: .top)
     }
 }
@@ -68,6 +68,8 @@ struct FloatingSteeringView: View {
 struct SteeringEditor: View {
     @ObservedObject var store: Store
     let session: SessionRecord
+    var floating = false
+    private var secondary: Color { floating ? Palette.noticeMuted : Palette.muted }
     @State private var confirmAction: String?
     private var draft: String { store.steeringWorkspace.drafts[session.id] ?? "" }
     private var enabled: Bool {
@@ -87,14 +89,14 @@ struct SteeringEditor: View {
                     }
                     if let receipt = store.steeringWorkspace.receipts[session.id] {
                         Text(receipt.detail).font(.system(size: 12))
-                            .foregroundStyle(["unknown", "failed"].contains(receipt.status) ? Palette.amber : Palette.accent)
+                            .foregroundStyle(["unknown", "failed"].contains(receipt.status) ? Palette.amber : secondary)
                             .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                     }
-                    SmallLabel(text: "Agent activity")
+                    Text("Agent activity").font(.system(size: 11)).foregroundStyle(secondary)
                     Text(session.summary.isEmpty ? stateName(session.state) : session.summary).font(.system(size: 11))
                         .fixedSize(horizontal: false, vertical: true)
                     if !session.output.isEmpty {
-                        Text(String(session.output.suffix(8000))).font(.system(size: 11)).foregroundStyle(Palette.muted)
+                        Text(String(session.output.suffix(8000))).font(.system(size: 11)).foregroundStyle(secondary)
                             .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                     }
                     if let error = store.sessionErrors[session.id] ?? store.error {
@@ -118,7 +120,7 @@ struct SteeringEditor: View {
                     .buttonStyle(ReplyButtonStyle(primary: false)).disabled(!enabled)
             }
             Text("Queue: next turn. Interrupt: redirect the main turn now.")
-                .font(.system(size: 9)).foregroundStyle(Palette.muted)
+                .font(.system(size: 9)).foregroundStyle(secondary)
         }
         .alert(confirmAction == "stop" ? "Stop this session's work?" : "Interrupt and send this direction?",
                isPresented: Binding(get: { confirmAction != nil }, set: { if !$0 { confirmAction = nil } })) {

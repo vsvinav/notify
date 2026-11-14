@@ -100,6 +100,7 @@ final class ReplyPanel: NSPanel {
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let store: Store
+    private let backgroundLaunch: Bool
     private var center: NSWindow!
     private var panel: ReplyPanel!
     private var status: NSStatusItem!
@@ -113,8 +114,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }, report: { [weak self] message in self?.store.error = message })
 
-    init(store: Store = Store()) {
+    init(store: Store = Store(), backgroundLaunch: Bool = CommandLine.arguments.contains("--background")) {
         self.store = store
+        self.backgroundLaunch = backgroundLaunch
         super.init()
     }
 
@@ -139,8 +141,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.mainMenu = mainMenu
         center = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 750), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         center.title = "Notify"
+        center.titleVisibility = .hidden
         center.titlebarAppearsTransparent = true
-        center.backgroundColor = NSColor(Palette.background)
+        center.backgroundColor = NSColor(Palette.surface)
         center.contentMinSize = NSSize(width: 960, height: 620)
         center.isReleasedWhenClosed = false
         center.delegate = self
@@ -187,7 +190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.onAttentionChange = { [weak self] in self?.updateAttention() }
         store.start()
         updateAttention()
-        openCenter()
+        if !backgroundLaunch { openCenter() }
     }
     @objc func openCenter() {
         NSApp.activate()

@@ -3,15 +3,17 @@ import AppKit
 import NotifyCore
 
 enum Palette {
-    static let background = Color(red: 0.065, green: 0.071, blue: 0.085)
-    static let sidebar = Color(red: 0.085, green: 0.092, blue: 0.108)
-    static let surface = background
+    static let background = Color(red: 35.0 / 255, green: 29.0 / 255, blue: 33.0 / 255)
+    static let surface = Color(red: 48.0 / 255, green: 39.0 / 255, blue: 44.0 / 255)
+    static let sidebar = surface
     static let raised = Color.white.opacity(0.07)
-    static let ink = Color(red: 0.91, green: 0.93, blue: 0.95)
+    static let ink = Color(red: 248.0 / 255, green: 240.0 / 255, blue: 233.0 / 255)
     static let line = Color.white.opacity(0.09)
-    static let muted = Color(red: 0.65, green: 0.70, blue: 0.74)
-    static let accent = Color(red: 0.57, green: 0.84, blue: 0.73)
-    static let amber = Color(red: 0.94, green: 0.73, blue: 0.43)
+    static let muted = Color(red: 214.0 / 255, green: 196.0 / 255, blue: 202.0 / 255)
+    static let accent = Color(red: 237.0 / 255, green: 192.0 / 255, blue: 163.0 / 255)
+    static let highlightInk = Color(red: 57.0 / 255, green: 40.0 / 255, blue: 31.0 / 255)
+    static let noticeMuted = Color(red: 1, green: 234.0 / 255, blue: 223.0 / 255)
+    static let amber = Color(red: 1, green: 235.0 / 255, blue: 207.0 / 255)
     static func state(_ state: String) -> Color {
         switch state {
         case "waiting": return amber
@@ -144,12 +146,13 @@ struct SessionDescriptionView: View {
 
 struct ReadableContext: View {
     let fields: [ContextField]
+    var floating = false
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 12) {
             ForEach(fields) { field in
                 VStack(alignment: .leading, spacing: 5) {
                     if !field.label.isEmpty {
-                        Text(field.displayLabel).font(.system(size: 10, weight: .semibold)).foregroundStyle(Palette.muted)
+                        Text(field.displayLabel).font(.system(size: 10)).foregroundStyle(floating ? Palette.noticeMuted : Palette.muted)
                     }
                     if field.presentation == .diff {
                         LazyVStack(alignment: .leading, spacing: 2) {
@@ -157,7 +160,7 @@ struct ReadableContext: View {
                                 let added = line.hasPrefix("+") && !line.hasPrefix("+++")
                                 let removed = line.hasPrefix("-") && !line.hasPrefix("---")
                                 Text(line.isEmpty ? " " : line).font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(added ? Palette.accent : (removed ? Color(red: 1, green: 0.62, blue: 0.65) : Palette.ink))
+                                    .foregroundStyle(added ? Color(red: 0.87, green: 1, blue: 0.83) : (removed ? Color(red: 1, green: 0.85, blue: 0.86) : Palette.ink))
                                     .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }.textSelection(.enabled)
@@ -168,8 +171,7 @@ struct ReadableContext: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
                     }
-                }.padding(field.presentation == .text ? 0 : 12).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(field.presentation == .text ? Color.clear : Palette.ink.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+                }.frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -182,6 +184,7 @@ struct RequestEditor: View {
     let session: SessionRecord
     let request: AgentRequest
     var floating = false
+    var wide = false
     private var feedback: String {
         get { store.replyWorkspace.drafts[request.id]?.feedback ?? "" }
         nonmutating set {
@@ -214,85 +217,72 @@ struct RequestEditor: View {
         (store.replyWorkspace.drafts[request.id] ?? ReplyDraft()).answers(for: request)
     }
     private var keyboardChoice: ReplyChoice { store.replyWorkspace.choice(for: request) }
+    private var secondary: Color { floating ? Palette.noticeMuted : Palette.muted }
     private func shortcut(for choice: ReplyChoice) -> KeyboardShortcut? {
         !feedbackFocused && !store.editingReplyText && keyboardChoice == choice ? .defaultAction : nil
     }
     var body: some View {
+        let fields = RequestContext.fields(from: request.detail, isQuestion: request.kind == "question")
+        let reasons = fields.filter { ["Intention", "Reason", "Decision Reason"].contains($0.label) }
+        let evidence = fields.filter { field in !reasons.contains { $0.id == field.id } }
         ScrollViewReader { proxy in
         VStack(alignment: .leading, spacing: 11) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 13) {
-                    Text(.init(request.title)).font(.system(size: 17, weight: .semibold))
-                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if request.kind == "question" {
-                        ForEach(request.questions) { question in questionField(question) }
-                    }
-                    let fields = RequestContext.fields(from: request.detail, isQuestion: request.kind == "question")
-                    if !fields.isEmpty {
-                        if request.kind == "permission" {
-                            let decisionFields = fields.filter(\.isDecisionDetail)
-                            if !decisionFields.isEmpty {
-                                ReadableContext(fields: decisionFields)
-                                let otherFields = fields.filter { !$0.isDecisionDetail }
-                                DisclosureGroup("Request details") {
-                                    VStack(alignment: .leading, spacing: 9) {
-                                        if !session.cwd.isEmpty {
-                                            Text("Project: \(session.cwd)").font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
-                                        }
-                                        ReadableContext(fields: otherFields)
-                                    }.padding(.top, 7)
-                                }.font(.system(size: 11)).foregroundStyle(Palette.muted)
-                            } else {
-                                ReadableContext(fields: fields)
-                            }
-                        } else {
-                            DisclosureGroup("Full context") {
-                                ReadableContext(fields: fields).padding(.top, 7)
-                            }.font(.system(size: 11)).foregroundStyle(Palette.muted)
+                VStack(alignment: .leading, spacing: 18) {
+                    if wide && request.kind == "permission" {
+                        HStack(alignment: .top, spacing: 32) {
+                            heading(reasons).frame(maxWidth: .infinity, alignment: .leading)
+                            context(evidence).frame(maxWidth: .infinity, alignment: .leading)
                         }
+                    } else {
+                        heading(reasons)
+                        if request.kind == "question" {
+                            ForEach(request.questions) { question in questionField(question) }
+                        }
+                        context(evidence)
                     }
                     if !session.output.isEmpty {
                         DisclosureGroup("Recent conversation") {
                             Text(session.output).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
                                 .textSelection(.enabled).padding(.top, 7)
-                        }.font(.system(size: 11)).foregroundStyle(Palette.muted)
+                        }.font(.system(size: 11)).foregroundStyle(secondary)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
-            }.frame(minHeight: 95, maxHeight: .infinity).scrollIndicators(.visible)
+            }.frame(minHeight: wide ? 60 : 95, maxHeight: .infinity).scrollIndicators(.visible)
             if let error = store.requestErrors[request.id] ?? store.sessionErrors[session.id] ?? store.error {
                 Text(error).font(.system(size: 12)).foregroundStyle(Palette.amber)
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             }
             ViewThatFits(in: .vertical) {
                 approvalActions.fixedSize(horizontal: false, vertical: true)
-                ScrollView { approvalActions }.frame(maxHeight: 280).scrollIndicators(.visible)
+                ScrollView { approvalActions }.frame(minHeight: 80, maxHeight: 280).scrollIndicators(.visible)
             }.layoutPriority(1)
             if request.kind == "permission" && request.supportsFeedback == true {
                 TextField("Denial instructions", text: Binding(get: { feedback }, set: { feedback = $0 }),
-                          prompt: Text("Tell Copilot what to do differently (optional)").foregroundColor(Palette.muted), axis: .vertical)
+                          prompt: Text("Tell Copilot what to do differently (optional)").foregroundColor(secondary), axis: .vertical)
                     .textFieldStyle(.plain).lineLimit(1...3).font(.system(size: 12))
-                    .padding(9).background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(feedbackFocused ? Palette.accent : Palette.line, lineWidth: feedbackFocused ? 2 : 1))
+                    .padding(.vertical, 7)
+                    .overlay(alignment: .bottom) { Rectangle().fill(feedbackFocused ? Palette.accent : secondary.opacity(0.65)).frame(height: feedbackFocused ? 2 : 1) }
                     .focused($feedbackFocused)
                     .disabled(store.sending.contains(request.id))
                 if feedback.utf16.count > 4000 {
                     Text("Keep instructions within 4,000 characters.").font(.system(size: 12)).foregroundStyle(Palette.amber)
                 }
             }
-            Button(request.kind == "question" ? "Decline" : (denialFeedback == nil ? "Deny" : "Deny with instructions")) {
-                store.reply(session: session.id, request: request, decision: "deny", feedback: denialFeedback)
-            }.buttonStyle(.plain).font(.system(size: 12, weight: .medium))
-                .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
-                .foregroundStyle(keyboardChoice == .deny ? Palette.accent : Palette.ink)
-                .keyboardShortcut(shortcut(for: .deny)).id(ReplyChoice.deny)
-                .disabled(store.sending.contains(request.id) || !session.connected ||
-                          !request.accepts(decision: "deny", answers: [:], feedback: denialFeedback))
-            if store.sending.contains(request.id) {
-                HStack { ProgressView().controlSize(.mini); Text("Waiting for launcher confirmation").font(.system(size: 10)) }.foregroundStyle(Palette.muted)
-            } else {
-                Button("Snooze for 5 minutes") { store.snooze(request.id) }
-                    .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Palette.muted)
+            HStack {
+                Button(request.kind == "question" ? "Decline" : (denialFeedback == nil ? "Deny" : "Deny with instructions")) {
+                    store.reply(session: session.id, request: request, decision: "deny", feedback: denialFeedback)
+                }.buttonStyle(ReplyButtonStyle(primary: false, highlighted: keyboardChoice == .deny))
+                    .keyboardShortcut(shortcut(for: .deny)).id(ReplyChoice.deny)
+                    .disabled(store.sending.contains(request.id) || !session.connected ||
+                              !request.accepts(decision: "deny", answers: [:], feedback: denialFeedback))
+                Spacer()
+                if store.sending.contains(request.id) {
+                    HStack { ProgressView().controlSize(.mini); Text("Waiting for confirmation").font(.system(size: 10)) }.foregroundStyle(secondary)
+                } else {
+                    Button("Snooze 5 min") { store.snooze(request.id) }
+                        .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(secondary)
+                }
             }
         }.frame(maxHeight: .infinity, alignment: .top)
             .onChange(of: keyboardChoice) { _, value in proxy.scrollTo(value, anchor: .center) }
@@ -302,32 +292,55 @@ struct RequestEditor: View {
             }
         }
     }
-    private var approvalActions: some View {
-        VStack(alignment: .leading, spacing: 6) {
+    private func heading(_ reasons: [ContextField]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(.init(request.title)).font(.system(size: 28, weight: .regular))
+                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            ForEach(reasons) { reason in
+                Text(reason.value).font(.system(size: 13)).foregroundStyle(secondary)
+                    .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            }
+        }
+    }
+    @ViewBuilder private func context(_ fields: [ContextField]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
             if request.kind == "permission" {
-                Button { store.reply(session: session.id, request: request, decision: "allow") } label: {
-                    HStack(spacing: 7) {
-                        Text("Allow once")
-                        Spacer()
-                        Image(systemName: "return").font(.system(size: 11)).accessibilityHidden(true)
-                    }
-                }.buttonStyle(ReplyButtonStyle(primary: true, highlighted: keyboardChoice == .allowOnce))
-                    .keyboardShortcut(shortcut(for: .allowOnce)).id(ReplyChoice.allowOnce)
-                    .help("Up and Down choose an option. Return activates the highlighted option, including remembered scopes. Text editing keeps normal keys.")
-                ForEach(request.permissionOptions ?? []) { option in
-                    Button {
-                        store.reply(session: session.id, request: request, decision: "allow", permissionOptionID: option.id)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(option.label).fontWeight(.medium)
-                            Text(option.detail).font(.system(size: 11)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                    }.buttonStyle(ReplyButtonStyle(primary: false, highlighted: keyboardChoice == .scope(option.id)))
-                        .keyboardShortcut(shortcut(for: .scope(option.id))).id(ReplyChoice.scope(option.id))
+                if !session.cwd.isEmpty {
+                    Text(session.cwd).font(.system(size: 11, design: .monospaced)).foregroundStyle(secondary)
+                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                }
+                let decisionFields = fields.filter(\.isDecisionDetail)
+                ReadableContext(fields: decisionFields.isEmpty ? fields : decisionFields, floating: floating)
+                let otherFields = fields.filter { !$0.isDecisionDetail }
+                if !decisionFields.isEmpty && !otherFields.isEmpty {
+                    DisclosureGroup("Request details") {
+                        ReadableContext(fields: otherFields, floating: floating).padding(.top, 7)
+                    }.font(.system(size: 11)).foregroundStyle(secondary)
+                }
+            } else if !fields.isEmpty {
+                DisclosureGroup("Full context") {
+                    ReadableContext(fields: fields, floating: floating).padding(.top, 7)
+                }.font(.system(size: 11)).foregroundStyle(secondary)
+            }
+        }
+    }
+    private var approvalActions: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if request.kind == "permission" {
+                let horizontal = wide && (request.permissionOptions?.count ?? 0) <= 2
+                let layout = horizontal ? AnyLayout(HStackLayout(alignment: .top, spacing: 24)) : AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                layout {
+                    Button("Allow once") { store.reply(session: session.id, request: request, decision: "allow") }
+                        .buttonStyle(ReplyButtonStyle(primary: true, highlighted: keyboardChoice == .allowOnce))
+                        .keyboardShortcut(shortcut(for: .allowOnce)).id(ReplyChoice.allowOnce)
+                        .frame(maxWidth: horizontal ? .infinity : nil, alignment: .leading)
+                        .help("Up and Down choose an option. Return activates the highlighted option, including remembered scopes. Text editing keeps normal keys.")
+                    ForEach(request.permissionOptions ?? []) { option in scopeAction(option) }
                 }
                 if !(request.permissionOptions ?? []).isEmpty {
                     Text("Remembered approvals skip future prompts within their scope.")
-                        .font(.system(size: 11)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
+                        .font(.system(size: 11)).foregroundStyle(secondary).fixedSize(horizontal: false, vertical: true)
                 }
             } else {
                 Button("Send answer") { store.reply(session: session.id, request: request, decision: "answer", answers: answers) }
@@ -337,10 +350,25 @@ struct RequestEditor: View {
             }
         }.disabled(store.sending.contains(request.id) || !session.connected)
     }
+    private func scopeAction(_ option: PermissionOption) -> some View {
+        let layout = floating ? AnyLayout(HStackLayout(alignment: .top, spacing: 12)) : AnyLayout(VStackLayout(alignment: .leading, spacing: 5))
+        return layout {
+            Button(option.label) {
+                store.reply(session: session.id, request: request, decision: "allow", permissionOptionID: option.id)
+            }.buttonStyle(ReplyButtonStyle(primary: false, highlighted: keyboardChoice == .scope(option.id)))
+                .keyboardShortcut(shortcut(for: .scope(option.id))).id(ReplyChoice.scope(option.id))
+                .frame(maxWidth: floating ? 160 : nil, alignment: .leading)
+                .help(option.label)
+            Text(option.detail).font(.system(size: 11)).foregroundStyle(secondary)
+                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                .multilineTextAlignment(floating ? .trailing : .leading)
+                .frame(maxWidth: .infinity, alignment: floating ? .trailing : .leading)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
     private func questionField(_ question: AgentQuestion) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(question.text + (question.required == false ? " (optional)" : "")).font(.system(size: 12, weight: .medium)).fixedSize(horizontal: false, vertical: true)
-            if question.multiple { Text("Choose any that apply").font(.system(size: 10)).foregroundStyle(Palette.muted) }
+            if question.multiple { Text("Choose any that apply").font(.system(size: 10)).foregroundStyle(secondary) }
             ForEach(question.options, id: \.self) { option in
                 let selected = selections[question.id]?.contains(option.label) == true
                 Button {
@@ -348,17 +376,17 @@ struct RequestEditor: View {
                 } label: {
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: selected ? (question.multiple ? "checkmark.square.fill" : "largecircle.fill.circle") : (question.multiple ? "square" : "circle"))
-                            .foregroundStyle(selected ? Palette.accent : Palette.muted)
+                            .foregroundStyle(selected ? Palette.accent : secondary)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(option.label).font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
-                            if !option.description.isEmpty { Text(option.description).font(.system(size: 11)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true) }
+                                .padding(.horizontal, 9).padding(.vertical, 5)
+                                .foregroundStyle(keyboardChoice == .option(question: question.id, label: option.label) ? Palette.highlightInk : Palette.ink)
+                                .background(keyboardChoice == .option(question: question.id, label: option.label) ? Palette.accent : .clear, in: Capsule())
+                            if !option.description.isEmpty { Text(option.description).font(.system(size: 11)).foregroundStyle(secondary).fixedSize(horizontal: false, vertical: true) }
                         }
                         Spacer(minLength: 0)
-                    }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(selected ? Color.white.opacity(0.07) : Color.clear, in: RoundedRectangle(cornerRadius: 7))
-                        .overlay(alignment: .bottom) { Rectangle().fill(Palette.line).frame(height: 1) }
-                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(
-                            keyboardChoice == .option(question: question.id, label: option.label) ? Palette.accent : .clear, lineWidth: 2))
+                    }.padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
+                        .foregroundStyle(keyboardChoice == .option(question: question.id, label: option.label) ? Palette.accent : Palette.ink)
                 }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
                     .keyboardShortcut(shortcut(for: .option(question: question.id, label: option.label)))
                     .id(ReplyChoice.option(question: question.id, label: option.label))
@@ -372,28 +400,27 @@ struct RequestEditor: View {
                     get: { freeText[question.id] ?? "" },
                     set: { freeText[question.id] = $0; if !question.multiple && !$0.isEmpty { selections[question.id] = [] } }
                 ), axis: .vertical).textFieldStyle(.plain).font(.system(size: 13)).lineLimit(2...5)
-                    .padding(11).background(Color.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 7))
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Palette.line))
+                    .padding(.vertical, 9)
                     .accessibilityLabel(question.text)
                     .focused($answerFocused, equals: question.id)
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(keyboardChoice == .input(question.id) ? Palette.accent : .clear, lineWidth: 2))
+                    .overlay(alignment: .bottom) { Rectangle().fill(keyboardChoice == .input(question.id) ? Palette.accent : secondary.opacity(0.65)).frame(height: 1) }
                     .id(ReplyChoice.input(question.id))
             }
-        }
+        }.disabled(store.sending.contains(request.id) || !session.connected)
     }
 }
 
 struct ReplyButtonStyle: ButtonStyle {
     let primary: Bool
-    var highlighted = false
+    var highlighted: Bool?
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(.system(size: 13, weight: primary ? .semibold : .regular))
-            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 9)
-            .foregroundStyle(Palette.ink)
-            .background(Color.white.opacity(primary ? 0.12 : 0.035), in: RoundedRectangle(cornerRadius: 7))
-            .overlay(RoundedRectangle(cornerRadius: 7).stroke(highlighted ? Palette.accent : (primary ? Color.white.opacity(0.13) : Palette.line),
-                                                           lineWidth: highlighted ? 2 : 1))
+        let filled = highlighted ?? primary
+        configuration.label.font(.system(size: 13, weight: .medium))
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .foregroundStyle(filled ? Palette.highlightInk : Palette.ink)
+            .background(filled ? Palette.accent : Color.clear, in: Capsule())
             .opacity(!enabled ? 0.4 : (configuration.isPressed ? 0.7 : 1))
     }
 }
@@ -410,17 +437,17 @@ struct FloatingView: View {
                 HStack(spacing: 9) {
                     Circle().fill(floatingColor).frame(width: 7, height: 7)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(item.session.name).font(.system(size: 13, weight: .semibold)).lineLimit(2).help(item.session.name)
-                        Text("\(item.session.projectLabel) · \(agentName(item.session.agent))").font(.system(size: 11)).foregroundStyle(Palette.muted)
+                        Text(item.session.name).font(.system(size: 13, weight: .medium)).lineLimit(2).help(item.session.name)
+                        Text("\(item.session.projectLabel) · \(agentName(item.session.agent))").font(.system(size: 11)).foregroundStyle(Palette.noticeMuted)
                     }
                     Spacer()
-                    Text("\(min(index + 1, store.floatingRequests.count))/\(store.floatingRequests.count)").font(.system(size: 11)).foregroundStyle(Palette.muted)
+                    Text("\(min(index + 1, store.floatingRequests.count)) of \(store.floatingRequests.count)").font(.system(size: 11)).foregroundStyle(Palette.noticeMuted)
                 }
-                Divider()
+                .padding(.bottom, 7)
                 if store.automation.enabled.contains(item.session.id) { AutoYesWarning() }
                 RequestEditor(store: store, session: item.session, request: item.request, floating: true).id(item.request.id)
                 Divider()
-                Text("↑ ↓ choose · Return selects").font(.system(size: 10)).foregroundStyle(Palette.muted)
+                Text("↑ ↓ choose · Return selects").font(.system(size: 10)).foregroundStyle(Palette.noticeMuted)
                 HStack {
                     Button(store.floatingExpanded ? "Compact" : "Expand") { store.floatingExpanded.toggle() }
                     Menu("Session") {
@@ -432,10 +459,9 @@ struct FloatingView: View {
                     if store.floatingRequests.count > 1 {
                         Button("Next request") { store.replyWorkspace.next(requestIDs: store.floatingRequests.map { $0.request.id }) }
                     }
-                }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Palette.muted)
+                }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Palette.noticeMuted)
             }
-        }.padding(19).background(floatingSurface).clipShape(RoundedRectangle(cornerRadius: 13))
-            .overlay(RoundedRectangle(cornerRadius: 13).stroke(Color.white.opacity(0.14), lineWidth: 1))
+        }.padding(24).background(floatingSurface).clipShape(RoundedRectangle(cornerRadius: 26))
             .foregroundStyle(Palette.ink).preferredColorScheme(.dark).tint(Palette.accent)
     }
     private var floatingSurface: Color {

@@ -12,6 +12,9 @@ else
     APP="$ROOT/build/Notify.app"
 fi
 if [[ -d "$APP" ]]; then
-    /usr/bin/open -g "$APP"
+    BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")"
+    if [[ -z "$(/usr/bin/lsappinfo find bundleID="$BUNDLE_ID")" ]]; then
+        /usr/bin/open -g "$APP" --args --background
+    fi
 fi
 exec node "$ROOT/bridge/dist/cli.js" "$@"

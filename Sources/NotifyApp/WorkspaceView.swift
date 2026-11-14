@@ -5,9 +5,18 @@ import NotifyCore
 extension Store {
     func sessionSurface(_ session: SessionRecord) -> Color {
         let rgb = appearance.color(for: session)
-        return Color(red: 0.045 + Double((rgb >> 16) & 255) / 255 * 0.22,
-                     green: 0.045 + Double((rgb >> 8) & 255) / 255 * 0.22,
-                     blue: 0.045 + Double(rgb & 255) / 255 * 0.22)
+        func linear(_ component: UInt32) -> Double {
+            let value = Double(component) / 255
+            return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+        }
+        let red = linear((rgb >> 16) & 255), green = linear((rgb >> 8) & 255), blue = linear(rgb & 255)
+        let luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+        let scale = luminance > 0.135 ? 0.135 / luminance : 1
+        func encoded(_ component: Double) -> Double {
+            let value = component * scale
+            return value <= 0.0031308 ? 12.92 * value : 1.055 * pow(value, 1 / 2.4) - 0.055
+        }
+        return Color(red: encoded(red), green: encoded(green), blue: encoded(blue))
     }
     func sessionColor(_ session: SessionRecord) -> Color {
         let rgb = appearance.color(for: session)
