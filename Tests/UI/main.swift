@@ -442,6 +442,7 @@ import Vision
             let output = URL(fileURLWithPath: CommandLine.arguments[argument + 1], isDirectory: true)
             try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
             let visual = Store(directory: fixtureRoot.appendingPathComponent("visual"), defaults: defaults)
+            try FileManager.default.createDirectory(at: visual.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             visual.autoYes = false
             func receive(_ packet: [String: Any]) throws {
                 visual.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: JSONSerialization.data(withJSONObject: packet)))
@@ -510,6 +511,31 @@ import Vision
                     let scroll = descendants(capture).compactMap { $0 as? NSScrollView }.first!
                     precondition(scroll.contentSize.height > 300, "Expanded diffs must use available space, not collapse to a tiny scroll strip")
                 }
+                if name == "floating-custom-focus.png" {
+                    let item = visual.activeFloatingRequest!
+                    visual.replyWorkspace.highlighted[item.request.id] = .input("choice")
+                    for _ in 0..<10 { RunLoop.current.run(until: Date().addingTimeInterval(0.025)) }
+                    window.makeKey()
+                    window.makeFirstResponder(nil)
+                    let enter = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                 windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
+                                                 isARepeat: false, keyCode: 36)!
+                    precondition(window.performKeyEquivalent(with: enter), "The custom-answer action must activate from the focused notification")
+                    for _ in 0..<10 { RunLoop.current.run(until: Date().addingTimeInterval(0.025)) }
+                    guard let field = descendants(capture).compactMap({ $0 as? NSTextField }).first(where: {
+                        $0.placeholderString == "Type your own answer"
+                    }), let editor = field.currentEditor() as? NSTextView, window.firstResponder === editor else {
+                        preconditionFailure("Writing a custom answer must focus its real native text editor")
+                    }
+                    precondition(field.visibleRect.height > 20, "The custom-answer action must reveal the editor below a long choice list")
+                    precondition(visual.replyWorkspace.drafts[item.request.id]?.selections["choice"] == ["Strategy 1"],
+                                 "Focusing the editor must not discard an existing draft")
+                    editor.insertText("Keep the existing schema for now.", replacementRange: NSRange(location: 0, length: 0))
+                    for _ in 0..<10 { RunLoop.current.run(until: Date().addingTimeInterval(0.025)) }
+                    precondition(visual.replyWorkspace.drafts[item.request.id]?.answers(for: item.request)["choice"] == ["Keep the existing schema for now."],
+                                 "Typing a custom answer must replace a single selected option in the actual reply draft")
+                    precondition(!visual.sending.contains(item.request.id), "Opening or typing a custom answer must not send it")
+                }
                 let bitmap = capture.bitmapImageRepForCachingDisplay(in: capture.bounds)!
                 capture.cacheDisplay(in: capture.bounds, to: bitmap)
                 if appearance == .darkAqua {
@@ -517,6 +543,16 @@ import Vision
                     precondition(luminance(background) < 0.15, "Dark native windows must not contain a forced-light SwiftUI surface: \(name)")
                 }
                 try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(name))
+                if name.hasPrefix("floating-custom-") {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+                    precondition(text.contains("Send answer"), "Custom-answer access must not push Send answer offscreen")
+                    precondition(name == "floating-custom-fixed.png" ? text.contains("only accepts the listed choices") :
+                                    text.contains("Write your own answer"),
+                                 "A custom-answer action or honest fixed-choice limitation must stay visible below long choices")
+                }
                 if name == "control-center-empty.png" {
                     let recognition = VNRecognizeTextRequest()
                     recognition.recognitionLevel = .accurate
@@ -763,6 +799,28 @@ import Vision
             visual.setupSnapshot = try AgentSetup.inspect(resources: setupResources, path: setupBin.path, copilotHome: fixtureRoot.appendingPathComponent("copilot-home"))
             precondition(visual.setupConnectionCount(.copilot) > 0, "Only live bridge sessions count as connected")
             try capture(AgentSetupView(store: visual), width: 960, height: 620, name: "welcome-connected.png")
+            visual.setupVisible = false
+            let customOptions = (1...14).map { ["label": "Strategy \($0)", "description": "Review this migration approach"] }
+            for (name, questions): (String, [[String: Any]]) in [
+                ("long", [["id": "choice", "text": "Migration approach", "multiple": false, "allowFreeform": true, "options": customOptions]]),
+                ("fixed", [["id": "choice", "text": "Migration approach", "multiple": false, "allowFreeform": false, "options": customOptions]]),
+                ("multiple", [["id": "choice", "text": "Migration approach", "multiple": false, "allowFreeform": true, "options": customOptions],
+                              ["id": "timing", "text": "When to migrate", "multiple": false, "allowFreeform": true, "options": customOptions]])
+            ] {
+                let id = "custom-\(name)"
+                try receive(["type": "request", "sessionID": "visual-1", "request": [
+                    "id": id, "kind": "question", "title": "Choose the migration strategy", "detail": "",
+                    "questions": questions, "autoEligible": false
+                ]])
+                visual.replyWorkspace.next(requestIDs: [id])
+                try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 500, name: "floating-custom-\(name).png")
+                if name == "long" {
+                    try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 500, name: "floating-custom-long-dark.png", appearance: .darkAqua)
+                    visual.replyWorkspace.drafts[id] = ReplyDraft(selections: ["choice": ["Strategy 1"]])
+                    try capture(FloatingView(store: visual, openCenter: {}), width: 420, height: 500, name: "floating-custom-focus.png")
+                }
+                try receive(["type": "resolved", "sessionID": "visual-1", "requestID": id, "decision": "deny"])
+            }
             let uriStore = Store(directory: fixtureRoot.appendingPathComponent("uri"), defaults: defaults)
             try FileManager.default.createDirectory(at: uriStore.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             defer { uriStore.stop() }

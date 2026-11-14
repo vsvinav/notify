@@ -292,8 +292,8 @@ struct RequestEditor: View {
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             }
             ViewThatFits(in: .vertical) {
-                approvalActions.fixedSize(horizontal: false, vertical: true)
-                ScrollView { approvalActions }.frame(minHeight: 80, maxHeight: 280).scrollIndicators(.visible)
+                approvalActions(proxy).fixedSize(horizontal: false, vertical: true)
+                ScrollView { approvalActions(proxy) }.frame(minHeight: 80, maxHeight: 280).scrollIndicators(.visible)
             }.layoutPriority(1)
             HStack {
                 if request.kind == "question" { denialAction }
@@ -358,7 +358,12 @@ struct RequestEditor: View {
             }
         }
     }
-    private var approvalActions: some View {
+    private func focusCustomAnswer(_ questionID: String, using proxy: ScrollViewProxy) {
+        store.replyWorkspace.highlighted[request.id] = .input(questionID)
+        proxy.scrollTo(ReplyChoice.input(questionID), anchor: .center)
+        answerFocused = questionID
+    }
+    private func approvalActions(_ proxy: ScrollViewProxy) -> some View {
         VStack(alignment: .leading, spacing: floating ? 10 : 12) {
             if request.kind == "permission" {
                 HStack(spacing: 10) {
@@ -388,6 +393,27 @@ struct RequestEditor: View {
                         .font(.system(size: 11)).foregroundStyle(secondary).fixedSize(horizontal: false, vertical: true)
                 }
             } else {
+                let customQuestions = request.questions.filter(\.allowFreeform)
+                if customQuestions.count == 1, let question = customQuestions.first {
+                    Button {
+                        focusCustomAnswer(question.id, using: proxy)
+                    } label: {
+                        Label("Write your own answer", systemImage: "square.and.pencil")
+                    }.buttonStyle(.plain).font(WorkspaceType.text(12)).foregroundStyle(Palette.accent)
+                        .keyboardShortcut(shortcut(for: .input(question.id)))
+                } else if !customQuestions.isEmpty {
+                    Menu {
+                        ForEach(customQuestions) { question in
+                            Button(question.text) { focusCustomAnswer(question.id, using: proxy) }
+                                .keyboardShortcut(shortcut(for: .input(question.id)))
+                        }
+                    } label: {
+                        Label("Write your own answer", systemImage: "square.and.pencil")
+                    }.menuStyle(.borderlessButton).font(WorkspaceType.text(12)).foregroundStyle(Palette.accent)
+                } else {
+                    Text("This request only accepts the listed choices.")
+                        .font(WorkspaceType.text(11)).foregroundStyle(secondary)
+                }
                 Button("Send answer") { store.reply(session: session.id, request: request, decision: "answer", answers: answers) }
                     .buttonStyle(ReplyButtonStyle(primary: true, highlighted: keyboardChoice == .send))
                     .keyboardShortcut(shortcut(for: .send)).id(ReplyChoice.send)

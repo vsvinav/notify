@@ -128,6 +128,8 @@ Every supported remembered scope has its own button with its coverage written un
 
 For questions, Return selects or toggles the highlighted option. A completed single-choice question moves the highlight to Send answer; press Return again to send. For multi-select, toggle the desired choices and navigate to Send answer. Choosing Other focuses its editable input.
 
+**Write your own answer** stays beside the reply controls even when a long option list scrolls. It focuses the existing Other field; for forms with several custom-answer fields, choose the question from its menu. Your draft is preserved until you type, and nothing sends automatically. This follows the agent's advertised choices: custom input appears only where supported, and fixed-choice requests say so.
+
 The global bindings release when the card is hidden, snoozed, disconnected or sending, while editing text in Notify, and during steering. **Keys intended for another app will operate the visible notification instead**; hide or snooze the card to release them.
 
 Built-in Copilot questions offer **Other** with an editable custom answer, including suggested-choice forms. Custom text is preserved for boolean/numeric-style questions too; external MCP forms retain their schema restrictions. Running Copilot extensions must be reloaded to advertise restored custom-answer support.
