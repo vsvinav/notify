@@ -105,13 +105,13 @@ Try a sample request without starting an agent or spending model credits:
 **Android: there is no APK or Play Store download.** Install Notify as a web app from Chrome:
 
 1. On the Mac, open **Settings > Phone connections**, enable **Allow phone connections**, and click **Pair a phone**.
-2. Put the phone on the same Wi-Fi. Scan the Mac's QR or open its exact **`http://…:8080/` setup address** in Chrome.
+2. Put the phone on the same Wi-Fi. In **Android Settings > Apps > Chrome > Permissions**, allow **Nearby devices** or **Local network**, if listed, so Chrome can reach the Mac. Scan the Mac's QR or open its exact **`http://…:8080/` setup address** in Chrome.
 3. Download `Notify-Local-CA.cer`. Verify its full SHA-256 fingerprint against the Mac using a trusted certificate viewer **before trusting it**. Then install it through Android Settings' **Install a CA certificate** action. [Detailed Android steps](https://github.com/vsvinav/notify-mobile#install-on-android).
 4. Open the Mac's **Connection address**, which uses **`https://…:8443/`**. It must load without certificate warnings. In Chrome's **⋮** menu choose **Install app**, or **Add to Home screen > Install**.
 5. Open the new Notify icon, enter the Mac's eight-digit pairing code, compare the six-digit confirmation on both devices, and click **Confirm phone** on the Mac.
 6. Tap **Enable alerts** on the phone and allow notifications. Use **Send test alert** on the Mac.
 
-**“Site can't be reached”?** Stop at setup: certificate installation cannot fix network reachability. Confirm the companion is enabled, use the exact protocol/port shown on the Mac, and check for guest-network isolation or a VPN blocking local connections. [Connection troubleshooting](https://github.com/vsvinav/notify-mobile#if-the-phone-says-site-cant-be-reached).
+**“Site can't be reached” or `ERR_TOO_MANY_RETRIES`?** First check Chrome's **Nearby devices / Local network** permission in Android Settings. A denial can block the connection before it reaches Notify. Certificate installation cannot fix network reachability. Also confirm the companion is enabled, use the exact protocol/port shown on the Mac, and check for guest-network isolation or a VPN blocking local connections. [Connection troubleshooting](https://github.com/vsvinav/notify-mobile#if-the-phone-says-site-cant-be-reached).
 
 **[iPhone installation](https://github.com/vsvinav/notify-mobile#install-on-iphone)** · **[Full phone setup guide](https://github.com/vsvinav/notify-mobile#quickstart)**
 
