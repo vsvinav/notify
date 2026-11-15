@@ -8,13 +8,10 @@ bridge/dist/
 .env
 .env.*
 !.env.example
-.github/skills/impeccable/scripts/bin/
-.impeccable/previews/
-.impeccable/reference/
-.impeccable/
 .github/skills/impeccable/
 .github/agents/impeccable-*.agent.md
 .github/hooks/impeccable.json
+.impeccable/
 DESIGN.md
 PRODUCT.md
 docs/superpowers/

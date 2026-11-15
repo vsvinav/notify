@@ -310,7 +310,7 @@ private struct ActivityTimeline: View {
     }
 }
 
-private struct ActivityScrollIntent: NSViewRepresentable {
+struct ActivityScrollIntent: NSViewRepresentable {
     let pause: () -> Void
 
     func makeNSView(context: Context) -> NSView {
@@ -339,7 +339,7 @@ private struct ActivityScrollIntent: NSViewRepresentable {
     }
 }
 
-private struct ActivityRow: View {
+struct ActivityRow: View {
     let entry: ActivityEntry
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -361,6 +361,7 @@ private struct ActivityRow: View {
                 Text("Response interrupted. Any text received is shown above.")
                     .font(WorkspaceType.text(11)).foregroundStyle(Palette.error)
             }
+            CopyTextButton(text: entry.detail, label: "Copy response")
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -368,6 +369,26 @@ private struct ActivityRow: View {
         guard index > 0 else { return 0 }
         if case .listItem = blocks[index], case .listItem = blocks[index - 1] { return 4 }
         return 12
+    }
+}
+
+struct CopyTextButton: View {
+    let text: String
+    var label = "Copy"
+    @State private var copied = false
+    @State private var failed = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Button {
+                NSPasteboard.general.clearContents()
+                copied = NSPasteboard.general.setString(text, forType: .string)
+                failed = !copied
+            } label: {
+                Label(copied ? "Copied" : label, systemImage: copied ? "checkmark" : "doc.on.doc")
+            }.buttonStyle(.plain).font(WorkspaceType.text(11)).foregroundStyle(Palette.accent)
+                .disabled(text.isEmpty).accessibilityLabel(label)
+            if failed { Text("Could not copy. Try again.").font(WorkspaceType.text(11)).foregroundStyle(Palette.error) }
+        }.onChange(of: text) { _, _ in copied = false; failed = false }
     }
 }
 

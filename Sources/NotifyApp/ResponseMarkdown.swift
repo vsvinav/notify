@@ -1,8 +1,8 @@
 import Foundation
 
 enum ResponseFeed {
-    static func includes(kind: String, agentID: String?) -> Bool {
-        kind == "assistant" && agentID == nil
+    static func includes(kind: String, agentID: String?, target: String? = nil) -> Bool {
+        kind == "assistant" && agentID == target
     }
 }
 

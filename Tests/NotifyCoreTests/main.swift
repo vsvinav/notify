@@ -380,14 +380,23 @@ let cachedDescriptions = try DescriptionCache.load(from: cacheRoot)
 check(cachedDescriptions[liveID]?.text == description.text, "Descriptions must survive app restarts")
 let cacheMode = try FileManager.default.attributesOfItem(atPath: cacheRoot.appendingPathComponent("descriptions.json").path)[.posixPermissions] as? NSNumber
 check(cacheMode?.intValue == 0o600, "AI descriptions must be saved privately")
+let longDescriptions = Dictionary(uniqueKeysWithValues: (0..<200).map {
+    (String($0), SessionDescription(text: String(repeating: "Complete summary. ", count: 330), model: "fixture-haiku",
+                                   generatedAt: Date(timeIntervalSince1970: Double($0))))
+})
+try DescriptionCache.save(longDescriptions, in: cacheRoot)
+let boundedDescriptions = try DescriptionCache.load(from: cacheRoot)
+check(boundedDescriptions.count < 200 && boundedDescriptions["199"]?.text == longDescriptions["199"]?.text && boundedDescriptions["0"] == nil,
+      "Larger summaries must evict the oldest whole records before exceeding the cache's reload bound")
 try FileManager.default.removeItem(at: cacheRoot)
 print("Native description-cache checks passed")
 
 let runnerRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 try FileManager.default.createDirectory(at: runnerRoot, withIntermediateDirectories: true)
 let helper = runnerRoot.appendingPathComponent("summary-fixture.js")
+let fullSummary = String(repeating: "Complete summary sentence. ", count: 50).trimmingCharacters(in: .whitespaces)
 try Data("""
-setTimeout(() => process.stdout.write(JSON.stringify({text:"Fixture description",model:"fixture-haiku"}) + "\\n"), 40);
+setTimeout(() => process.stdout.write(JSON.stringify({text:"Complete summary sentence. ".repeat(50).trim(),model:"fixture-haiku"}) + "\\n"), 40);
 """.utf8).write(to: helper)
 let runner = DescriptionRunner()
 var result: Result<SessionDescription, Error>?
@@ -400,7 +409,15 @@ let deadline = Date().addingTimeInterval(5)
 while result == nil && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
 check(result != nil, "Summary helper must finish without blocking the UI")
 let generated = try result!.get()
-check(generated.text == "Fixture description" && !runner.isRunning, "Helper output must reach the UI and clear busy state")
+check(generated.text == fullSummary && !runner.isRunning, "Full summaries longer than 240 characters must reach the UI")
+let unicodeSummary = Array(repeating: String(repeating: "\u{6F22}", count: 29), count: 190).joined(separator: " ")
+try Data(#"process.stdout.write(JSON.stringify({text:("\u6f22".repeat(29)+" ").repeat(190).trim(),model:"fixture-haiku"}));"#.utf8).write(to: helper)
+result = nil
+try runner.run(sessionID: liveID, script: helper) { result = $0 }
+let unicodeDeadline = Date().addingTimeInterval(5)
+while result == nil && Date() < unicodeDeadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+let generatedUnicode = try result?.get()
+check(generatedUnicode?.text == unicodeSummary, "Valid Unicode summaries must not fail the output byte cap")
 try Data("process.stderr.write('Fixture login failure'); process.exit(1);".utf8).write(to: helper)
 result = nil
 try runner.run(sessionID: liveID, script: helper) { result = $0 }
@@ -455,3 +472,36 @@ try automation.setDangerousEnabled(true, for: controlled)
 automation.disable(controlled.id)
 check(automation.activeIDs.isEmpty, "Disconnect/stop clear both kinds of session approval")
 print("Native steering and explicit Auto-yes checks passed")
+
+var chat = SteeringWorkspace()
+controlled.canChatWithSubagents = true
+controlled.canStopSubagents = true
+controlled.team = try JSONDecoder().decode(SubagentTeam.self, from: Data("""
+{"agents":[{"id":"worker","name":"Reviewer","task":"Review changes","status":"idle"}],"runningCount":0,"idleCount":1,"truncated":false}
+""".utf8))
+chat.setDraft("Main message", sessionID: controlled.id)
+chat.setDraft("Check edge cases", sessionID: controlled.id, agentID: "worker")
+let childMessage = try chat.begin(session: controlled, action: "queue", agentID: "worker")
+check(chat.history[controlled.id]?.last?.agentID == "worker", "Child messages retain their exact destination")
+check(chat.draft(sessionID: controlled.id) == "Main message", "Child drafts cannot replace main drafts")
+chat.update(sessionID: controlled.id, commandID: childMessage, status: "received", text: "Delivered")
+let mainMessage = try chat.begin(session: controlled, action: "queue")
+chat.update(sessionID: controlled.id, commandID: mainMessage, status: "queued", text: "Queued")
+let stopChild = try chat.begin(session: controlled, action: "stop", agentID: "worker")
+chat.update(sessionID: controlled.id, commandID: mainMessage, status: "received", text: "Consumed later")
+check(chat.receipt(sessionID: controlled.id, commandID: mainMessage)?.status == "received",
+      "A later main ACK must still resolve after a child control replaced the latest receipt")
+check(chat.receipt(sessionID: controlled.id, commandID: stopChild)?.status == "sending", "ACKs cannot cross destinations")
+chat.disconnect(controlled.id)
+check(chat.receipt(sessionID: controlled.id, commandID: stopChild)?.status == "unknown", "Disconnect marks every unresolved target uncertain")
+chat.setDraft("Do not redirect", sessionID: controlled.id, agentID: "missing")
+do {
+    _ = try chat.begin(session: controlled, action: "queue", agentID: "missing")
+    preconditionFailure("An unknown child must never fall back to the main agent")
+} catch ProtocolError.invalid {}
+controlled.canChatWithSubagents = false
+do {
+    _ = try chat.begin(session: controlled, action: "queue", agentID: "worker")
+    preconditionFailure("Old extensions must not accept child messages")
+} catch ProtocolError.invalid {}
+print("Native per-agent chat correlation checks passed")

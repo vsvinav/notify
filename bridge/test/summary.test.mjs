@@ -91,3 +91,14 @@ test("no Haiku, rejected model output and timeouts fail visibly without fallback
   await assert.rejects(generateDescription(stalled, "User: task", "/tmp/notify-test", 20), /timed out/i);
   assert.equal(stalled.state.stopped, 1);
 });
+
+test("summaries preserve complete paragraphs up to 250 words without ellipsis clipping", async () => {
+  const { generateDescription } = await summaryModule();
+  const text = "The task is to make session controls clear. ".repeat(12).trim() +
+    "\n\nRemaining work: verify the independent agent controls and keep the original terminal running.";
+  const client = fakeClient([{ id: "claude-haiku-4.5" }], text);
+  assert.equal((await generateDescription(client, "User: task", "/tmp/notify-test")).text, text);
+  assert.match(client.state.config.systemMessage.content, /250 words/);
+  const oversized = fakeClient([{ id: "claude-haiku-4.5" }], "word ".repeat(251));
+  await assert.rejects(generateDescription(oversized, "User: task", "/tmp/notify-test"), /250 words/);
+});

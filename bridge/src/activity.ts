@@ -9,6 +9,7 @@ export interface ActivityEntry {
   status: "running" | "complete" | "failed" | "info";
   timestamp: string;
   agentID?: string;
+  clientTurnID?: string;
 }
 
 export const boundActivityText = (text: string) => text.length > 16000 ? text.slice(0, 15970) + "\n[Preview truncated]" : text;
@@ -66,7 +67,8 @@ export class ActivityFeed {
     }
     const entry: ActivityEntry = {
       id, kind, title: title.slice(0, 300), detail: boundActivityText(delta ? (previous?.detail ?? "") + detail : detail),
-      status, timestamp: previous?.timestamp ?? event.timestamp, ...(event.agentId ? { agentID: event.agentId } : {})
+      status, timestamp: previous?.timestamp ?? event.timestamp, ...(event.agentId ? { agentID: event.agentId } : {}),
+      ...(event.type === "user.message" && event.data.clientTurnId ? { clientTurnID: event.data.clientTurnId } : {})
     };
     this.entries.set(id, entry);
     this.dirty.add(id);

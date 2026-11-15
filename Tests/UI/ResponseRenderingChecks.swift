@@ -11,6 +11,8 @@ enum ResponseRenderingChecks {
         precondition(visible.map(\.id) == ["main"], "Only main-agent replies belong in the response feed")
         precondition(events.map(\.id) == ["main", "child", "empty-child", "tool", "user", "reasoning", "status"],
                      "Filtering must preserve the original activity for team tracking")
+        precondition(ResponseFeed.includes(kind: "assistant", agentID: "worker", target: "worker"))
+        precondition(!ResponseFeed.includes(kind: "assistant", agentID: "other", target: "worker"))
 
         let source = "# Result\n\nA **clear** answer with `inline()`.\n\n- First\n  - Nested\n2. Next\n\n```swift\nlet x = 1\n\n  print(x)\n```\n\nDone."
         precondition(ResponseMarkdown.blocks(source) == [

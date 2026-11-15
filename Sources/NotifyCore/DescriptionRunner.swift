@@ -13,7 +13,7 @@ public final class DescriptionRunner {
             do {
                 while let chunk = try handle.read(upToCount: 4096), !chunk.isEmpty {
                     data.append(chunk)
-                    if data.count > 16_384 { overflow = true; data = data.suffix(16_384) }
+                    if data.count > 65_536 { overflow = true; data = data.suffix(65_536) }
                 }
             } catch { self.error = error }
         }
@@ -61,7 +61,9 @@ public final class DescriptionRunner {
                 struct Response: Decodable { let text: String; let model: String }
                 let response = try JSONDecoder().decode(Response.self, from: stdout.data)
                 guard !response.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                      response.text.count <= 240, response.model.count <= 128 else { throw ProtocolError.invalid }
+                      response.text.utf16.count <= 6000,
+                      response.text.split(whereSeparator: \.isWhitespace).count <= 250,
+                      response.model.count <= 128 else { throw ProtocolError.invalid }
                 return SessionDescription(text: response.text, model: response.model, generatedAt: Date())
             }
             DispatchQueue.main.async {

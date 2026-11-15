@@ -237,10 +237,11 @@ private struct WorkDetail: View {
     @ObservedObject var store: Store
     let session: SessionRecord
     @State private var tab: String
+    @State private var chatAgentID: String?
     init(store: Store, session: SessionRecord) {
         self.store = store
         self.session = session
-        _tab = State(initialValue: session.connected && !session.needsSetup && !session.isSaved && session.requests.isEmpty ? "Responses" : "Decision")
+        _tab = State(initialValue: session.connected && !session.needsSetup && !session.isSaved && session.requests.isEmpty ? "Chat" : "Decision")
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -261,7 +262,7 @@ private struct WorkDetail: View {
                 HStack(alignment: .top, spacing: 20) {
                     VStack(alignment: .leading, spacing: 16) {
                         Picker("Session view", selection: $tab) {
-                            Text("Responses").tag("Responses")
+                            Text("Chat").tag("Chat")
                             Text(session.requests.isEmpty ? "Overview" : "Decision").tag("Decision")
                             Text("Controls").tag("Controls")
                             Text("Settings").tag("Session")
@@ -280,8 +281,11 @@ private struct WorkDetail: View {
                     }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     Divider()
                     VStack(alignment: .leading, spacing: 16) {
-                        SubagentTeamView(store: store, session: session, compact: tab != "Responses")
-                        if tab != "Responses" {
+                        SubagentTeamView(store: store, session: session, compact: tab != "Chat", selectedAgentID: chatAgentID) {
+                            chatAgentID = $0
+                            tab = "Chat"
+                        }
+                        if tab != "Chat" {
                             Divider()
                             Label(session.connected && !session.needsSetup && !session.isSaved ? "Live activity" : "Recent activity",
                                   systemImage: "text.alignleft")
@@ -295,11 +299,8 @@ private struct WorkDetail: View {
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
     @ViewBuilder private var content: some View {
-            if tab == "Responses" {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(session.connected ? "Live activity" : "Recent responses").font(WorkspaceType.text(25, strong: true))
-                    SessionTimeline(store: store, showsHeader: false)
-                }
+            if tab == "Chat" {
+                AgentChatView(store: store, session: session, agentID: chatAgentID).id(chatAgentID)
             } else if tab == "Controls" {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Give your agent direction.").font(WorkspaceType.text(25, strong: true))

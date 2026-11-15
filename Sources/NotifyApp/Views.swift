@@ -144,7 +144,10 @@ struct SessionDescriptionView: View {
         VStack(alignment: .leading, spacing: 7) {
             let description = store.description(for: session)
             Text(description?.text ?? (session.synopsis.isEmpty ? "No description yet." : session.synopsis))
-                .font(.system(size: 11)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                .font(WorkspaceType.text(13)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            if let text = description?.text ?? (session.synopsis.isEmpty ? nil : session.synopsis) {
+                CopyTextButton(text: text, label: "Copy summary")
+            }
             if let description {
                 Text("AI / \(description.model) / \(description.generatedAt.formatted(date: .abbreviated, time: .shortened))")
                     .font(.system(size: 9)).foregroundStyle(Palette.muted)
@@ -162,7 +165,7 @@ struct SessionDescriptionView: View {
             Button("Cancel", role: .cancel) { target = nil }
             Button("Summarize") { store.summarize(selected); target = nil }
         } message: { selected in
-            Text("Send up to 12,000 characters of conversation text from “\(selected.name)” to Haiku through your Copilot account. This uses your account allowance. Tool results are excluded. The original chat stays untouched; nothing runs automatically.")
+            Text("Send up to 12,000 characters of conversation text from “\(selected.name)” to Haiku for a summary of up to 250 words. This uses your account allowance. Tool results are excluded. The original chat stays untouched; nothing runs automatically.")
         }
     }
 }

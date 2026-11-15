@@ -43,10 +43,14 @@ public struct ActivityEntry: Codable, Identifiable, Equatable {
     public let status: String
     public let timestamp: String
     public let agentID: String?
-    public var byteCount: Int { id.utf8.count + title.utf8.count + detail.utf8.count + timestamp.utf8.count + (agentID?.utf8.count ?? 0) + 100 }
+    public let clientTurnID: String?
+    public var byteCount: Int {
+        id.utf8.count + title.utf8.count + detail.utf8.count + timestamp.utf8.count +
+            (agentID?.utf8.count ?? 0) + (clientTurnID?.utf8.count ?? 0) + 100
+    }
     public var isValid: Bool {
         !id.isEmpty && id.count <= 256 && !title.isEmpty && title.count <= 300 &&
-        detail.utf8.count <= 65536 && timestamp.count <= 64 && (agentID?.count ?? 0) <= 128 &&
+        detail.utf8.count <= 65536 && timestamp.count <= 64 && (agentID?.count ?? 0) <= 128 && (clientTurnID?.count ?? 0) <= 128 &&
         ["user", "assistant", "reasoning", "tool", "status"].contains(kind) &&
         ["running", "complete", "failed", "info"].contains(status)
     }

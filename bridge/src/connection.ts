@@ -22,7 +22,7 @@ export class Bridge {
   private title?: string;
   private sourceSessionID?: string;
   private warned = false;
-  private capabilities = { steering: false, sessionAutoYes: false };
+  private capabilities = { steering: false, sessionAutoYes: false, subagentChat: false, subagentStop: false };
   private receipts = new Map<string, { status: string; text: string }>();
   private activities = new Map<string, ActivityEntry>();
   private activityFeed = false;
@@ -111,9 +111,9 @@ export class Bridge {
       } else this.error(text);
     }
   }
-  setCapabilities(value: { steering: boolean; sessionAutoYes: boolean }): void {
-    this.capabilities = value;
-    this.send({ type: "capabilities", ...value, activityFeed: this.activityFeed });
+  setCapabilities(value: { steering: boolean; sessionAutoYes: boolean; subagentChat?: boolean; subagentStop?: boolean }): void {
+    this.capabilities = { ...value, subagentChat: value.subagentChat === true, subagentStop: value.subagentStop === true };
+    this.send({ type: "capabilities", ...this.capabilities, activityFeed: this.activityFeed });
   }
   enableActivity(): void { this.activityFeed = true; this.setCapabilities(this.capabilities); }
   team(snapshot: SubagentTeam): void {

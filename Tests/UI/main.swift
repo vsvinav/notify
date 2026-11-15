@@ -49,6 +49,18 @@ import Vision
             precondition(teamStore.registry.sessions["team-session"]?.output.contains("main-reply") == true &&
                          teamStore.registry.sessions["team-session"]?.output.contains("child-reply") == false,
                          "Legacy conversation context must not mislabel child responses as the main agent")
+            try receiveTeam(["type": "capabilities", "sessionID": "team-session", "steering": true])
+            let oldStop = try teamStore.steeringWorkspace.begin(session: teamStore.registry.sessions["team-session"]!, action: "stop")
+            try receiveTeam(["type": "state", "sessionID": "team-session", "state": "working"])
+            try receiveTeam(["type": "control_status", "sessionID": "team-session", "commandID": oldStop, "status": "stopped"])
+            precondition(teamStore.registry.sessions["team-session"]?.stopped == false,
+                         "A delayed stop acknowledgment must not freeze an agent that resumed working")
+            let disconnectedStop = try teamStore.steeringWorkspace.begin(session: teamStore.registry.sessions["team-session"]!, action: "stop")
+            teamStore.server.onDisconnect("team-session")
+            try receiveTeam(["type": "hello", "sessionID": "team-session", "agent": "copilot", "cwd": "/Projects/example"])
+            try receiveTeam(["type": "control_status", "sessionID": "team-session", "commandID": disconnectedStop, "status": "stopped"])
+            precondition(teamStore.registry.sessions["team-session"]?.stopped == false,
+                         "An old connection's stop must not freeze the reconnected main agent")
         }
         do {
             let recovering = Store(directory: fixtureRoot.appendingPathComponent("error-recovery"), defaults: defaults)
@@ -136,6 +148,20 @@ import Vision
             automated.setSessionDangerousAutoYes(id, enabled: true)
             automated.steer(id, action: "stop")
             precondition(automated.automation.activeIDs.isEmpty, "Stop must disable dangerous mode")
+            waitForAutomation { automated.registry.sessions[id]?.stopped == true }
+            try sendEvent(["type": "state", "sessionID": id, "state": "working"])
+            precondition(automated.registry.sessions[id]?.stopped == false, "New work clears the stopped pose")
+            automated.steeringWorkspace.setDraft("Only the helper", sessionID: id, agentID: "worker")
+            automated.steer(id, action: "queue", agentID: "worker")
+            waitForAutomation { automated.steeringWorkspace.history[id]?.last?.status == "received" }
+            automated.steer(id, action: "stop", agentID: "worker")
+            waitForAutomation { automated.steeringWorkspace.history[id]?.last?.status == "stopped" }
+            precondition(automated.registry.sessions[id]?.stopped == false, "A child stop must not mark the main agent stopped")
+            let controlsSent = try String(contentsOf: automated.directory.appendingPathComponent("controls.jsonl"), encoding: .utf8)
+                .split(separator: "\n").map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }
+            precondition(controlsSent.count == 3 && controlsSent[1]["agentID"] as? String == "worker" &&
+                         controlsSent[1]["text"] as? String == "Only the helper" && controlsSent[2]["agentID"] as? String == "worker",
+                         "Native messages and stops must preserve the exact child destination over the real socket")
             automated.setSessionDangerousAutoYes(id, enabled: true)
             try sendEvent(["type": "error", "sessionID": id, "text": "Synthetic delivery failure"])
             precondition(automated.automation.activeIDs.isEmpty, "Agent errors must disable dangerous mode")
@@ -359,9 +385,18 @@ import Vision
                      "Unknown runtime states must not invent working activity")
         precondition(!AgentPresence.working.animates(visible: false, reduceMotion: false) &&
                      !AgentPresence.thinking.animates(visible: true, reduceMotion: true) &&
-                     !AgentPresence.resting.animates(visible: true, reduceMotion: false) &&
+                     AgentPresence.resting.animates(visible: true, reduceMotion: false) &&
                      AgentPresence.working.animates(visible: true, reduceMotion: false),
-                     "Only visible working/thinking agents may animate, respecting Reduce Motion")
+                     "Visible active and idle poses may animate, respecting Reduce Motion")
+        presenceSession.stopped = true
+        precondition(AgentPresence(session: presenceSession) == .stopped, "An acknowledged Stop needs a distinct resting pose")
+        precondition(!AgentPresence.stopped.animates(visible: true, reduceMotion: false))
+        let typing = AgentPose(presence: .working, time: 0.25)
+        precondition(typing.leftHand != typing.rightHand, "Typing must alternate hands")
+        precondition(AgentPose(presence: .resting, time: 0).blinking &&
+                     !AgentPose(presence: .resting, time: 1).blinking, "Idle blinks must be brief, not constantly closed eyes")
+        precondition(AgentPose(presence: .stopped, time: 0) == AgentPose(presence: .stopped, time: 1),
+                     "Stopped must not keep typing or blinking")
         let host = NSHostingView(rootView: RequestEditor(store: store, session: session, request: request)
             .padding(20).background(Palette.surface).preferredColorScheme(.light))
         let window = ReplyPanel(contentRect: NSRect(x: 0, y: 0, width: 410, height: 430),
@@ -670,8 +705,8 @@ import Vision
         workspaceText.recognitionLevel = .accurate
         try VNImageRequestHandler(cgImage: workspaceBitmap.cgImage!, options: [:]).perform([workspaceText])
         let workspaceLabels = (workspaceText.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
-        precondition(workspaceLabels.contains("Live activity") && workspaceLabels.contains("Controls"),
-                     "The workspace must expose live activity alongside direct agent controls, not hide them in separate screens")
+        precondition(workspaceLabels.contains("Chat") && workspaceLabels.contains("Controls"),
+                     "The workspace must expose chat alongside direct agent controls")
         func showActivity(in view: NSView) {
             guard let tabs = descendants(view).compactMap({ $0 as? NSSegmentedControl }).first(where: {
                 $0.segmentCount == 4 && $0.label(forSegment: 2) == "Controls"
@@ -703,7 +738,8 @@ import Vision
                 let id = "visual-\(index)"
                 try receive(["type": "hello", "sessionID": id, "agent": index == 1 ? "claude" : "copilot", "cwd": "/Projects/\(projects[index])"])
                 try receive(["type": "metadata", "sessionID": id, "title": title])
-                try receive(["type": "capabilities", "sessionID": id, "activityFeed": true, "steering": true, "sessionAutoYes": true])
+                try receive(["type": "capabilities", "sessionID": id, "activityFeed": true, "steering": true, "sessionAutoYes": true,
+                             "subagentChat": true, "subagentStop": true])
                 try receive(["type": "state", "sessionID": id, "state": index > 5 ? "ready" : "working", "text": index > 5 ? "Agent idle" : "Reviewing the requested changes"])
                 try receive(["type": "activity", "sessionID": id, "activity": [
                     "id": "tool-\(index)", "kind": "tool", "title": index == 0 ? "Read auth/refresh.ts" : "Inspect project files",
@@ -755,6 +791,11 @@ import Vision
             visual.select("visual-0", request: "visual-request")
             visual.replyWorkspace.update(requestIDs: ["visual-request", "visual-question"])
             visual.setColor(0xF29A78, for: visual.selected!)
+            let copyExamples = [
+                ("Copy response", "## Full response\n\n```swift\nlet value = 42\n```\n"),
+                ("Copy message", "Keep this exact message.\nSecond line."),
+                ("Copy summary", String(repeating: "A complete summary sentence. ", count: 45).trimmingCharacters(in: .whitespaces))
+            ]
             func capture<V: View>(_ view: V, width: CGFloat, height: CGFloat, name: String,
                                   appearance: NSAppearance.Name = .aqua) throws {
                 if name.hasPrefix("settings") { visual.appearanceMode = appearance == .darkAqua ? .dark : .light }
@@ -954,12 +995,15 @@ import Vision
                     precondition(text.contains("Connected") && text.contains("Not connected"),
                                  "Rendered connection groups must remain findable. Found: \(text)")
                 }
-                if name == "control-center-responses.png" {
+                if name == "control-center-responses.png" || name == "copy-actions.png" {
+                  let examples = name == "copy-actions.png" ? copyExamples :
+                    [("Copy", "function closeMenu(trigger: HTMLElement) {\n  setOpen(false);\n  trigger.focus();\n}\n")]
+                  for (label, expectedCopy) in examples {
                     let recognition = VNRecognizeTextRequest()
                     recognition.recognitionLevel = .accurate
                     try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
-                    guard let copy = recognition.results?.first(where: { $0.topCandidates(1).first?.string.split(separator: " ").last == "Copy" }) else {
-                        preconditionFailure("Code blocks must expose a visible Copy action")
+                    guard let copy = recognition.results?.first(where: { $0.topCandidates(1).first?.string.hasSuffix(label) == true }) else {
+                        preconditionFailure("A visible \(label) action is required")
                     }
                     let pasteboard = NSPasteboard.general
                     let original = (pasteboard.pasteboardItems ?? []).map { item in
@@ -992,11 +1036,65 @@ import Vision
                     pasteboard.clearContents()
                     precondition(original.isEmpty || pasteboard.writeObjects(original), "The clipboard fixture must restore the previous contents")
                     if !wasVisible { window.orderOut(nil) }
-                    precondition(copiedCode ==
-                        "function closeMenu(trigger: HTMLElement) {\n  setOpen(false);\n  trigger.focus();\n}\n",
-                                 "Copy must preserve code whitespace without its Markdown fences")
+                    precondition(copiedCode == expectedCopy, "\(label) must preserve the entire supplied text exactly")
+                  }
+                }
+                if name == "control-center-responses.png" {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let worker = recognition.results!.first { $0.topCandidates(1).first?.string == "Code explorer" }!
+                    window.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                    pumpNativeEvents()
+                    let location = capture.convert(NSPoint(x: worker.boundingBox.midX * capture.bounds.width,
+                        y: (capture.isFlipped ? 1 - worker.boundingBox.midY : worker.boundingBox.midY) * capture.bounds.height), to: nil)
+                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                        window.sendEvent(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                            context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!)
+                        pumpNativeEvents()
+                    }
+                    for _ in 0..<8 {
+                        capture.layoutSubtreeIfNeeded()
+                        RunLoop.current.run(until: Date().addingTimeInterval(0.025))
+                    }
+                    let childBitmap = capture.bitmapImageRepForCachingDisplay(in: capture.bounds)!
+                    capture.cacheDisplay(in: capture.bounds, to: childBitmap)
+                    try VNImageRequestHandler(cgImage: childBitmap.cgImage!, options: [:]).perform([recognition])
+                    let childText = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+                    precondition(childText.contains("Stop subagent") && childText.contains("Message Code explorer"),
+                                 "Clicking a worker must open its own composer and controls. Found: \(childText)")
+                    try childBitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("control-center-subagent-chat.png"))
+                    window.orderOut(nil)
                 }
             }
+            try capture(VStack(alignment: .leading, spacing: 26) {
+                ForEach(copyExamples.indices, id: \.self) { index in
+                    CopyTextButton(text: copyExamples[index].1, label: copyExamples[index].0)
+                }
+            }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(Palette.surface),
+                        width: 420, height: 220, name: "copy-actions.png")
+            let presenceLineup = HStack(alignment: .top, spacing: 24) {
+                VStack {
+                    Text("Main agent · working")
+                    AgentIllustration(presence: .working, time: 0.25, isLead: true).frame(width: 220, height: 166)
+                }
+                VStack {
+                    Text("Main agent · idle")
+                    AgentIllustration(presence: .resting, time: 3.5, isLead: true).frame(width: 220, height: 166)
+                }
+                VStack {
+                    Text("Stopped")
+                    AgentIllustration(presence: .stopped, isLead: true).frame(width: 160, height: 121)
+                }
+                VStack {
+                    Text("Subagent")
+                    AgentIllustration(presence: .working, time: 0.25).frame(width: 88, height: 68)
+                }
+            }.font(WorkspaceType.text(13)).foregroundStyle(Palette.ink).padding(20).background(Palette.surface)
+            try capture(presenceLineup, width: 860, height: 235, name: "agent-presence-lineup.png")
+            try capture(presenceLineup, width: 860, height: 235, name: "agent-presence-lineup-dark.png", appearance: .darkAqua)
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center.png")
             try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-small.png")
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center-dark.png", appearance: .darkAqua)

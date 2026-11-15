@@ -118,6 +118,8 @@ public struct AgentPacket: Decodable {
     public let activity: ActivityEntry?
     public let activityFeed: Bool?
     public let team: SubagentTeam?
+    public let subagentChat: Bool?
+    public let subagentStop: Bool?
 }
 
 public struct SessionRecord: Identifiable {
@@ -128,6 +130,10 @@ public struct SessionRecord: Identifiable {
     public var synopsis = ""
     public var sourceSessionID: String?
     public var canSteer = false
+    public var canChatWithSubagents = false
+    public var canStopSubagents = false
+    public var stopped = false
+    public var workRevision = UUID()
     public var canAutoYes = false
     public var hasActivityFeed = false
     public var activity = SessionActivity()

@@ -71,3 +71,31 @@ test("ambiguous send failures are not retried and invalid input never reaches th
   await assert.rejects(h.bridge.onControl({ commandID: randomUUID(), action: "shell", text: "rm" }), /invalid/i);
   assert.equal(count, 1);
 });
+
+test("child controls target only a live agent and retain exact receipt identity", async () => {
+  const calls = [];
+  const tasks = {
+    list: async () => ({ tasks: [{ id: "worker", type: "agent", status: "idle" }] }),
+    sendMessage: async value => { calls.push(["message", value]); return { sent: true }; },
+    cancel: async value => { calls.push(["cancel", value]); return { cancelled: true }; }
+  };
+  const h = await harness({ rpc: { tasks } });
+  assert.equal(h.bridge.capabilities.subagentChat, true);
+  const command = { commandID: randomUUID(), action: "queue", text: "Check boundaries", agentID: "worker" };
+  await h.bridge.onControl(command);
+  assert.deepEqual(calls, [["message", { id: "worker", message: "Check boundaries" }]]);
+  assert.equal(h.statuses.at(-1).status, "received");
+  await h.bridge.onControl(command);
+  assert.equal(calls.length, 1);
+  await assert.rejects(h.bridge.onControl({ ...command, agentID: "other" }), /changed/i);
+  await h.bridge.onControl({ commandID: randomUUID(), action: "stop", text: "", agentID: "worker" });
+  assert.deepEqual(calls.at(-1), ["cancel", { id: "worker" }]);
+  assert.equal(h.statuses.at(-1).status, "stopped");
+  await h.bridge.onControl({ ...command, commandID: randomUUID(), agentID: "missing" });
+  assert.equal(h.statuses.at(-1).status, "failed");
+  assert.equal(h.calls.length, 0, "Never fall back to main send or abort");
+  tasks.sendMessage = async () => ({ sent: false, error: "One-shot agent cannot receive messages" });
+  await h.bridge.onControl({ ...command, commandID: randomUUID() });
+  assert.equal(h.statuses.at(-1).status, "failed");
+  await assert.rejects(h.bridge.onControl({ ...command, commandID: randomUUID(), agentID: "" }), /invalid/i);
+});

@@ -75,10 +75,21 @@ public struct SessionRegistry {
             }
         }
     }
-    public mutating func capabilities(_ id: String, steering: Bool, autoYes: Bool) {
+    public mutating func capabilities(_ id: String, steering: Bool, autoYes: Bool, subagentChat: Bool = false, subagentStop: Bool = false) {
         guard sessions[id]?.connected == true, sessions[id]?.agent == "copilot" else { return }
         sessions[id]?.canSteer = steering
         sessions[id]?.canAutoYes = autoYes
+        sessions[id]?.canChatWithSubagents = subagentChat
+        sessions[id]?.canStopSubagents = subagentStop
+    }
+    public mutating func resumeWork(_ id: String) {
+        guard sessions[id]?.connected == true else { return }
+        sessions[id]?.stopped = false
+        sessions[id]?.workRevision = UUID()
+    }
+    public mutating func acknowledgeStop(_ id: String, workRevision: UUID) {
+        guard sessions[id]?.connected == true, sessions[id]?.workRevision == workRevision else { return }
+        sessions[id]?.stopped = true
     }
     public mutating func activityCapability(_ id: String, enabled: Bool) {
         sessions[id]?.hasActivityFeed = enabled

@@ -13,7 +13,7 @@ A native macOS app for answering Claude Code and Copilot requests without switch
 
 [Current app screenshots](../README.md#screenshots) · [Update an existing installation](#updating-notify) · [Phone setup](#phone-connections)
 
-The sidebar puts **Needs you** first, then connected agents you're monitoring. **Not connected** stays separate, and saved chats have their own tab. Select a session, then use **Decision**, **Controls**, or **Settings**. Live activity stays visible on the right while you answer or steer. A session-colored floating panel brings permission requests, choices, multi-select questions, and text fields to your current desktop.
+The sidebar puts **Needs you** first, then connected agents you're monitoring. **Not connected** stays separate, and saved chats have their own tab. Select a session, then use **Chat**, **Decision**, **Controls**, or **Settings**. Click the main agent or a helper in **Your team** to open its conversation. Assistant responses stay visible while you answer requests or use Controls. A session-colored floating panel brings permission requests, choices, multi-select questions, and text fields to your current desktop.
 
 Notify appears in the Dock and Cmd-Tab. Agent launchers start it in the background without opening the control center or reactivating an already-running app. Closing the control center keeps monitoring active; click the Dock icon to reopen it. Floating requests remain visible when another app is active. Use **Options > Keep in Dock** on its Dock icon to pin it; Notify does not change Dock preferences.
 
@@ -143,6 +143,8 @@ For a richer description, select a Copilot session and click **Summarize**. Afte
 
 Descriptions are cached locally with their model and generation time. **Refresh description** is another explicit request. The original chat title and terminal session are never changed. Only one summary runs at a time, with a 60-second generation timeout. This feature currently uses saved Copilot sessions, not Claude history.
 
+Summaries contain complete paragraphs, up to 250 words and 6,000 characters, rather than being cut off with an ellipsis. Use **Copy summary** to copy the full text. Older cached summaries are not regenerated automatically; choose **Refresh description** to replace one.
+
 ## Replying
 
 Use **Allow once**, **Deny**, or the actual question fields. Every response targets one pending request in one connected session. A response is removed only when the bridge acknowledges it; the live Copilot extension waits for runtime acceptance before acknowledging. Questions can be declined; they are never auto-answered.
@@ -183,6 +185,14 @@ Enabled by default, with a global switch in Settings and a per-session switch in
 The SDK's existing permission rules can resolve operations before Notify sees them. This setting does not override those rules or impose a new sandbox. It is not a blanket approval mode. An automatic decision is recorded before dispatch; if the history cannot be written, Notify does not approve it.
 
 ## Steer an attached Copilot session
+
+In the control center, choose **Chat** to message the main agent. **Send** queues your message if it is busy. **Interrupt** confirms before interrupting the main turn and sending your draft; **Stop main** confirms before stopping current work and clearing queued main prompts.
+
+Click a subagent in **Your team** to select that helper. Its composer has its own draft and delivery receipts. **Send** steers a running helper or wakes an idle supported helper; **Stop subagent** confirms before cancelling only that helper. Other agents are not stopped, and existing edits are not undone. Ended, unavailable and unsupported helpers remain read-only. Some runtime task types reject messaging even while listed; that failure is shown rather than redirecting your message. Creating a new helper or restarting an ended one remains in the original terminal.
+
+The larger main agent wears a hat. Working agents visibly type; idle agents occasionally blink or glance. An acknowledged stop has a still pose. Motion pauses when the window is hidden or Reduce Motion is enabled. An idle or finished response does not mean the whole task succeeded.
+
+Chat shows responses observed while Notify is connected and your messages sent from the app. It is not a complete historical transcript; internal helper prompts and tool command/result logs are omitted. **Copy response**, **Copy message**, **Copy chat** and code-block **Copy** copy their full available text. Scrolling up pauses **Follow chat**; **Latest** returns to the newest message.
 
 Choose **Steer an Agent** from Notify's menu-bar menu, or **Send instruction** from session details. The floating panel stays available even when no permission is pending. Select the target chat, read its latest activity, and type a direction:
 

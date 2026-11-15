@@ -4,7 +4,7 @@
 
 A lightweight native Mac app for Copilot and Claude Code. See which session needs you, review its request, and approve, deny or answer from a floating panel. Connect your phone when you want to step away from the Mac.
 
-**Visual team workspace:** see the main agent and its reported subagents alongside readable assistant responses and copyable code blocks. The [previous design and its installation guide are preserved on v1](https://github.com/vsvinav/notify/tree/v1).
+**Chat with your team:** message connected Copilot sessions and supported subagents, follow readable responses, and spot the larger hat-wearing main agent at a glance. The [previous app and its installation guide are preserved on v1](https://github.com/vsvinav/notify/tree/v1).
 
 [Install on Mac](#install-on-macos) · [Quickstart](#quickstart) · [Screenshots](#screenshots) · [Install on your phone](#use-your-phone)
 
@@ -46,7 +46,9 @@ This installs **`~/Applications/Notify.app`** and the **`~/.local/bin/notify`** 
 3. **Answer a request.** A floating panel shows the session, project and exact command, address or question. Approve, deny, choose an option, or write your own answer where supported.
 4. **Make it yours.** Pick System, Light or Dark in main Settings. Assign session colors, reorder sessions, or connect your phone.
 
-Select a connected Copilot session's **Responses** tab to read assistant replies and see its reported team. Use **Controls** to queue a message, interrupt the main turn or stop supported work. In this preview, the response feed is read-only and subagent rows show status, not individual controls; native chat and per-subagent controls are still in development.
+Select a connected Copilot session's **Chat** tab, type a message and choose **Send**. Click a helper in **Your team** to open its own chat and **Stop subagent** control. Sending to an idle supported helper wakes it for follow-up; ended helpers stay read-only. The main agent has separate **Interrupt** and **Stop main** controls, with confirmation.
+
+**Already connected but controls are unavailable?** Reload the Notify extension in that Copilot terminal. Existing Claude terminals and unsupported helpers cannot be messaged through Notify; the app explains when a control is unavailable.
 
 Try a sample request without starting an agent or spending model credits:
 
@@ -78,16 +80,17 @@ Try a sample request without starting an agent or spending model credits:
   <img src="docs/images/visual-controls.png" alt="Notify visual team workspace with a persistent red Dangerous Auto-yes warning and a Turn off button">
 </picture>
 
-<p align="center"><sub>Captured from the committed native visual preview with example sessions. These are rendered app screens, not mockups or the unfinished next version.</sub></p>
+<p align="center"><sub>Captured from the native app with example sessions. These are rendered app screens, not mockups.</sub></p>
 
 ## What you can do
 
 - **Review the actual request.** Prominent commands, URLs and paths; expandable details when you need them.
 - **Reply your way.** Approvals, denials, single/multiple choices and supported custom answers.
 - **Keep sessions organized.** Live and saved sessions, clear connection states, drag-to-reorder and twenty shared colors.
-- **See the team.** Illustrated main agent and subagents, with reported tasks and real running/idle counts when the connection supplies them.
+- **See the team.** A larger hat-wearing main agent and smaller helpers type while working and blink or glance while idle. Motion pauses when hidden or Reduce Motion is enabled.
 - **Read responses, not tool logs.** Assistant replies render as Markdown with headings, lists and code blocks with Copy.
-- **Steer the main session.** Queue, interrupt or stop supported attached Copilot sessions from Controls. This is not an embedded terminal.
+- **Chat and steer.** Send to the main session or a supported helper. Separate stop controls keep the destination clear. This is native chat, not an embedded terminal.
+- **Copy and catch up.** Copy responses, messages, code or the observed chat. Optional Haiku summaries use a limited excerpt and return complete paragraphs up to 250 words.
 - **Choose when to step aside.** Supported Copilot sessions offer separate Dangerous Auto-yes for waiting and future eligible tools, with explicit confirmation, red warnings and an Off control.
 - **Use your phone.** Pair an iPhone or Android Home Screen app for same-network replies and optional generic background alerts.
 
