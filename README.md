@@ -1,73 +1,104 @@
 # Notify
 
-**Your agents are working. Stay with what you're doing.**
+**Your terminal needs an answer. Stay where you are.**
 
-Answer Copilot and Claude Code requests from a small floating panel, without switching back to the terminal.
+A lightweight native Mac app for Copilot and Claude Code. See which session needs you, review its request, and approve, deny or answer from a floating panel. Connect your phone when you want to step away from the Mac.
+
+[Install on Mac](#install-on-macos) · [Quickstart](#quickstart) · [Screenshots](#screenshots) · [Install on your phone](#use-your-phone)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/sessions-dark.png">
-  <img src="docs/images/sessions.png" alt="Notify's session overview and inline approval controls">
+  <img src="docs/images/sessions.png" alt="Notify control center with connected sessions, a pending command, reply controls and live agent activity">
 </picture>
 
-## A little less switching
+## Install on macOS
 
-- **Know what you're approving.** See the agent, project, and prominent URL, path, or command. Expand technical details when needed.
-- **Answer right there.** Approve, deny, pick an option, or write your own answer.
-- **Keep your hands on the keyboard.** Up/Down choose; Return activates the highlighted choice.
-- **Keep sessions straight.** Drag to reorder, clear connection groups, and 20 shared colors—from soft pastels to richer earth and jewel tones.
-- **Watch and steer.** Live activity beside your controls, with a little agent that works, waits, and rests.
-- **Keep your terminal.** Attach to an existing Copilot session without replacing it.
-- **Connect without guesswork.** Guided setup finds installed agents and shows when a session actually connects.
-- **Easy on the eyes.** Muted beige or warm charcoal. Follow your Mac, or choose Light/Dark in Settings.
-- **Connect your phone.** Optional same-network iPhone/Android web companion, with Mac-confirmed pairing and generic background alerts. [Setup and current limits](docs/guide.md#phone-connections).
+**Already installed?** Open Notify from your home folder's **Applications** folder, or run:
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/notification-dark.png">
-    <img src="docs/images/notification.png" alt="A session-colored notification with a prominent resource URI, expandable details, and reply controls" width="360">
-  </picture>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/session-colors-dark.png">
-    <img src="docs/images/session-colors.png" alt="Twenty session colors mixing soft pastels with deeper earth and jewel tones" width="240">
-  </picture>
-</p>
+```sh
+open ~/Applications/Notify.app
+```
 
-<p align="center"><sub>Real app captures with fictional sessions.</sub></p>
+**First installation:** the current version is built locally. There is no downloadable notarized installer yet.
 
-**Keyboard priority:** while a request is visible, Up/Down and Return go to Notify—even from another app. Return activates the highlighted option, including a remembered approval or Deny. Snooze or hide the notification to give those keys back.
-
-## Try it
-
-Currently a local build, not a notarized download. Requires **macOS 14+**, **Node.js 22.18+**, Swift command-line tools, and an installed, signed-in agent CLI.
+You'll need **macOS 14+**, **Node.js 22.18+**, Apple's command-line tools, and an installed, signed-in Copilot or Claude Code CLI. If Apple's tools are missing, run `xcode-select --install` first. Both repositories must be accessible to your GitHub account; the mobile companion repository is currently private.
 
 ```sh
 git clone https://github.com/vsvinav/notify.git
 git clone https://github.com/vsvinav/notify-mobile.git
 cd notify
+
 (cd bridge && NODE_TLS_REJECT_UNAUTHORIZED=1 npm ci --ignore-scripts)
 NOTIFY_MOBILE_SOURCE=../notify-mobile bash scripts/build.sh
 bash scripts/install.sh
+
 open ~/Applications/Notify.app
 ```
 
-The companion repository is currently private. Building the complete app requires access to it; the source path is explicit and its production dependencies are bundled into Notify.
+This installs **`~/Applications/Notify.app`** and the **`~/.local/bin/notify`** launcher. It does not change your agent's login or global permission settings. The installer refuses to overwrite an existing app or launcher; use the [update instructions](docs/guide.md#updating-notify) for an existing installation.
 
-Preview a request without running an agent or spending model credits:
+## Quickstart
+
+1. **Open Notify and choose Connect agents.** The setup screen finds your installed CLIs and explains how to connect them.
+2. **Connect a session.** Copilot can keep its original terminal through Notify's extension. Claude currently uses a new SDK-backed chat started with Notify's launcher. Follow the agent-specific instructions in the app.
+3. **Answer a request.** A floating panel shows the session, project and exact command, address or question. Approve, deny, choose an option, or write your own answer where supported.
+4. **Make it yours.** Pick System, Light or Dark in main Settings. Assign session colors, reorder sessions, or connect your phone.
+
+Try a sample request without starting an agent or spending model credits:
 
 ```sh
 ~/.local/bin/notify demo
 ```
 
-### Connect your agent
+**Existing Copilot sessions:** if experimental mode is already enabled, enable Notify through `/extensions manage`, press **Esc** to close the manager, then grant the extension permission access. Do not turn experimental mode on during active work: that can restart Copilot's UI. [Full connection steps](docs/guide.md#existing-copilot-terminals).
 
-Open **Connect agents** in Notify. Setup checks your tools, installs the Copilot extension with your permission, or gives you a launch command to run from your project folder.
+## Screenshots
 
-Copilot can keep its original terminal. Claude currently uses a new SDK-backed chat; existing Claude terminals cannot attach yet. Accounts and model settings stay in your agent.
+### Answer without switching apps
 
-[Connection details and terminal commands →](docs/guide.md#connect-agents)
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/notification-dark.png">
+    <img src="docs/images/notification.png" alt="Floating Notify request with a large exact resource URI and approval controls" width="360">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/session-colors-dark.png">
+    <img src="docs/images/session-colors.png" alt="Native session color picker with twenty distinct colors" width="240">
+  </picture>
+</p>
+
+### Keep an eye on unattended work
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/dangerous-mode-dark.png">
+  <img src="docs/images/dangerous-mode.png" alt="Notify showing a persistent red Dangerous Auto-yes warning and a Turn off button">
+</picture>
+
+<p align="center"><sub>Captured from the current native app with example sessions. These are rendered app screens, not mockups.</sub></p>
+
+## What you can do
+
+- **Review the actual request.** Prominent commands, URLs and paths; expandable details when you need them.
+- **Reply your way.** Approvals, denials, single/multiple choices and supported custom answers.
+- **Keep sessions organized.** Live and saved sessions, clear connection states, drag-to-reorder and twenty shared colors.
+- **Watch and steer.** Follow reported activity; queue, interrupt or stop supported attached Copilot sessions.
+- **Choose when to step aside.** Supported Copilot sessions offer separate Dangerous Auto-yes for waiting and future eligible tools, with explicit confirmation, red warnings and an Off control.
+- **Use your phone.** Pair an iPhone or Android Home Screen app for same-network replies and optional generic background alerts.
+
+**Keyboard priority:** while a request is visible, Up/Down and Return go to Notify, even from another app. Return activates the highlighted choice, including a remembered approval or Deny. Hide or snooze the panel to give those keys back.
+
+**Dangerous means dangerous:** auto-approved tools can delete files or perform external actions. The mode is temporary and session-specific; it does not answer questions or override agent restrictions. [Approval controls and limits](docs/guide.md#dangerous-auto-yes).
+
+## Use your phone
+
+In main **Settings > Phone connections**, enable **Allow phone connections** and choose **Pair a phone**. Scan the QR displayed on your own Mac, verify and trust its local certificate, then install Notify to your phone's Home Screen.
+
+Open that installed app, enter the Mac's pairing code, compare the confirmation codes, and confirm the phone on the Mac. Enable alerts from the phone app.
+
+**[iPhone and Android installation guide →](https://github.com/vsvinav/notify-mobile#quickstart)**
+
+Your Mac must be awake and reachable on the same network for request details and replies. Generic alerts use platform push services. Physical-phone certificate setup and lock-screen delivery still need real-device verification; there is no App Store release or hosted Notify relay.
 
 ---
 
-Native SwiftUI/AppKit. No embedded browser or separate Notify cloud service. Your agents still use their usual model providers.
-
-[Full guide](docs/guide.md) · [Permissions & safety](docs/guide.md#replying) · [Current limitations](docs/guide.md#local-data-and-limits) · [Development checks](docs/guide.md#checks)
+[Install and use guide](docs/guide.md) · [Connection help](docs/guide.md#connect-agents) · [Current limits](docs/guide.md#local-data-and-limits) · [Report an issue](https://github.com/vsvinav/notify/issues)

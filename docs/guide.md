@@ -1,8 +1,17 @@
-# Notify guide
+# Install and use Notify
 
 [Back to Notify](../README.md)
 
 A native macOS app for answering Claude Code and Copilot requests without switching back to a terminal.
+
+## Quickstart
+
+1. [Build and install Notify](#build-and-install), or open your existing copy with `open ~/Applications/Notify.app`.
+2. Choose **Connect agents** and follow the Copilot or Claude setup shown in the app.
+3. Run `~/.local/bin/notify demo` to try the floating controls without starting an agent or spending credits.
+4. Answer connected sessions from their floating panels or the control center. Add your phone through **Settings > Phone connections**.
+
+[Current app screenshots](../README.md#screenshots) · [Update an existing installation](#updating-notify) · [Phone setup](#phone-connections)
 
 The sidebar puts **Needs you** first, then connected agents you're monitoring. **Not connected** stays separate, and saved chats have their own tab. Select a session, then use **Decision**, **Controls**, or **Settings**. Live activity stays visible on the right while you answer or steer. A session-colored floating panel brings permission requests, choices, multi-select questions, and text fields to your current desktop.
 
@@ -43,16 +52,19 @@ iTerm2 must be installed at `/Applications/iTerm.app`; this local build launches
 
 ## Build and install
 
+This is a local source build, not a downloadable notarized installer. Start from an empty parent folder and ensure your GitHub account has access to both repositories:
+
 ```sh
-cd bridge
-npm ci --ignore-scripts
-cd ..
-NOTIFY_MOBILE_SOURCE=/path/to/notify-mobile bash scripts/build.sh
+git clone https://github.com/vsvinav/notify.git
+git clone https://github.com/vsvinav/notify-mobile.git
+cd notify
+(cd bridge && NODE_TLS_REJECT_UNAUTHORIZED=1 npm ci --ignore-scripts)
+NOTIFY_MOBILE_SOURCE=../notify-mobile bash scripts/build.sh
 bash scripts/install.sh
 open ~/Applications/Notify.app
 ```
 
-Clone the separate private [notify-mobile repository](https://github.com/vsvinav/notify-mobile) first. The build requires that explicit checkout path, bundles its web app and production dependencies, and signs the combined Mac app. Node itself remains a prerequisite. Phone connections are off by default.
+The separate [notify-mobile repository](https://github.com/vsvinav/notify-mobile) is currently private. The build requires that explicit checkout path, bundles its web app and production dependencies, and signs the combined Mac app. Node itself remains a prerequisite. Phone connections are off by default. If Apple's command-line tools are missing, run `xcode-select --install` and finish their installation first.
 
 The installer creates `~/.local/bin/notify`, without replacing existing apps or launchers. If that directory is not on your PATH:
 
@@ -75,6 +87,15 @@ notify demo
 **The launcher uses SDK-backed terminal chat, not the original full-screen CLI interface.** It uses the installed agent executables and their authentication. To keep an original Copilot terminal instead, use the extension below.
 
 `notify demo` exercises permission and multi-field question replies without a model call or executing the example command. The native app opens when the launcher starts. Drag the floating panel to reposition it; use the menu-bar icon to reopen the control center.
+
+### Updating Notify
+
+1. Get the new source for both repositories and rebuild with `NOTIFY_MOBILE_SOURCE=/path/to/notify-mobile bash scripts/build.sh` from the Mac repository.
+2. **Quit Notify from its menu**, not just by closing its window. Leave your agent terminals running.
+3. In Finder, replace **`~/Applications/Notify.app`** with the new **`build/Notify.app`**. Keep your existing `~/.local/bin/notify` launcher link; do not run the first-install script again.
+4. Reopen Notify. Existing extensions reconnect; a changed extension may still require an explicit reload in its original terminal.
+
+Replacing the app does not remove settings or paired-phone data in `~/Library/Application Support/Notify/`. Session Auto-yes modes reset on restart. A repository-access error is not an installation success: obtain access before building.
 
 ## Connect agents
 
