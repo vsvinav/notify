@@ -368,19 +368,42 @@ private struct WorkDetail: View {
                     VStack(alignment: .leading, spacing: 16) {
                         Text("Connect this running terminal").font(.title2)
                         Text("This session is running, but Notify is not connected to its requests or activity.")
-                        Button("Set up Copilot connection") { store.showSetup(.copilot) }
-                        Text("If experimental mode is already enabled, open /extensions manage in that terminal, enable notify, close the manager, then approve permission access. If the extension is missing, ask Copilot to reload extensions.")
-                        Text("Do not enable experimental mode during active work: this Copilot version restarts its UI when the setting changes.")
-                            .foregroundStyle(Palette.amber)
+                        if session.agent == "claude" {
+                            Button("Add hooks for Claude Code") { store.showSetup(.claude) }
+                            Text("After adding hooks, restart Claude or type /hooks in its terminal to connect.")
+                                .foregroundStyle(Palette.muted)
+                        } else {
+                            Button("Set up Copilot connection") { store.showSetup(.copilot) }
+                            Text("If experimental mode is already enabled, open /extensions manage in that terminal, enable notify, close the manager, then approve permission access. If Notify is missing, ask Copilot to reload extensions.")
+                            Text("Do not enable experimental mode during active work: this Copilot version restarts its UI when the setting changes.")
+                                .foregroundStyle(Palette.amber)
+                        }
                     }.font(.system(size: 14)).textSelection(.enabled)
                 }
             } else if session.isSaved || !session.connected {
                 VStack(alignment: .leading, spacing: 18) {
                     Text(session.isSaved ? "Pick up this work in iTerm2." : "This agent is disconnected.").font(.title2)
                     SessionDescriptionView(store: store, session: session)
-                    Text(session.isSaved ? "Resume keeps the original CLI and its saved permission settings. Notify never grants extension access automatically." :
-                            "Previous activity is available, but controls stay disabled until the agent reconnects.")
+                    Text(session.isSaved
+                         ? "Resume opens the saved session in iTerm2 with its original CLI and permissions. Notify connects once the hooks or extension load."
+                         : "Previous activity is available, but controls stay disabled until the agent reconnects.")
                         .font(.system(size: 14)).foregroundStyle(Palette.muted)
+                    if session.isSaved {
+                        HStack(spacing: 12) {
+                            Button(store.terminalBusy.contains(session.id) ? "Opening..." : "Open / Resume in iTerm2") {
+                                store.openTerminal(session, resume: true)
+                            }
+                            .disabled(store.terminalBusy.contains(session.id) || store.launching.contains(session.id))
+                            if store.launching.contains(session.id) {
+                                ProgressView().controlSize(.small)
+                            }
+                        }
+                        if let err = store.sessionErrors[session.id] {
+                            Label(err, systemImage: "exclamationmark.triangle")
+                                .font(.system(size: 12)).foregroundStyle(Palette.error)
+                                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                     Spacer()
                 }
             } else if let request = store.activeRequest {

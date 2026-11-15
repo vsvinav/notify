@@ -164,13 +164,33 @@ struct AgentSetupView: View {
     }
 
     private func claudeSteps(_ snapshot: AgentSetupSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Start a connected chat").font(WorkspaceType.text(18, strong: true))
-            Text("Existing Claude terminals cannot attach to this version of Notify. Start a new SDK-backed terminal chat instead; it uses your Claude account, not the original full-screen interface.")
-                .foregroundStyle(Palette.muted)
-            launchInstructions(snapshot)
-            Text("The status above updates when the chat connects. Notify never starts a paid task during setup.")
-                .foregroundStyle(Palette.muted)
+        let hooksInstalled = AgentSetup.claudeHooksInstalled(snapshot)
+        return VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("1. Add Notify hooks").font(WorkspaceType.text(16, strong: true))
+                Text(store.setupInstalled || hooksInstalled
+                     ? "Hooks installed. New Claude terminals will connect automatically."
+                     : "Install hooks once; each new Claude terminal loads them automatically. Existing terminals need a restart or /hooks.")
+                    .foregroundStyle(Palette.muted)
+                Button(store.setupBusy ? "Working..." :
+                       (store.setupInstalled || hooksInstalled) ? "Reinstall hooks" : "Add hooks") {
+                    store.installClaudeHooks()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(store.setupBusy || !snapshot.nodeReady || !snapshot.resourcesReady || executable == nil)
+                if store.setupInstalled || hooksInstalled {
+                    Label("Hooks are present in ~/.claude/settings.json",
+                          systemImage: "checkmark.circle")
+                        .foregroundStyle(Palette.accent)
+                        .font(WorkspaceType.text(13, strong: true))
+                }
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("2. Watch for Connected").font(WorkspaceType.text(16, strong: true))
+                Text("The status above changes when a live session connects. Each new terminal picks up the hooks automatically.")
+                    .foregroundStyle(Palette.muted)
+            }
+            DisclosureGroup("Prefer an SDK-backed chat instead?") { launchInstructions(snapshot) }
         }
     }
 
