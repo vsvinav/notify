@@ -4,11 +4,13 @@
 
 A lightweight native Mac app for Copilot and Claude Code. See which session needs you, review its request, and approve, deny or answer from a floating panel. Connect your phone when you want to step away from the Mac.
 
+**Chat with your team:** message connected Copilot sessions and supported subagents, follow readable responses, and spot the larger hat-wearing main agent at a glance. The [previous app and its installation guide are preserved on v1](https://github.com/vsvinav/notify/tree/v1).
+
 [Install on Mac](#install-on-macos) · [Quickstart](#quickstart) · [Screenshots](#screenshots) · [Install on your phone](#use-your-phone)
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/sessions-dark.png">
-  <img src="docs/images/sessions.png" alt="Notify control center with connected sessions, a pending command, reply controls and live agent activity">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/visual-teams-dark.png">
+  <img src="docs/images/visual-teams.png" alt="Notify visual control center with assistant responses, a copyable code block, and an illustrated main agent and subagent team">
 </picture>
 
 ## Install on macOS
@@ -19,9 +21,11 @@ A lightweight native Mac app for Copilot and Claude Code. See which session need
 open ~/Applications/Notify.app
 ```
 
-**First installation:** the current version is built locally. There is no downloadable notarized installer yet.
+**Download:** get **Notify-0.2.0-beta.2-macos-arm64.zip** from the [macOS beta release](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.2). Requires an **Apple Silicon Mac, macOS 14+, Node.js 22.18+**, and an installed, signed-in Copilot or Claude Code CLI. Unzip it and move **Notify.app** into **Applications in your home folder**, then open it and choose **Connect agents**. No source checkout or Apple build tools are needed. **INSTALL.txt** inside the ZIP includes first-launch instructions.
 
-You'll need **macOS 14+**, **Node.js 22.18+**, Apple's command-line tools, and an installed, signed-in Copilot or Claude Code CLI. If Apple's tools are missing, run `xcode-select --install` first. Both repositories must be accessible to your GitHub account; the mobile companion repository is currently private.
+This test build is ad-hoc signed, **not Developer ID signed or notarized**. If Apple's warning offers only **Move to Trash** or **Done**, click **Done**, then find Notify's **Open Anyway** button in **System Settings > Privacy & Security**. See [full Gatekeeper guidance](docs/guide.md#install-the-download). A checksum does not bypass this warning. The download does not include your accounts, settings, paired phones or sessions; connect agents separately on the other Mac.
+
+**Build from source instead:** you'll also need Apple's command-line tools. If missing, run `xcode-select --install` first.
 
 ```sh
 git clone https://github.com/vsvinav/notify.git
@@ -43,6 +47,18 @@ This installs **`~/Applications/Notify.app`** and the **`~/.local/bin/notify`** 
 2. **Connect a session.** Copilot can keep its original terminal through Notify's extension. Claude currently uses a new SDK-backed chat started with Notify's launcher. Follow the agent-specific instructions in the app.
 3. **Answer a request.** A floating panel shows the session, project and exact command, address or question. Approve, deny, choose an option, or write your own answer where supported.
 4. **Make it yours.** Pick System, Light or Dark in main Settings. Assign session colors, reorder sessions, or connect your phone.
+
+Select a connected Copilot session's **Chat** tab, type a message and choose **Send**. Click a helper in **Your team** to open its own chat and **Stop subagent** control. Sending to an idle supported helper wakes it for follow-up; ended helpers stay read-only. The main agent has separate **Interrupt** and **Stop main** controls, with confirmation.
+
+Helper chats have their own portrait, name and tinted **Subagent chat** header. **Tools & thinking** opens with distinct recent activity entries; expand an entry for its details. All messaging controls live in **Chat**, while Auto-yes remains in **Settings**. There is no separate, duplicate Controls tab.
+
+Agent tiles have subtle raised surfaces and hover/press feedback. **Hierarchy** shows running helpers and one clickable **+N idle subagents** tile. One main agent, one running helper and nineteen idle helpers means **three tiles** by default. Expand the idle tile to restore those helpers and their reported relationships; **Hide idle** collapses them again. **Fit**, zoom and **100%** keep larger charts navigable. Completed, failed and stopped helpers remain in a separate inactive block. Hidden parents are named rather than replaced by made-up connections.
+
+**Add a Copilot subagent:** choose **Add subagent** in the selected session header. Enter its name and instructions, choose a live agent type and model (or **Configured default**), then **Create subagent**. Creation uses your account's model credits and retains runtime permission rules. The same panel has a separate, confirmed **Remove from list** action for ended helpers; it does not stop agents or delete project files. Reload existing Copilot extensions to enable these controls. **Claude Code subagent creation, model selection and removal through Notify are unsupported**, not silently routed through Copilot.
+
+The updated Copilot extension streams partial assistant replies instead of waiting for completion. Reload it explicitly in each existing terminal to receive this change. Messages still queued in the terminal appear when the runtime consumes them.
+
+**Already connected but controls are unavailable?** Reload the Notify extension in that Copilot terminal. Existing Claude terminals and unsupported helpers cannot be messaged through Notify; the app explains when a control is unavailable.
 
 Try a sample request without starting an agent or spending model credits:
 
@@ -70,18 +86,29 @@ Try a sample request without starting an agent or spending model credits:
 ### Keep an eye on unattended work
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/dangerous-mode-dark.png">
-  <img src="docs/images/dangerous-mode.png" alt="Notify showing a persistent red Dangerous Auto-yes warning and a Turn off button">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/visual-controls-dark.png">
+  <img src="docs/images/visual-controls.png" alt="Notify visual team workspace with a persistent red Dangerous Auto-yes warning and a Turn off button">
 </picture>
 
-<p align="center"><sub>Captured from the current native app with example sessions. These are rendered app screens, not mockups.</sub></p>
+### Follow each agent's team
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/visual-hierarchy-dark.png">
+  <img src="docs/images/visual-hierarchy.png" alt="Three-tile org chart with main agent, running helper and an expandable group of nineteen idle subagents">
+</picture>
+
+<p align="center"><sub>Captured from the native app with example sessions. These are rendered app screens, not mockups.</sub></p>
 
 ## What you can do
 
 - **Review the actual request.** Prominent commands, URLs and paths; expandable details when you need them.
 - **Reply your way.** Approvals, denials, single/multiple choices and supported custom answers.
 - **Keep sessions organized.** Live and saved sessions, clear connection states, drag-to-reorder and twenty shared colors.
-- **Watch and steer.** Follow reported activity; queue, interrupt or stop supported attached Copilot sessions.
+- **See the team.** A larger hat-wearing main agent and smaller helpers type while working and blink or glance while idle. Motion pauses when hidden or Reduce Motion is enabled.
+- **Follow the hierarchy.** Explore parent-child branches and live statuses in the Mac Hierarchy tab. Older sessions may lack reported parent information.
+- **Read responses, not tool logs.** Assistant replies render as Markdown with headings, lists and code blocks with Copy.
+- **Chat and steer.** Send to the main session or a supported helper. Separate stop controls keep the destination clear. This is native chat, not an embedded terminal.
+- **Copy and catch up.** Copy responses, messages, code or the observed chat. Optional Haiku summaries use a limited excerpt and return complete paragraphs up to 250 words.
 - **Choose when to step aside.** Supported Copilot sessions offer separate Dangerous Auto-yes for waiting and future eligible tools, with explicit confirmation, red warnings and an Off control.
 - **Use your phone.** Pair an iPhone or Android Home Screen app for same-network replies and optional generic background alerts.
 
@@ -91,11 +118,18 @@ Try a sample request without starting an agent or spending model credits:
 
 ## Use your phone
 
-In main **Settings > Phone connections**, enable **Allow phone connections** and choose **Pair a phone**. Scan the QR displayed on your own Mac, verify and trust its local certificate, then install Notify to your phone's Home Screen.
+**Android: there is no APK or Play Store download.** Install Notify as a web app from Chrome:
 
-Open that installed app, enter the Mac's pairing code, compare the confirmation codes, and confirm the phone on the Mac. Enable alerts from the phone app.
+1. On the Mac, open **Settings > Phone connections**, enable **Allow phone connections**, and click **Pair a phone**.
+2. Put the phone on the same Wi-Fi. In **Android Settings > Apps > Chrome > Permissions**, allow **Nearby devices** or **Local network**, if listed, so Chrome can reach the Mac. Scan the Mac's QR or open its exact **`http://…:8080/` setup address** in Chrome.
+3. Download `Notify-Local-CA.cer`. Verify its full SHA-256 fingerprint against the Mac using a trusted certificate viewer **before trusting it**. Then install it through Android Settings' **Install a CA certificate** action. [Detailed Android steps](https://github.com/vsvinav/notify-mobile#install-on-android).
+4. Open the Mac's **Connection address**, which uses **`https://…:8443/`**. It must load without certificate warnings. In Chrome's **⋮** menu choose **Install app**, or **Add to Home screen > Install**.
+5. Open the new Notify icon, enter the Mac's eight-digit pairing code, compare the six-digit confirmation on both devices, and click **Confirm phone** on the Mac.
+6. Tap **Enable alerts** on the phone and allow notifications. Use **Send test alert** on the Mac.
 
-**[iPhone and Android installation guide →](https://github.com/vsvinav/notify-mobile#quickstart)**
+**“Site can't be reached” or `ERR_TOO_MANY_RETRIES`?** First check Chrome's **Nearby devices / Local network** permission in Android Settings. A denial can block the connection before it reaches Notify. Certificate installation cannot fix network reachability. Also confirm the companion is enabled, use the exact protocol/port shown on the Mac, and check for guest-network isolation or a VPN blocking local connections. [Connection troubleshooting](https://github.com/vsvinav/notify-mobile#if-the-phone-says-site-cant-be-reached).
+
+**[iPhone installation](https://github.com/vsvinav/notify-mobile#install-on-iphone)** · **[Full phone setup guide](https://github.com/vsvinav/notify-mobile#quickstart)**
 
 Your Mac must be awake and reachable on the same network for request details and replies. Generic alerts use platform push services. Physical-phone certificate setup and lock-screen delivery still need real-device verification; there is no App Store release or hosted Notify relay.
 

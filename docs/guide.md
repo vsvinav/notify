@@ -6,14 +6,14 @@ A native macOS app for answering Claude Code and Copilot requests without switch
 
 ## Quickstart
 
-1. [Build and install Notify](#build-and-install), or open your existing copy with `open ~/Applications/Notify.app`.
+1. [Install the download](#install-the-download), [build from source](#build-and-install), or open your existing copy with `open ~/Applications/Notify.app`.
 2. Choose **Connect agents** and follow the Copilot or Claude setup shown in the app.
-3. Run `~/.local/bin/notify demo` to try the floating controls without starting an agent or spending credits.
+3. Run `~/Applications/Notify.app/Contents/Resources/bin/notify demo` to try the floating controls without starting an agent or spending credits.
 4. Answer connected sessions from their floating panels or the control center. Add your phone through **Settings > Phone connections**.
 
 [Current app screenshots](../README.md#screenshots) · [Update an existing installation](#updating-notify) · [Phone setup](#phone-connections)
 
-The sidebar puts **Needs you** first, then connected agents you're monitoring. **Not connected** stays separate, and saved chats have their own tab. Select a session, then use **Decision**, **Controls**, or **Settings**. Live activity stays visible on the right while you answer or steer. A session-colored floating panel brings permission requests, choices, multi-select questions, and text fields to your current desktop.
+The sidebar puts **Needs you** first, then connected agents you're monitoring. **Not connected** stays separate, and saved chats have their own tab. Select a session, then use **Chat**, **Decision** (or **Overview**), **Settings**, or **Hierarchy**. Click the main agent or a helper in **Your team** to open its conversation. Messaging controls live only in Chat; session automation stays in Settings. A session-colored floating panel brings permission requests, choices, multi-select questions, and text fields to your current desktop.
 
 Notify appears in the Dock and Cmd-Tab. Agent launchers start it in the background without opening the control center or reactivating an already-running app. Closing the control center keeps monitoring active; click the Dock icon to reopen it. Floating requests remain visible when another app is active. Use **Options > Keep in Dock** on its Dock icon to pin it; Notify does not change Dock preferences.
 
@@ -21,7 +21,7 @@ Notify appears in the Dock and Cmd-Tab. Agent launchers start it in the backgrou
 
 In Notify's main **Settings**, choose **Appearance: System, Light, or Dark**. System is the default and follows macOS; Light and Dark apply only to Notify, update open windows immediately, and are remembered after restart. Light uses muted beige and taupe; dark uses warm charcoal and sand. Each chat has a stable color shared by its session row and floating notification. Change it using **Session color** in the session's **Settings** tab; **Reset** restores the automatic accent. Notifications use a subtle session tint with contrasting text in both modes. Colors are stored locally and follow the saved chat when it reconnects or resumes. Warning/error colors remain separate.
 
-The illustrated agent reflects observed state: working, thinking when reasoning is reported, needing your answer, or at rest. **Response finished** means a main reply completed and the agent became idle, not that every task or test succeeded. Motion pauses when the control center is hidden and respects macOS Reduce Motion. **Controls** puts Queue, Interrupt and Stop beside the activity feed; unsupported connections explain why these controls are unavailable.
+The illustrated agent reflects observed state: working, thinking when reasoning is reported, needing your answer, or at rest. **Response finished** means a main reply completed and the agent became idle, not that every task or test succeeded. Motion pauses when the control center is hidden and respects macOS Reduce Motion. **Chat** puts Send, Interrupt and Stop below the conversation; unsupported connections explain why these controls are unavailable.
 
 Drag session rows to reorder them within their current group. The order is remembered across app restarts and follows the original chat identity. Move up/down actions are also available to accessibility tools; reordering never changes connection or waiting status.
 
@@ -32,6 +32,8 @@ Click the **colored circle beside the session title** on a floating notification
 The updated original-Copilot extension supplies the **Live activity** timeline: user/assistant messages, tool commands/results and provider-published reasoning where available. Subagent events are labeled separately. Tool snippets are visible immediately; expand entries for full details. Use **Follow live** or **Latest activity** to catch up. Disconnected sessions show **Recent activity** instead. Older connections retain their existing text preview until you explicitly reload extensions in that terminal.
 
 Activity is a bounded in-memory preview (up to 300 entries and 512 KiB of retained native text per session); individual event previews are limited too. Earlier history remains with the original CLI. Notify does not invent reasoning, test results or progress, nor spend model credits to generate this timeline.
+
+The updated Copilot extension streams partial assistant replies before completion. Existing terminals need an explicit extension reload to load this change. Terminal input still waiting in the agent's queue appears when the runtime consumes it; the app does not yet preview queued input.
 
 ## Open and resume in iTerm2
 
@@ -45,14 +47,51 @@ iTerm2 must be installed at `/Applications/iTerm.app`; this local build launches
 
 ## Requirements
 
-- macOS 14 or newer; Swift command-line tools to build.
+- macOS 14 or newer; the downloadable beta supports Apple Silicon only. Swift command-line tools are needed only to build from source.
 - Node.js 22.18 or newer.
 - Claude Code or Copilot CLI installed on `PATH` and already signed in.
 - SDK versions are pinned; integration was checked against Claude Code 2.1.81 and Copilot CLI 1.0.112.
 
+## Install the download
+
+1. Download **Notify-0.2.0-beta.2-macos-arm64.zip** and **SHA256SUMS.txt** from the [macOS beta release](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.2). With both files in the same folder, run `shasum -a 256 -c SHA256SUMS.txt` there to check the download.
+2. Unzip the archive. In Finder, open your home folder and create **Applications** there if needed. Move **Notify.app** into that folder. When updating, quit Notify first and replace only the app; leave agent terminals running.
+3. Open Notify, choose **Connect agents**, and follow the setup instructions. Install **Node.js 22.18+** and sign in through your Copilot or Claude CLI beforehand. Node and the CLIs are not bundled.
+
+The beta is **ad-hoc signed, not Developer ID signed or notarized**. A successful checksum verifies the downloaded bytes; it does **not** remove Apple's first-launch warning or mean Apple has checked the app.
+
+If the warning says **"Apple could not verify Notify is free of malware"** and offers only **Move to Trash** or **Done**:
+
+1. Click **Done**. The approval button is not in that dialog.
+2. Open **System Settings > Privacy & Security** and scroll down to the security section.
+3. Find the message about Notify being blocked and click **Open Anyway**.
+4. Authenticate if macOS asks, then confirm **Open** in the next prompt, only if you trust this download.
+
+This creates an exception for this app, not a global Gatekeeper disable. See [Apple's illustrated instructions](https://support.apple.com/en-us/102445). If **Open Anyway** is missing or disabled on an organization-managed Mac, do not bypass its policy; ask its administrator. If the warning instead says the app **will damage your computer**, **contains malware**, or **is damaged**, stop rather than applying these instructions.
+
+A notarized release requires Developer ID credentials through Apple's paid Developer Program and is not available yet. Repackaging the app, renaming the ZIP, or checking its checksum cannot substitute for notarization.
+
+The app contains its local phone companion but no account credentials, session history, paired-phone keys or developer settings. Each Mac connects to its own local agent sessions. Reconnect agents and pair phones separately on the new Mac.
+
+The download does not create a command-line shortcut. Use the bundled launcher directly:
+
+```sh
+~/Applications/Notify.app/Contents/Resources/bin/notify demo
+~/Applications/Notify.app/Contents/Resources/bin/notify setup-copilot
+```
+
+Optionally create the shortcut used elsewhere in this guide:
+
+```sh
+mkdir -p ~/.local/bin
+ln -s "$HOME/Applications/Notify.app/Contents/Resources/bin/notify" ~/.local/bin/notify
+```
+
+`ln` refuses to replace an existing shortcut. Keep an existing working launcher when updating.
+
 ## Build and install
 
-This is a local source build, not a downloadable notarized installer. Start from an empty parent folder and ensure your GitHub account has access to both repositories:
+For a local source build, start from an empty parent folder:
 
 ```sh
 git clone https://github.com/vsvinav/notify.git
@@ -64,7 +103,7 @@ bash scripts/install.sh
 open ~/Applications/Notify.app
 ```
 
-The separate [notify-mobile repository](https://github.com/vsvinav/notify-mobile) is currently private. The build requires that explicit checkout path, bundles its web app and production dependencies, and signs the combined Mac app. Node itself remains a prerequisite. Phone connections are off by default. If Apple's command-line tools are missing, run `xcode-select --install` and finish their installation first.
+The build requires an explicit checkout of the separate [notify-mobile repository](https://github.com/vsvinav/notify-mobile), bundles its web app and production dependencies, and ad-hoc signs the combined Mac app. Node itself remains a prerequisite. Phone connections are off by default. If Apple's command-line tools are missing, run `xcode-select --install` and finish their installation first.
 
 The installer creates `~/.local/bin/notify`, without replacing existing apps or launchers. If that directory is not on your PATH:
 
@@ -90,9 +129,9 @@ notify demo
 
 ### Updating Notify
 
-1. Get the new source for both repositories and rebuild with `NOTIFY_MOBILE_SOURCE=/path/to/notify-mobile bash scripts/build.sh` from the Mac repository.
+1. Download and unzip the new release, or get the new source for both repositories and rebuild with `NOTIFY_MOBILE_SOURCE=/path/to/notify-mobile bash scripts/build.sh` from the Mac repository.
 2. **Quit Notify from its menu**, not just by closing its window. Leave your agent terminals running.
-3. In Finder, replace **`~/Applications/Notify.app`** with the new **`build/Notify.app`**. Keep your existing `~/.local/bin/notify` launcher link; do not run the first-install script again.
+3. In Finder, replace **`~/Applications/Notify.app`** with the downloaded app or new **`build/Notify.app`**. Keep your existing `~/.local/bin/notify` launcher link; do not run the first-install script again.
 4. Reopen Notify. Existing extensions reconnect; a changed extension may still require an explicit reload in its original terminal.
 
 Replacing the app does not remove settings or paired-phone data in `~/Library/Application Support/Notify/`. Session Auto-yes modes reset on restart. A repository-access error is not an installation success: obtain access before building.
@@ -143,6 +182,8 @@ For a richer description, select a Copilot session and click **Summarize**. Afte
 
 Descriptions are cached locally with their model and generation time. **Refresh description** is another explicit request. The original chat title and terminal session are never changed. Only one summary runs at a time, with a 60-second generation timeout. This feature currently uses saved Copilot sessions, not Claude history.
 
+Summaries contain complete paragraphs, up to 250 words and 6,000 characters, rather than being cut off with an ellipsis. Use **Copy summary** to copy the full text. Older cached summaries are not regenerated automatically; choose **Refresh description** to replace one.
+
 ## Replying
 
 Use **Allow once**, **Deny**, or the actual question fields. Every response targets one pending request in one connected session. A response is removed only when the bridge acknowledges it; the live Copilot extension waits for runtime acceptance before acknowledging. Questions can be declined; they are never auto-answered.
@@ -184,6 +225,24 @@ The SDK's existing permission rules can resolve operations before Notify sees th
 
 ## Steer an attached Copilot session
 
+In the control center, choose **Chat** to message the main agent. **Send** queues your message if it is busy. **Interrupt** confirms before interrupting the main turn and sending your draft; **Stop main** confirms before stopping current work and clearing queued main prompts.
+
+Click a subagent in **Your team** to select that helper. Its composer has its own draft and delivery receipts. **Send** steers a running helper or wakes an idle supported helper; **Stop subagent** confirms before cancelling its work. The runtime may also stop its descendants; the main agent and unrelated helpers are not stopped. Existing edits are not undone. Ended, unavailable and unsupported helpers remain read-only. Some runtime task types reject messaging even while listed; that failure is shown rather than redirecting your message. Creating a new helper or restarting an ended one remains in the original terminal.
+
+The larger main agent wears a hat. Helper chats use a mini portrait, the helper's name and a tinted **Subagent chat** header, with the selected helper highlighted in the team. **Stop main** and **Stop subagent** are filled red buttons and still require confirmation.
+
+Working agents visibly type; idle agents occasionally blink or glance. An acknowledged stop has a still pose. Motion pauses when the window is hidden or Reduce Motion is enabled. An idle or finished response does not mean the whole task succeeded.
+
+Chat shows responses observed while Notify is connected and your messages sent from the app. It is not a complete historical transcript; internal helper prompts are omitted. **Tools & thinking** above the conversation opens with separate tool, thinking and status entries. Scroll through up to 12 recent updates; expand an individual entry for its available details and **Copy activity**. You can collapse the panel to give the conversation more room. No hidden reasoning is inferred.
+
+**Hierarchy** shows observed parent-child relationships as a top-down org chart: parents above their children, siblings side by side. Running helpers appear individually; idle helpers start grouped in one clickable **+N idle subagents** tile. With one main agent, one running helper and nineteen idle helpers, only three tiles appear. Click the idle tile to reveal those helpers with their actual relationships; **Hide idle** groups them again. A helper that resumes running automatically leaves the idle group. **Fit** scales the chart into the viewport; use zoom or **100%** and scroll to inspect expanded teams at readable size.
+
+Completed, failed and stopped helpers stay in a separate **+N hidden inactive agents** block, with failures called out separately. Active children of hidden parents remain visible separately with the actual parent's name, not a false main-agent connection. The idle group is a status summary, not an invented parent.
+
+Select a raised agent tile to open its exact chat, or fold an individual branch. Stopped helpers stay flat with X eyes and cannot be selected; an updated Notify extension retains them for five minutes. Reload existing extensions to receive new lifecycle data. Spawn events that were not observed, missing parents and inconsistent relationships are shown separately without invented connections.
+
+**Copy response**, **Copy message**, **Copy chat** and code-block **Copy** copy their full available text. Scrolling up pauses **Follow chat**; **Latest** returns to the newest message.
+
 Choose **Steer an Agent** from Notify's menu-bar menu, or **Send instruction** from session details. The floating panel stays available even when no permission is pending. Select the target chat, read its latest activity, and type a direction:
 
 - **Queue** submits the direction for the next turn.
@@ -193,6 +252,23 @@ Choose **Steer an Agent** from Notify's menu-bar menu, or **Send instruction** f
 Queue acceptance and a matching runtime **Received** event are separate receipts. Agent activity is shown separately rather than pretending an unrelated response answers your message. Drafts stay with their session. An unknown delivery is never retried automatically: check the terminal before resending.
 
 These controls require the updated Notify extension in an original Copilot terminal. Existing loaded extensions must be reloaded in that terminal to acquire the new capabilities; ask Copilot to reload its extensions. Notify does not restart the terminal to do this. SDK launchers and Claude remote steering are not supported, and unavailable controls are disabled.
+
+### Create and remove Copilot helpers
+
+Choose **Add subagent** in the connected Copilot session's header. Enter a name and instructions, choose an agent type and model, then click **Create subagent**. Agent types and selectable models come from that runtime's live catalogs, not a hard-coded list or another provider's subscription. **Configured default** leaves the runtime's model choice unchanged. If no model choices are reported, the panel says so; it never silently substitutes another model for an explicit choice.
+
+Creation uses model credits and the session's existing permission rules. Notify records **Created** only after the runtime acknowledges creation. Your main chat draft is unchanged, and the new instructions are not sent as a main-agent chat message. If delivery becomes **Unknown**, inspect the session before retrying: a helper may already exist.
+
+The same panel lists **Ended helpers** with a separate, confirmed **Remove from list** button. This removes that helper's runtime tracking only; no files are deleted and no running agents are stopped. An idle or running helper must be stopped separately from its chat before removal. If the helper has already disappeared from runtime tracking, removal can fail rather than claim success.
+
+Reload each existing Copilot terminal's Notify extension after updating. **Claude Code subagent creation, model selection and removal through Notify are unsupported.** Even the current public Claude SDK offers no direct live-subagent creation/removal API; Notify does not disguise a prompt to the main Claude agent as direct creation, or use Copilot's model catalog for Claude.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/subagent-management-dark.png">
+  <img src="images/subagent-management.png" alt="Add subagent form with agent type, model, instructions, credit warning and separate removal of ended helpers" width="540">
+</picture>
+
+*Native app capture with a fictional session and helper.*
 
 ### Broader session Auto-yes
 

@@ -75,10 +75,37 @@ public struct SessionRegistry {
             }
         }
     }
-    public mutating func capabilities(_ id: String, steering: Bool, autoYes: Bool) {
+    public mutating func capabilities(_ id: String, steering: Bool, autoYes: Bool, subagentChat: Bool = false, subagentStop: Bool = false) {
         guard sessions[id]?.connected == true, sessions[id]?.agent == "copilot" else { return }
         sessions[id]?.canSteer = steering
         sessions[id]?.canAutoYes = autoYes
+        sessions[id]?.canChatWithSubagents = subagentChat
+        sessions[id]?.canStopSubagents = subagentStop
+    }
+    public mutating func resumeWork(_ id: String) {
+        guard sessions[id]?.connected == true else { return }
+        sessions[id]?.stopped = false
+        sessions[id]?.workRevision = UUID()
+    }
+    public mutating func managementCapabilities(_ id: String, create: Bool, remove: Bool, types: [String], models: [String] = []) throws {
+        guard sessions[id]?.connected == true, sessions[id]?.agent == "copilot" else { throw ProtocolError.stale }
+        sessions[id]?.canCreateSubagents = false
+        sessions[id]?.canRemoveSubagents = false
+        sessions[id]?.subagentTypes = []
+        sessions[id]?.subagentModels = []
+        guard types.count <= 100, Set(types).count == types.count,
+              types.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.utf16.count <= 128 }),
+              !create || !types.isEmpty, models.count <= 200, Set(models).count == models.count,
+              models.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.utf16.count <= 200 })
+        else { throw ProtocolError.invalid }
+        sessions[id]?.canCreateSubagents = create
+        sessions[id]?.canRemoveSubagents = remove
+        sessions[id]?.subagentTypes = types
+        sessions[id]?.subagentModels = models
+    }
+    public mutating func acknowledgeStop(_ id: String, workRevision: UUID) {
+        guard sessions[id]?.connected == true, sessions[id]?.workRevision == workRevision else { return }
+        sessions[id]?.stopped = true
     }
     public mutating func activityCapability(_ id: String, enabled: Bool) {
         sessions[id]?.hasActivityFeed = enabled
@@ -86,6 +113,11 @@ public struct SessionRegistry {
     public mutating func activity(_ id: String, entry: ActivityEntry) throws {
         guard sessions[id]?.connected == true else { throw ProtocolError.stale }
         try sessions[id]?.activity.receive(entry)
+    }
+    public mutating func team(_ id: String, snapshot: SubagentTeam) throws {
+        guard sessions[id]?.connected == true else { throw ProtocolError.stale }
+        guard snapshot.isValid else { throw ProtocolError.invalid }
+        sessions[id]?.team = snapshot
     }
     public mutating func add(_ request: AgentRequest, to id: String) throws {
         guard request.isValid, var session = sessions[id], session.connected else { throw ProtocolError.invalid }

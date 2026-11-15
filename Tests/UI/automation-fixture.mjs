@@ -15,7 +15,10 @@ agent.on("data", data => {
     const packet = JSON.parse(buffer.slice(0, end));
     buffer = buffer.slice(end + 1);
     if (packet.type === "welcome") {
-      send({ type: "capabilities", sessionAutoYes: true, steering: true });
+      send({ type: "capabilities", sessionAutoYes: true, steering: true, subagentChat: true, subagentStop: true,
+        subagentCreate: true, subagentRemove: true, subagentTypes: ["general-purpose"], subagentModels: ["fixture-model"] });
+      send({ type: "team", team: { agents: [{ id: "worker", name: "Fixture helper", task: "Synthetic task", status: "idle" }],
+        runningCount: 0, idleCount: 1, truncated: false } });
       for (const id of ["waiting-one", "waiting-two", "restricted"]) {
         send({ type: "request", request: { id, kind: "permission", title: "Synthetic tool request",
           detail: "No command is executed by this fixture.", autoEligible: false,
@@ -27,6 +30,20 @@ agent.on("data", data => {
     } else if (packet.type === "reply") {
       appendFileSync(join(directory, "replies.jsonl"), JSON.stringify(packet) + "\n", { mode: 0o600 });
       send({ ...packet, type: "resolved" });
+    } else if (packet.type === "control") {
+      appendFileSync(join(directory, "controls.jsonl"), JSON.stringify(packet) + "\n", { mode: 0o600 });
+      send({ type: "control_status", commandID: packet.commandID,
+        status: packet.action === "create_subagent" ? "created" : packet.action === "remove_subagent" ? "removed" :
+          packet.action === "stop" ? "stopped" : "received",
+        text: "Synthetic delivery acknowledged" });
+      if (["create_subagent", "remove_subagent"].includes(packet.action)) {
+        send({ type: "team", team: { agents: [
+          { id: "worker", name: "Fixture helper", task: "Synthetic task", status: "idle" },
+          ...(packet.action === "create_subagent" ? [
+            { id: "created-helper", name: packet.agentName, task: packet.text, status: "completed", parentKnown: true }
+          ] : [])
+        ], runningCount: 0, idleCount: 1, truncated: false } });
+      }
     }
   }
 });

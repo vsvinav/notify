@@ -144,7 +144,10 @@ struct SessionDescriptionView: View {
         VStack(alignment: .leading, spacing: 7) {
             let description = store.description(for: session)
             Text(description?.text ?? (session.synopsis.isEmpty ? "No description yet." : session.synopsis))
-                .font(.system(size: 11)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                .font(WorkspaceType.text(13)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            if let text = description?.text ?? (session.synopsis.isEmpty ? nil : session.synopsis) {
+                CopyTextButton(text: text, label: "Copy summary")
+            }
             if let description {
                 Text("AI / \(description.model) / \(description.generatedAt.formatted(date: .abbreviated, time: .shortened))")
                     .font(.system(size: 9)).foregroundStyle(Palette.muted)
@@ -162,7 +165,7 @@ struct SessionDescriptionView: View {
             Button("Cancel", role: .cancel) { target = nil }
             Button("Summarize") { store.summarize(selected); target = nil }
         } message: { selected in
-            Text("Send up to 12,000 characters of conversation text from “\(selected.name)” to Haiku through your Copilot account. This uses your account allowance. Tool results are excluded. The original chat stays untouched; nothing runs automatically.")
+            Text("Send up to 12,000 characters of conversation text from “\(selected.name)” to Haiku for a summary of up to 250 words. This uses your account allowance. Tool results are excluded. The original chat stays untouched; nothing runs automatically.")
         }
     }
 }
@@ -485,6 +488,9 @@ struct RequestEditor: View {
                     .padding(.vertical, 9)
                     .accessibilityLabel(question.text)
                     .focused($answerFocused, equals: question.id)
+                    .onSubmit {
+                        store.reply(session: session.id, request: request, decision: "answer", answers: answers)
+                    }
                     .overlay(alignment: .bottom) { Rectangle().fill(keyboardChoice == .input(question.id) ? Palette.accent : secondary.opacity(0.65)).frame(height: 1) }
                     .id(ReplyChoice.input(question.id))
             }
@@ -495,6 +501,7 @@ struct RequestEditor: View {
 struct ReplyButtonStyle: ButtonStyle {
     let primary: Bool
     var highlighted: Bool?
+    var destructive = false
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         let filled = highlighted ?? primary
@@ -502,7 +509,7 @@ struct ReplyButtonStyle: ButtonStyle {
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 12).padding(.vertical, 8)
             .foregroundStyle(filled ? Palette.highlightInk : Palette.ink)
-            .background(filled ? Palette.accent : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+            .background(filled ? (destructive ? Palette.error : Palette.accent) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(filled ? .clear : Palette.line, lineWidth: 1))
             .opacity(!enabled ? 0.4 : (configuration.isPressed ? 0.7 : 1))
     }

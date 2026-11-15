@@ -93,7 +93,8 @@ for (const kind of ["commands", "path"]) test(`Copilot launcher returns the sele
     ? { kind, canOfferSessionApproval: true, commandIdentifiers: ["npm test"], fullCommandText: "npm test", intention: "Run tests" }
     : { kind, accessKind: "read", paths: ["/outside/fixture"] };
   let handler, failPolicy = false;
-  const session = { sessionId: "fixture", on() {}, rpc: {
+  const session = { sessionId: "fixture", on() { return () => {}; }, rpc: {
+    tasks: { list: async () => ({ tasks: [] }) },
     managedSettings: { getCurrentSnapshot: async () => {
       if (failPolicy) throw new Error("Policy unavailable");
       return { source: "none", failClosed: false, managedKeys: [] };
@@ -135,7 +136,7 @@ test("Copilot launcher advertises denial feedback and preserves its trimmed inst
   const agent = new CopilotAgent(bridge, "/unused");
   agent.client = { start: async () => {}, createSession: async config => {
     handler = config.onPermissionRequest;
-    return { sessionId: "fixture", on() {} };
+    return { sessionId: "fixture", on() { return () => {}; }, rpc: { tasks: { list: async () => ({ tasks: [] }) } } };
   } };
   await agent.start();
   const handling = handler({ kind: "hook" }, {});

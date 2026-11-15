@@ -225,6 +225,18 @@ private struct ActivityTimeline: View {
     var showsHeader = true
     @State private var follow = true
     @State private var nearBottom = true
+    private var responses: [ActivityEntry] {
+        session.activity.entries.filter { ResponseFeed.includes(kind: $0.kind, agentID: $0.agentID) }
+    }
+    private var emptyMessage: String {
+        if !session.hasActivityFeed {
+            return "Responses appear here when the Notify extension is connected. Earlier conversation stays in iTerm2."
+        }
+        if session.state == "working" {
+            return "The agent is working. Its next response will appear here."
+        }
+        return "No responses yet. The agent’s next reply will appear here."
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if showsHeader {
@@ -252,21 +264,21 @@ private struct ActivityTimeline: View {
             GeometryReader { geometry in
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 18) {
+                        LazyVStack(alignment: .leading, spacing: 24) {
                             if session.activity.truncated {
-                                Text("Older activity was trimmed to keep Notify lightweight. Full history remains in the terminal.")
-                                    .font(.system(size: 11)).foregroundStyle(Palette.muted)
+                                Text("Earlier responses remain in iTerm2.")
+                                    .font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
                             }
-                            if session.activity.entries.isEmpty {
-                                Text(session.hasActivityFeed ? "Waiting for new activity. Earlier history remains in iTerm2." :
-                                        "Live preview. Rich activity requires the updated Notify extension in an attached Copilot terminal.")
-                                    .font(.system(size: 12)).foregroundStyle(Palette.muted)
-                                Text(session.summary).font(.system(size: 13)).textSelection(.enabled)
+                            if responses.isEmpty {
+                                Text(emptyMessage)
+                                    .font(WorkspaceType.text(13)).foregroundStyle(Palette.muted)
+                                    .fixedSize(horizontal: false, vertical: true).padding(.vertical, 8)
                             }
-                            ForEach(session.activity.entries) { entry in ActivityRow(entry: entry) }
-                            if !session.hasActivityFeed && !session.output.isEmpty {
-                                Text(session.output).font(.system(size: 12)).textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            ForEach(responses) { entry in
+                                ActivityRow(entry: entry)
+                                if entry.id != responses.last?.id {
+                                    Divider()
+                                }
                             }
                             Color.clear.frame(height: 1).id("bottom")
                                 .background(GeometryReader { marker in
@@ -274,6 +286,7 @@ private struct ActivityTimeline: View {
                                 })
                         }.padding(.vertical, 10)
                     }.coordinateSpace(name: "activity")
+                        .background(ActivityScrollIntent { follow = false })
                         .onAppear {
                             DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
                         }
@@ -281,62 +294,184 @@ private struct ActivityTimeline: View {
                             if enabled { proxy.scrollTo("bottom", anchor: .bottom) }
                         }
                         .onPreferenceChange(ActivityBottomKey.self) { y in nearBottom = y < geometry.size.height + 80 }
-                        .onChange(of: session.activity.entries) { _, _ in
-                            if follow && nearBottom { proxy.scrollTo("bottom", anchor: .bottom) }
-                        }
-                        .onChange(of: session.output) { _, _ in
+                        .onChange(of: responses) { _, _ in
                             if follow && nearBottom { proxy.scrollTo("bottom", anchor: .bottom) }
                         }
                         .safeAreaInset(edge: .bottom) {
                             HStack {
                                 Toggle("Follow live", isOn: $follow).toggleStyle(.checkbox)
                                 Spacer()
-                                Button("Latest activity") { follow = true; proxy.scrollTo("bottom", anchor: .bottom) }
-                            }.font(.system(size: 11)).padding(9).background(Palette.background)
+                                Button("Latest response") { follow = true; proxy.scrollTo("bottom", anchor: .bottom) }
+                            }.font(WorkspaceType.text(11)).padding(9).background(Palette.background)
                         }
                 }
             }
-            Text("Observed activity only. Published reasoning appears when the provider exposes it.")
-                .font(.system(size: 10)).foregroundStyle(Palette.muted)
         }.padding(showsHeader ? 22 : 0)
     }
 }
 
-private struct ActivityRow: View {
-    let entry: ActivityEntry
-    @State private var expanded = false
-    private var icon: String {
-        switch entry.kind {
-        case "user": return "person"
-        case "reasoning": return "text.bubble"
-        case "tool": return "terminal"
-        case "assistant": return "sparkle"
-        default: return "circle.dotted"
+struct ActivityScrollIntent: NSViewRepresentable {
+    let pause: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak view, weak coordinator = context.coordinator] event in
+            if let view, let window = view.window, event.window === window,
+               event.scrollingDeltaY > 0, abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX),
+               view.bounds.contains(view.convert(event.locationInWindow, from: nil)) {
+                coordinator?.pause()
+            }
+            return event
         }
+        return view
     }
+
+    func updateNSView(_ nsView: NSView, context: Context) { context.coordinator.pause = pause }
+    func makeCoordinator() -> Coordinator { Coordinator(pause: pause) }
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        if let monitor = coordinator.monitor { NSEvent.removeMonitor(monitor) }
+    }
+
+    final class Coordinator {
+        var pause: () -> Void
+        var monitor: Any?
+        init(pause: @escaping () -> Void) { self.pause = pause }
+    }
+}
+
+struct ActivityRow: View {
+    let entry: ActivityEntry
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label(entry.title, systemImage: icon).font(.system(size: 12, weight: .semibold))
-                Spacer()
-                Text(entry.status == "complete" ? "Completed" : entry.status.capitalized)
-                    .font(.system(size: 10)).foregroundStyle(entry.status == "failed" ? Palette.amber : Palette.muted)
-            }
-            if let agent = entry.agentID { Text("Subagent / \(agent.prefix(8))").font(.system(size: 10)).foregroundStyle(Palette.muted) }
-            if entry.kind == "tool" || entry.kind == "reasoning" {
-                if entry.kind == "tool" && !expanded {
-                    Text(String(entry.detail.prefix(600))).font(.system(size: 12, design: .monospaced))
-                        .lineLimit(3).foregroundStyle(Palette.muted).textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                DisclosureGroup(entry.kind == "reasoning" ? "Read published reasoning" : "Command / result", isExpanded: $expanded) {
-                    Text(entry.detail).font(.system(size: 12, design: entry.kind == "tool" ? .monospaced : .default))
-                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                }.font(.system(size: 11))
+        VStack(alignment: .leading, spacing: 12) {
+            let blocks = ResponseMarkdown.blocks(entry.detail)
+            if blocks.isEmpty {
+                Text(entry.status == "running" ? "Writing a response…" : "No response text was shared.")
+                    .font(WorkspaceType.text(13)).foregroundStyle(Palette.muted)
             } else {
-                Text(entry.detail).font(.system(size: 13)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
+                        ResponseBlockView(block: block, isFirst: index == 0)
+                            .padding(.top, blockSpacing(blocks, at: index))
+                    }
+                }
             }
-        }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Palette.surface, in: RoundedRectangle(cornerRadius: 9))
+            if entry.status == "running" && !blocks.isEmpty {
+                Text("Writing…").font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
+            } else if entry.status == "failed" {
+                Text("Response interrupted. Any text received is shown above.")
+                    .font(WorkspaceType.text(11)).foregroundStyle(Palette.error)
+            }
+            CopyTextButton(text: entry.detail, label: "Copy response")
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func blockSpacing(_ blocks: [ResponseBlock], at index: Int) -> CGFloat {
+        guard index > 0 else { return 0 }
+        if case .listItem = blocks[index], case .listItem = blocks[index - 1] { return 4 }
+        return 12
+    }
+}
+
+struct CopyTextButton: View {
+    let text: String
+    var label = "Copy"
+    @State private var copied = false
+    @State private var failed = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Button {
+                NSPasteboard.general.clearContents()
+                copied = NSPasteboard.general.setString(text, forType: .string)
+                failed = !copied
+            } label: {
+                Label(copied ? "Copied" : label, systemImage: copied ? "checkmark" : "doc.on.doc")
+            }.buttonStyle(.plain).font(WorkspaceType.text(11)).foregroundStyle(Palette.accent)
+                .disabled(text.isEmpty).accessibilityLabel(label)
+            if failed { Text("Could not copy. Try again.").font(WorkspaceType.text(11)).foregroundStyle(Palette.error) }
+        }.onChange(of: text) { _, _ in copied = false; failed = false }
+    }
+}
+
+private struct ResponseBlockView: View {
+    let block: ResponseBlock
+    let isFirst: Bool
+
+    var body: some View {
+        Group {
+            switch block {
+            case .paragraph(let text):
+                prose(text).font(WorkspaceType.text(13))
+            case .heading(let level, let text):
+                prose(text).font(WorkspaceType.text(level == 1 ? 21 : level == 2 ? 18 : 15, strong: true))
+                    .padding(.top, isFirst ? 0 : 8)
+                    .accessibilityAddTraits(.isHeader)
+            case .listItem(let marker, let depth, let text):
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(marker).foregroundStyle(Palette.muted)
+                    prose(text).frame(maxWidth: .infinity, alignment: .leading)
+                }.font(WorkspaceType.text(13)).padding(.leading, CGFloat(depth) * 12)
+            case .code(let language, let text, let closed):
+                ResponseCodeBlock(language: language, code: text, closed: closed)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func prose(_ source: String) -> some View {
+        var text = ResponseMarkdown.inline(source)
+        for run in text.runs where run.inlinePresentationIntent?.contains(.code) == true {
+            text[run.range].font = .system(size: 12, design: .monospaced)
+        }
+        return Text(text).foregroundStyle(Palette.ink).tint(Palette.accent)
+            .lineSpacing(4).textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct ResponseCodeBlock: View {
+    let language: String
+    let code: String
+    let closed: Bool
+    @State private var copied = false
+    @State private var copyFailed = false
+    @State private var copyReset: Task<Void, Never>?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text(language.isEmpty ? "Code" : language)
+                    .lineLimit(1).truncationMode(.tail).help(language.isEmpty ? "Code" : language)
+                Spacer(minLength: 0)
+                Button {
+                    NSPasteboard.general.clearContents()
+                    copied = NSPasteboard.general.setString(code, forType: .string)
+                    copyFailed = !copied
+                    copyReset?.cancel()
+                    copyReset = Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(2))
+                        if !Task.isCancelled { copied = false }
+                    }
+                } label: {
+                    Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                }.buttonStyle(.plain).foregroundStyle(Palette.accent)
+                    .disabled(code.isEmpty).help("Copy code exactly as received")
+                    .accessibilityLabel("Copy \(language.isEmpty ? "" : language + " ")code")
+            }.font(WorkspaceType.text(11, strong: true)).foregroundStyle(Palette.muted).padding(10)
+            Divider()
+            ScrollView(.horizontal) {
+                Text(verbatim: code.isEmpty && !closed ? "Waiting for code…" : code)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(code.isEmpty ? Palette.muted : Palette.ink)
+                    .lineSpacing(3).textSelection(.enabled)
+                    .fixedSize(horizontal: true, vertical: true)
+                    .padding(12)
+            }.frame(minWidth: 0, maxWidth: .infinity)
+            if copyFailed {
+                Text("Couldn’t copy. Select the code and press ⌘C.")
+                    .font(WorkspaceType.text(11)).foregroundStyle(Palette.error).padding(10)
+            }
+        }.background(Palette.surface, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Palette.line.opacity(0.35), lineWidth: 1))
+            .onChange(of: code) { _, _ in copied = false; copyFailed = false }
+            .onDisappear { copyReset?.cancel() }
     }
 }

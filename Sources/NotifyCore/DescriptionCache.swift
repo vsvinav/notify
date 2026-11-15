@@ -25,8 +25,12 @@ public enum DescriptionCache {
     public static func save(_ descriptions: [String: SessionDescription], in directory: URL) throws {
         let manager = FileManager.default
         try manager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let latest = descriptions.sorted { $0.value.generatedAt > $1.value.generatedAt }.prefix(200)
-        let data = try JSONEncoder().encode(Dictionary(uniqueKeysWithValues: latest.map { ($0.key, $0.value) }))
+        var latest = Array(descriptions.sorted { $0.value.generatedAt > $1.value.generatedAt }.prefix(200))
+        var data = try JSONEncoder().encode(Dictionary(uniqueKeysWithValues: latest.map { ($0.key, $0.value) }))
+        while data.count > 1_048_576, !latest.isEmpty {
+            latest.removeLast()
+            data = try JSONEncoder().encode(Dictionary(uniqueKeysWithValues: latest.map { ($0.key, $0.value) }))
+        }
         let path = directory.appendingPathComponent("descriptions.json")
         try data.write(to: path, options: .atomic)
         try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)

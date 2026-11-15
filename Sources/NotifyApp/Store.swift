@@ -248,28 +248,42 @@ final class Store: ObservableObject {
         onAttentionChange?()
     }
     func closeSteering() { steeringSessionID = nil; onAttentionChange?() }
-    func steer(_ id: String, action: String) {
-        guard let session = registry.sessions[id] else { error = "This session is no longer available."; return }
+    @discardableResult
+    func steer(_ id: String, action: String, agentID: String? = nil, creation: SubagentCreation? = nil) -> String? {
+        guard let session = registry.sessions[id] else { error = "This session is no longer available."; return nil }
         do {
-            if action == "stop" { disableSessionAutoYes(id, reason: "Stop requested") }
-            let commandID = try steeringWorkspace.begin(session: session, action: action)
+            if action == "stop", agentID == nil { disableSessionAutoYes(id, reason: "Stop requested") }
+            let commandID = try steeringWorkspace.begin(session: session, action: action, agentID: agentID, creation: creation)
             do {
-                try server.send(sessionID: id, message: ["type": "control", "commandID": commandID, "action": action,
-                    "text": steeringWorkspace.receipts[id]?.message ?? ""])
+                if let creation {
+                    try record(session: session, action: "Requested subagent creation: \(creation.name) (\(creation.agentType))", automatic: false)
+                } else if action == "remove_subagent", let agentID {
+                    try record(session: session, action: "Requested removal of ended subagent: \(agentID)", automatic: false)
+                }
+                var message: [String: Any] = ["type": "control", "commandID": commandID, "action": action,
+                    "text": steeringWorkspace.receipt(sessionID: id, commandID: commandID)?.message ?? ""]
+                if let agentID { message["agentID"] = agentID }
+                if let creation {
+                    message["agentName"] = creation.name
+                    message["agentType"] = creation.agentType
+                    if let model = creation.model { message["model"] = model }
+                }
+                try server.send(sessionID: id, message: message)
             } catch {
                 steeringWorkspace.update(sessionID: id, commandID: commandID, status: "failed", text: "Could not dispatch: \(error.localizedDescription)")
                 throw error
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
-                guard let self, self.steeringWorkspace.receipts[id]?.id == commandID,
-                      self.steeringWorkspace.receipts[id]?.status == "sending" else { return }
+                guard let self, self.steeringWorkspace.receipt(sessionID: id, commandID: commandID)?.status == "sending" else { return }
                 self.steeringWorkspace.update(sessionID: id, commandID: commandID, status: "unknown",
-                    text: "No acknowledgment yet. Check the session before resending; the message may have arrived.")
+                    text: "No acknowledgment yet. Check the session before retrying; the action may already have happened.")
                 self.disableSessionAutoYes(id, reason: "steering acknowledgment timed out")
             }
+            return commandID
         } catch {
             disableSessionAutoYes(id, reason: "steering dispatch failed")
             self.error = "Could not send control: \(error.localizedDescription)"
+            return nil
         }
     }
     func setSessionAutoYes(_ id: String, enabled: Bool) {
@@ -464,6 +478,7 @@ final class Store: ObservableObject {
             if selectedID == nil { selectedID = packet.sessionID }
         case "state":
             registry.state(packet.sessionID, state: packet.state ?? "", text: packet.text ?? "")
+            if packet.state == "working" { registry.resumeWork(packet.sessionID) }
             // Idle can follow a failed turn; retire its error only when work resumes.
             if packet.state == "working", agentErrors[packet.sessionID] != nil {
                 agentErrors.removeValue(forKey: packet.sessionID)
@@ -478,7 +493,14 @@ final class Store: ObservableObject {
                 if steeringSessionID == alias { steeringSessionID = packet.sessionID }
             }
         case "capabilities":
-            registry.capabilities(packet.sessionID, steering: packet.steering == true, autoYes: packet.sessionAutoYes == true)
+            registry.capabilities(packet.sessionID, steering: packet.steering == true, autoYes: packet.sessionAutoYes == true,
+                                  subagentChat: packet.subagentChat == true, subagentStop: packet.subagentStop == true)
+            if registry.sessions[packet.sessionID]?.agent == "copilot" {
+                do {
+                    try registry.managementCapabilities(packet.sessionID, create: packet.subagentCreate == true,
+                        remove: packet.subagentRemove == true, types: packet.subagentTypes ?? [], models: packet.subagentModels ?? [])
+                } catch { localSessionErrors[packet.sessionID] = "Invalid subagent management capabilities; reload the extension." }
+            }
             registry.activityCapability(packet.sessionID, enabled: packet.activityFeed == true)
             if packet.sessionAutoYes != true { disableSessionAutoYes(packet.sessionID, reason: "capability unavailable") }
         case "activity":
@@ -486,14 +508,27 @@ final class Store: ObservableObject {
             do {
                 let previous = registry.sessions[packet.sessionID]?.activity.entries.first(where: { $0.id == activity.id })
                 try registry.activity(packet.sessionID, entry: activity)
-                if activity.kind == "assistant", activity.status == "complete", previous?.status != "complete" {
+                if activity.agentID == nil, activity.kind == "user", previous == nil { registry.resumeWork(packet.sessionID) }
+                if activity.kind == "assistant", activity.agentID == nil, activity.status == "complete", previous?.status != "complete" {
                     registry.output(packet.sessionID, text: activity.detail + "\n\n")
                 }
             }
             catch { localSessionErrors[packet.sessionID] = "Invalid activity event; check the original terminal." }
+        case "team":
+            guard let snapshot = packet.team else {
+                localSessionErrors[packet.sessionID] = "Agent sent an empty subagent snapshot."
+                return
+            }
+            do { try registry.team(packet.sessionID, snapshot: snapshot) }
+            catch { localSessionErrors[packet.sessionID] = "Invalid subagent status; check the original terminal." }
         case "control_status":
             if let id = packet.commandID, let status = packet.status {
+                let previous = steeringWorkspace.receipt(sessionID: packet.sessionID, commandID: id)
                 steeringWorkspace.update(sessionID: packet.sessionID, commandID: id, status: status, text: packet.text ?? "")
+                if status == "stopped", let previous, previous.action == "stop", previous.agentID == nil,
+                   ["sending", "unknown"].contains(previous.status) {
+                    registry.acknowledgeStop(packet.sessionID, workRevision: previous.workRevision)
+                }
                 if ["failed", "unknown"].contains(status) { disableSessionAutoYes(packet.sessionID, reason: "steering delivery failed or uncertain") }
             }
         case "output":

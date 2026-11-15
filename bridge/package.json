@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc",
     "test": "node --experimental-strip-types --test test/protocol.test.ts test/connection.test.ts",
-    "test:integration": "node --experimental-strip-types --test test/integration.test.ts test/cli.test.ts test/lifecycle.test.ts test/attachment.test.mjs test/setup.test.mjs test/summary.test.mjs test/steering.test.mjs test/activity.test.mjs test/permission-options.test.mjs",
+    "test:integration": "node --experimental-strip-types --test test/integration.test.ts test/cli.test.ts test/lifecycle.test.ts test/attachment.test.mjs test/setup.test.mjs test/summary.test.mjs test/steering.test.mjs test/activity.test.mjs test/subagents.test.mjs test/permission-options.test.mjs",
     "test:copilot": "npm run build && node --test test/attachment-runtime.test.mjs test/summary-runtime.test.mjs test/steering-runtime.test.mjs",
     "pretest:integration": "npm run build",
     "check": "tsc --noEmit"

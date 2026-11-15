@@ -1,0 +1,47 @@
+Notify 0.2.0 beta 2 - manual-approval macOS build
+
+REQUIREMENTS
+Apple Silicon Mac, macOS 14 or newer, Node.js 22.18 or newer,
+and an installed, signed-in Copilot CLI or Claude Code.
+Node and the agent CLIs are not bundled. No Xcode or source build is needed.
+
+INSTALL
+1. Download the ZIP and SHA256SUMS.txt from:
+   https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.2
+2. In their download folder, run: shasum -a 256 -c SHA256SUMS.txt
+3. Unzip. Move Notify.app into Applications inside your home folder.
+   If updating, quit Notify first; leave your agent terminals running.
+4. Open Notify and choose Connect agents.
+
+IF APPLE OFFERS ONLY "MOVE TO TRASH" OR "DONE"
+This beta is ad-hoc signed, NOT Developer ID signed or Apple-notarized.
+The checksum checks the download; it does not remove Apple's warning.
+Only proceed if you trust this release:
+1. Click Done in the warning.
+2. Open System Settings > Privacy & Security.
+3. Scroll down and find the message about Notify being blocked.
+4. Click Open Anyway. Authenticate if requested, then confirm Open.
+Open Anyway is in System Settings, not the initial warning dialog.
+Apple's illustrated instructions: https://support.apple.com/en-us/102445
+
+Do not disable Gatekeeper globally. If your organization blocks the exception,
+ask its administrator. If macOS says "will damage your computer", "contains
+malware" or "is damaged", stop rather than applying these instructions.
+
+CONNECT AND TEST
+Choose Connect agents and follow the provider-specific instructions.
+To try a synthetic notification without model spending:
+  ~/Applications/Notify.app/Contents/Resources/bin/notify demo
+
+For existing Copilot sessions, explicitly reload Notify's extension in each
+terminal to load the new subagent controls and live model catalog.
+Creating a subagent spends model credits. Remove from list only removes ended
+helpers from runtime tracking; it does not delete files or stop running agents.
+Claude Code subagent creation/model selection/removal in Notify is unsupported.
+Existing Claude terminals cannot be attached; use Notify's Claude launcher.
+
+This archive contains no developer settings, accounts, sessions or phone keys.
+Each Mac connects to its own local agents; pair phones separately on that Mac.
+
+Full guide:
+https://github.com/vsvinav/notify/blob/v0.2.0-beta.2/docs/guide.md

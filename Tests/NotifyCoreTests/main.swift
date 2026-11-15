@@ -235,6 +235,121 @@ do {
     preconditionFailure("Invalid event identity must be rejected")
 } catch ProtocolError.invalid {}
 print("Native session appearance and bounded activity checks passed")
+do {
+    func team(_ agents: [[String: Any]], running: Int = 1, idle: Int = 0, truncated: Bool = false) throws -> SubagentTeam {
+        try JSONDecoder().decode(SubagentTeam.self, from: JSONSerialization.data(withJSONObject: [
+            "agents": agents, "runningCount": running, "idleCount": idle, "truncated": truncated
+        ]))
+    }
+    let worker: [String: Any] = ["id": "child", "name": "Reviewer", "task": "Review the changes", "status": "running"]
+    var teams = SessionRegistry()
+    teams.register(id: "parent", agent: "copilot", cwd: "/project")
+    let snapshot = try team([worker])
+    try teams.team("parent", snapshot: snapshot)
+    check(teams.sessions["parent"]?.team?.runningCount == 1, "A real task snapshot supplies the active count")
+    let mismatched = try team([worker], running: 0)
+    let duplicate = try team([worker, worker], running: 2)
+    let oversized = try team(Array(repeating: worker, count: 101), running: 101)
+    for invalid in [mismatched, duplicate, oversized] {
+        do {
+            try teams.team("parent", snapshot: invalid)
+            preconditionFailure("Invalid task snapshots must be rejected")
+        } catch ProtocolError.invalid {}
+    }
+    let partial = try team([worker], running: 150, truncated: true)
+    check(partial.isValid, "Capped detail must retain the runtime's complete running count")
+    var malformedParent = worker
+    malformedParent["parentKnown"] = true
+    malformedParent["parentAgentID"] = "child"
+    let selfParent = try team([malformedParent])
+    check(!selfParent.isValid, "An agent cannot be its own parent")
+    malformedParent["parentAgentID"] = String(repeating: "p", count: 129)
+    let longParent = try team([malformedParent])
+    check(!longParent.isValid, "Parent identities must use the same wire bounds as agent identities")
+    let linked = try team([
+        ["id": "lead", "name": "Lead", "task": "", "status": "running", "parentKnown": true],
+        ["id": "nested", "name": "Nested", "task": "", "status": "running", "parentKnown": true, "parentAgentID": "lead"],
+        ["id": "unknown", "name": "Unknown", "task": "", "status": "running"],
+        ["id": "orphan", "name": "Orphan", "task": "", "status": "running", "parentKnown": true, "parentAgentID": "missing"],
+        ["id": "cycle-a", "name": "A", "task": "", "status": "running", "parentKnown": true, "parentAgentID": "cycle-b"],
+        ["id": "cycle-b", "name": "B", "task": "", "status": "running", "parentKnown": true, "parentAgentID": "cycle-a"]
+    ], running: 6)
+    let hierarchy = SubagentHierarchy(agents: linked.agents)
+    check(hierarchy.roots.map(\.id) == ["lead"], "Only observed main-agent spawns belong under the main node")
+    check(hierarchy.children["lead"]?.map(\.id) == ["nested"], "Nested children keep the exact spawning parent")
+    check(Set(hierarchy.unlinked.map(\.id)) == Set(["unknown", "orphan", "cycle-a", "cycle-b"]),
+          "Unknown, missing and cyclic parents remain visible without fabricated connections or recursion")
+    let mixed = try team([
+        ["id": "keeper", "name": "Completed parent", "task": "", "status": "completed", "parentKnown": true],
+        ["id": "active-child", "name": "Active child", "task": "", "status": "running", "parentKnown": true, "parentAgentID": "keeper"],
+        ["id": "ready", "name": "Ready", "task": "", "status": "idle", "parentKnown": true],
+        ["id": "finished", "name": "Finished", "task": "", "status": "completed", "parentKnown": true],
+        ["id": "stopped", "name": "Stopped", "task": "", "status": "cancelled", "parentKnown": true, "parentAgentID": "finished"],
+        ["id": "failed", "name": "Failed", "task": "", "status": "failed", "parentKnown": true, "parentAgentID": "stopped"],
+        ["id": "old-unknown", "name": "Old unknown", "task": "", "status": "completed"]
+    ], running: 1, idle: 1)
+    let activeHierarchy = SubagentHierarchy(agents: mixed.agents, hidingInactive: true)
+    let compactIdle = SubagentHierarchy(agents: mixed.agents, hidingInactive: true, hidingIdle: true)
+    check(compactIdle.roots.isEmpty && compactIdle.unlinked.map(\.id) == ["active-child"] &&
+          compactIdle.idle.map(\.id) == ["ready"] && compactIdle.hidden.count == 5,
+          "Idle helpers group separately from ended helpers without hiding running descendants")
+    let mostlyIdle = try team((0..<20).map { index -> [String: Any] in
+        ["id": "helper-\(index)", "name": "Helper \(index)", "task": "",
+         "status": index == 0 ? "running" : "idle", "parentKnown": true]
+    }, running: 1, idle: 19)
+    let idleCollapsed = SubagentHierarchy(agents: mostlyIdle.agents, hidingInactive: true, hidingIdle: true)
+    check(idleCollapsed.roots.map(\.id) == ["helper-0"] && idleCollapsed.idle.count == 19 &&
+          idleCollapsed.children.isEmpty && idleCollapsed.unlinked.isEmpty && idleCollapsed.hidden.isEmpty,
+          "One running and nineteen idle helpers need only main, running helper and one idle group")
+    check(SubagentHierarchy(agents: mostlyIdle.agents, hidingInactive: true).roots.count == 20,
+          "Expanding idle helpers restores every real root")
+    let idleParent = try team([
+        ["id": "parent", "name": "Parent", "task": "", "status": "idle", "parentKnown": true],
+        ["id": "child", "name": "Child", "task": "", "status": "running", "parentKnown": true, "parentAgentID": "parent"]
+    ], running: 1, idle: 1)
+    check(SubagentHierarchy(agents: idleParent.agents, hidingIdle: true).unlinked.map(\.id) == ["child"] &&
+          SubagentHierarchy(agents: idleParent.agents).children["parent"]?.map(\.id) == ["child"],
+          "Collapsing an idle parent never hides its running child or invents a main-agent connection")
+    let resumedIdle = try team([
+        ["id": "parent", "name": "Parent", "task": "", "status": "running", "parentKnown": true],
+        ["id": "child", "name": "Child", "task": "", "status": "running", "parentKnown": true, "parentAgentID": "parent"]
+    ], running: 2, idle: 0)
+    let resumedHierarchy = SubagentHierarchy(agents: resumedIdle.agents, hidingIdle: true)
+    check(resumedHierarchy.idle.isEmpty && resumedHierarchy.roots.map(\.id) == ["parent"] &&
+          resumedHierarchy.children["parent"]?.map(\.id) == ["child"],
+          "Resumed helpers automatically leave the idle group and regain their actual edges")
+    check(activeHierarchy.roots.map(\.id) == ["ready"], "Idle helpers remain available in the active org chart")
+    check(activeHierarchy.unlinked.map(\.id) == ["active-child"] && activeHierarchy.children.isEmpty,
+          "A child of an inactive parent stays visible without a false connection to main")
+    check(activeHierarchy.hidden.map(\.id) == ["keeper", "finished", "stopped", "failed", "old-unknown"],
+          "All inactive agents belong in a separate block, including inactive parents of active children")
+    let deep = try team((0..<100).map { index -> [String: Any] in
+        var agent: [String: Any] = ["id": "deep-\(index)", "name": "Deep \(index)", "task": "",
+                                   "status": index == 99 ? "running" : "completed", "parentKnown": true]
+        if index > 0 { agent["parentAgentID"] = "deep-\(index - 1)" }
+        return agent
+    })
+    let deepActive = SubagentHierarchy(agents: deep.agents, hidingInactive: true)
+    check(deepActive.hidden.count == 99 && deepActive.unlinked.map(\.id) == ["deep-99"],
+          "Hidden ancestor chains never become invented connections or visible inactive tiles")
+    let activeLinked = SubagentHierarchy(agents: linked.agents, hidingInactive: true)
+    check(activeLinked.children["lead"]?.map(\.id) == ["nested"] && activeLinked.unlinked.count == 4,
+          "Active-only filtering preserves exact safe edges and rejects cyclic relationships")
+    let reactivated = try team([
+        ["id": "finished", "name": "Finished", "task": "", "status": "completed", "parentKnown": true],
+        ["id": "stopped", "name": "Stopped", "task": "", "status": "cancelled", "parentKnown": true, "parentAgentID": "finished"],
+        ["id": "failed", "name": "Resumed", "task": "", "status": "running", "parentKnown": true, "parentAgentID": "stopped"]
+    ])
+    check(SubagentHierarchy(agents: reactivated.agents, hidingInactive: true).unlinked.map(\.id) == ["failed"],
+          "A resumed helper returns to the active chart without showing its inactive ancestors")
+    teams.disconnect("parent")
+    do {
+        try teams.team("parent", snapshot: snapshot)
+        preconditionFailure("Disconnected tasks must not be refreshed as live")
+    } catch ProtocolError.stale {}
+    teams.register(id: "parent", agent: "copilot", cwd: "/project")
+    check(teams.sessions["parent"]?.team == nil, "A fresh connection must not inherit old running counts")
+}
 var workSession = SessionRecord(id: "work-summary", agent: "copilot", cwd: "/project")
 try workSession.activity.receive(activity("work-action"))
 check(workSession.workHeadline == "Last action: Run tests", "Idle must not be described as a currently running tool")
@@ -349,14 +464,23 @@ let cachedDescriptions = try DescriptionCache.load(from: cacheRoot)
 check(cachedDescriptions[liveID]?.text == description.text, "Descriptions must survive app restarts")
 let cacheMode = try FileManager.default.attributesOfItem(atPath: cacheRoot.appendingPathComponent("descriptions.json").path)[.posixPermissions] as? NSNumber
 check(cacheMode?.intValue == 0o600, "AI descriptions must be saved privately")
+let longDescriptions = Dictionary(uniqueKeysWithValues: (0..<200).map {
+    (String($0), SessionDescription(text: String(repeating: "Complete summary. ", count: 330), model: "fixture-haiku",
+                                   generatedAt: Date(timeIntervalSince1970: Double($0))))
+})
+try DescriptionCache.save(longDescriptions, in: cacheRoot)
+let boundedDescriptions = try DescriptionCache.load(from: cacheRoot)
+check(boundedDescriptions.count < 200 && boundedDescriptions["199"]?.text == longDescriptions["199"]?.text && boundedDescriptions["0"] == nil,
+      "Larger summaries must evict the oldest whole records before exceeding the cache's reload bound")
 try FileManager.default.removeItem(at: cacheRoot)
 print("Native description-cache checks passed")
 
 let runnerRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 try FileManager.default.createDirectory(at: runnerRoot, withIntermediateDirectories: true)
 let helper = runnerRoot.appendingPathComponent("summary-fixture.js")
+let fullSummary = String(repeating: "Complete summary sentence. ", count: 50).trimmingCharacters(in: .whitespaces)
 try Data("""
-setTimeout(() => process.stdout.write(JSON.stringify({text:"Fixture description",model:"fixture-haiku"}) + "\\n"), 40);
+setTimeout(() => process.stdout.write(JSON.stringify({text:"Complete summary sentence. ".repeat(50).trim(),model:"fixture-haiku"}) + "\\n"), 40);
 """.utf8).write(to: helper)
 let runner = DescriptionRunner()
 var result: Result<SessionDescription, Error>?
@@ -369,7 +493,15 @@ let deadline = Date().addingTimeInterval(5)
 while result == nil && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
 check(result != nil, "Summary helper must finish without blocking the UI")
 let generated = try result!.get()
-check(generated.text == "Fixture description" && !runner.isRunning, "Helper output must reach the UI and clear busy state")
+check(generated.text == fullSummary && !runner.isRunning, "Full summaries longer than 240 characters must reach the UI")
+let unicodeSummary = Array(repeating: String(repeating: "\u{6F22}", count: 29), count: 190).joined(separator: " ")
+try Data(#"process.stdout.write(JSON.stringify({text:("\u6f22".repeat(29)+" ").repeat(190).trim(),model:"fixture-haiku"}));"#.utf8).write(to: helper)
+result = nil
+try runner.run(sessionID: liveID, script: helper) { result = $0 }
+let unicodeDeadline = Date().addingTimeInterval(5)
+while result == nil && Date() < unicodeDeadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+let generatedUnicode = try result?.get()
+check(generatedUnicode?.text == unicodeSummary, "Valid Unicode summaries must not fail the output byte cap")
 try Data("process.stderr.write('Fixture login failure'); process.exit(1);".utf8).write(to: helper)
 result = nil
 try runner.run(sessionID: liveID, script: helper) { result = $0 }
@@ -424,3 +556,110 @@ try automation.setDangerousEnabled(true, for: controlled)
 automation.disable(controlled.id)
 check(automation.activeIDs.isEmpty, "Disconnect/stop clear both kinds of session approval")
 print("Native steering and explicit Auto-yes checks passed")
+
+var chat = SteeringWorkspace()
+controlled.canChatWithSubagents = true
+controlled.canStopSubagents = true
+controlled.team = try JSONDecoder().decode(SubagentTeam.self, from: Data("""
+{"agents":[{"id":"worker","name":"Reviewer","task":"Review changes","status":"idle"}],"runningCount":0,"idleCount":1,"truncated":false}
+""".utf8))
+chat.setDraft("Main message", sessionID: controlled.id)
+chat.setDraft("Check edge cases", sessionID: controlled.id, agentID: "worker")
+let childMessage = try chat.begin(session: controlled, action: "queue", agentID: "worker")
+check(chat.history[controlled.id]?.last?.agentID == "worker", "Child messages retain their exact destination")
+check(chat.draft(sessionID: controlled.id) == "Main message", "Child drafts cannot replace main drafts")
+chat.update(sessionID: controlled.id, commandID: childMessage, status: "received", text: "Delivered")
+let mainMessage = try chat.begin(session: controlled, action: "queue")
+chat.update(sessionID: controlled.id, commandID: mainMessage, status: "queued", text: "Queued")
+let stopChild = try chat.begin(session: controlled, action: "stop", agentID: "worker")
+chat.update(sessionID: controlled.id, commandID: mainMessage, status: "received", text: "Consumed later")
+check(chat.receipt(sessionID: controlled.id, commandID: mainMessage)?.status == "received",
+      "A later main ACK must still resolve after a child control replaced the latest receipt")
+check(chat.receipt(sessionID: controlled.id, commandID: stopChild)?.status == "sending", "ACKs cannot cross destinations")
+chat.disconnect(controlled.id)
+check(chat.receipt(sessionID: controlled.id, commandID: stopChild)?.status == "unknown", "Disconnect marks every unresolved target uncertain")
+chat.setDraft("Do not redirect", sessionID: controlled.id, agentID: "missing")
+do {
+    _ = try chat.begin(session: controlled, action: "queue", agentID: "missing")
+    preconditionFailure("An unknown child must never fall back to the main agent")
+} catch ProtocolError.invalid {}
+controlled.canChatWithSubagents = false
+do {
+    _ = try chat.begin(session: controlled, action: "queue", agentID: "worker")
+    preconditionFailure("Old extensions must not accept child messages")
+} catch ProtocolError.invalid {}
+print("Native per-agent chat correlation checks passed")
+
+var management = SteeringWorkspace()
+let creation = SubagentCreation(name: "Reviewer", agentType: "general-purpose", prompt: "Review edge cases")
+do {
+    _ = try management.begin(session: controlled, action: "create_subagent", creation: creation)
+    preconditionFailure("An old extension must not allow subagent creation")
+} catch ProtocolError.invalid {}
+controlled.canCreateSubagents = true
+controlled.canRemoveSubagents = true
+controlled.subagentTypes = ["general-purpose"]
+management.setDraft("Keep main draft", sessionID: controlled.id)
+let created = try management.begin(session: controlled, action: "create_subagent", creation: creation)
+check(management.receipt(sessionID: controlled.id, commandID: created)?.message == creation.prompt,
+      "Creation must use its own instructions without overwriting main chat")
+do {
+    _ = try management.begin(session: controlled, action: "create_subagent", creation: creation)
+    preconditionFailure("Double-clicking create must not dispatch twice while awaiting acknowledgment")
+} catch ProtocolError.invalid {}
+management.update(sessionID: controlled.id, commandID: created, status: "received", text: "Wrong kind of ACK")
+check(management.receipt(sessionID: controlled.id, commandID: created)?.status == "sending",
+      "A generic chat ACK cannot claim an agent was created")
+management.update(sessionID: controlled.id, commandID: created, status: "created", text: "Created")
+check(management.receipt(sessionID: controlled.id, commandID: created)?.status == "created" &&
+      management.draft(sessionID: controlled.id) == "Keep main draft",
+      "Creation needs its own ACK and must preserve the main draft")
+controlled.subagentModels = ["account-model"]
+let selectedModel = try management.begin(session: controlled, action: "create_subagent",
+    creation: SubagentCreation(name: "Model helper", agentType: "general-purpose", prompt: "Review", model: "account-model"))
+check(management.receipt(sessionID: controlled.id, commandID: selectedModel)?.model == "account-model",
+      "Explicit model selection must survive native command correlation")
+management.update(sessionID: controlled.id, commandID: selectedModel, status: "created", text: "Created")
+for invalid in [
+    SubagentCreation(name: " ", agentType: "general-purpose", prompt: "Review"),
+    SubagentCreation(name: "Reviewer", agentType: "missing", prompt: "Review"),
+    SubagentCreation(name: "Reviewer", agentType: "general-purpose", prompt: " "),
+    SubagentCreation(name: String(repeating: "x", count: 161), agentType: "general-purpose", prompt: "Review"),
+    SubagentCreation(name: "Reviewer", agentType: "general-purpose", prompt: "Review", model: "unadvertised-model")
+] {
+    do {
+        _ = try management.begin(session: controlled, action: "create_subagent", creation: invalid)
+        preconditionFailure("Invalid creation fields must be rejected")
+    } catch ProtocolError.invalid {}
+}
+do {
+    _ = try management.begin(session: controlled, action: "remove_subagent", agentID: "worker")
+    preconditionFailure("An idle helper must be stopped, not removed")
+} catch ProtocolError.invalid {}
+controlled.team = try JSONDecoder().decode(SubagentTeam.self, from: Data("""
+{"agents":[{"id":"worker","name":"Reviewer","task":"Review changes","status":"cancelled"}],"runningCount":0,"idleCount":0,"truncated":false}
+""".utf8))
+let removed = try management.begin(session: controlled, action: "remove_subagent", agentID: "worker")
+management.update(sessionID: controlled.id, commandID: removed, status: "removed", text: "Removed")
+check(management.receipt(sessionID: controlled.id, commandID: removed)?.status == "removed" &&
+      management.receipt(sessionID: controlled.id, commandID: removed)?.agentID == "worker",
+      "Removal ACKs must name the exact ended helper and remain separate from Stop")
+controlled.connected = false
+do {
+    _ = try management.begin(session: controlled, action: "create_subagent", creation: creation)
+    preconditionFailure("Disconnected sessions must not create helpers")
+} catch ProtocolError.invalid {}
+print("Native subagent management checks passed")
+
+var managementCatalog = SessionRegistry()
+managementCatalog.register(id: "catalog-session", agent: "copilot", cwd: "/fixture")
+try managementCatalog.managementCapabilities("catalog-session", create: true, remove: true,
+    types: ["general-purpose"], models: ["account-model"])
+do {
+    try managementCatalog.managementCapabilities("catalog-session", create: true, remove: true,
+        types: ["general-purpose"], models: ["duplicate", "duplicate"])
+    preconditionFailure("A malformed live model catalog must be rejected")
+} catch ProtocolError.invalid {}
+check(managementCatalog.sessions["catalog-session"]?.canCreateSubagents == false &&
+      managementCatalog.sessions["catalog-session"]?.subagentModels.isEmpty == true,
+      "Malformed catalogs must revoke stale creation choices rather than retain unsafe old capabilities")

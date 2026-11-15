@@ -10,6 +10,12 @@ import Vision
         NSApp.setActivationPolicy(.accessory)
         NSApp.appearance = NSAppearance(named: .aqua)
         NSApp.finishLaunching()
+        if CommandLine.arguments.contains("--performance") {
+            try AgentPerformanceChecks.run()
+            return
+        }
+        ResponseRenderingChecks.run()
+        SessionReorderingChecks.run()
         let plist = try PropertyListSerialization.propertyList(from: Data(contentsOf: URL(fileURLWithPath: "resources/Info.plist")), format: nil) as! [String: Any]
         precondition(plist["LSUIElement"] as? Bool != true, "Notify must be a normal Dock application, not a hidden menu-bar agent")
         let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent("notify-ui-" + UUID().uuidString)
@@ -18,6 +24,60 @@ import Vision
         let defaults = UserDefaults(suiteName: suite)!
         defaults.set("dark", forKey: "appearanceMode")
         let store = Store(directory: fixtureRoot, defaults: defaults)
+        do {
+            let teamStore = Store(directory: fixtureRoot.appendingPathComponent("team"), defaults: defaults)
+            defer { teamStore.stop() }
+            func receiveTeam(_ value: [String: Any]) throws {
+                teamStore.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: JSONSerialization.data(withJSONObject: value)))
+            }
+            try receiveTeam(["type": "hello", "sessionID": "team-session", "agent": "copilot", "cwd": "/Projects/example"])
+            try receiveTeam(["type": "team", "sessionID": "team-session", "team": [
+                "agents": [["id": "worker-1", "name": "Reviewer", "task": "Review the changes", "status": "running"]],
+                "runningCount": 1, "idleCount": 0, "truncated": false
+            ]])
+            precondition(teamStore.error == nil, "Native sessions must accept authoritative subagent snapshots. Fixture: \(fixtureRoot.path)")
+            precondition(teamStore.registry.sessions["team-session"]?.team?.runningCount == 1)
+            try receiveTeam(["type": "team", "sessionID": "team-session", "team": [
+                "agents": [], "runningCount": 0, "idleCount": 0, "truncated": false
+            ]])
+            precondition(teamStore.registry.sessions["team-session"]?.team?.agents.isEmpty == true,
+                         "Authoritative snapshots must remove finished or vanished agents")
+            try receiveTeam(["type": "hello", "sessionID": "team-session", "agent": "copilot", "cwd": "/Projects/example"])
+            precondition(teamStore.registry.sessions["team-session"]?.team == nil,
+                         "Reconnect must wait for a fresh snapshot instead of claiming an old running count")
+            for (id, child) in [("main-reply", false), ("child-reply", true)] {
+                var activity: [String: Any] = ["id": id, "kind": "assistant", "title": "Agent response",
+                                               "detail": id, "status": "complete", "timestamp": ISO8601DateFormatter().string(from: Date())]
+                if child { activity["agentID"] = "worker-1" }
+                try receiveTeam(["type": "activity", "sessionID": "team-session", "activity": activity])
+            }
+            precondition(teamStore.registry.sessions["team-session"]?.output.contains("main-reply") == true &&
+                         teamStore.registry.sessions["team-session"]?.output.contains("child-reply") == false,
+                         "Legacy conversation context must not mislabel child responses as the main agent")
+            try receiveTeam(["type": "capabilities", "sessionID": "team-session", "steering": true])
+            let oldStop = try teamStore.steeringWorkspace.begin(session: teamStore.registry.sessions["team-session"]!, action: "stop")
+            try receiveTeam(["type": "state", "sessionID": "team-session", "state": "working"])
+            try receiveTeam(["type": "control_status", "sessionID": "team-session", "commandID": oldStop, "status": "stopped"])
+            precondition(teamStore.registry.sessions["team-session"]?.stopped == false,
+                         "A delayed stop acknowledgment must not freeze an agent that resumed working")
+            let disconnectedStop = try teamStore.steeringWorkspace.begin(session: teamStore.registry.sessions["team-session"]!, action: "stop")
+            teamStore.server.onDisconnect("team-session")
+            try receiveTeam(["type": "hello", "sessionID": "team-session", "agent": "copilot", "cwd": "/Projects/example"])
+            try receiveTeam(["type": "control_status", "sessionID": "team-session", "commandID": disconnectedStop, "status": "stopped"])
+            precondition(teamStore.registry.sessions["team-session"]?.stopped == false,
+                         "An old connection's stop must not freeze the reconnected main agent")
+            for (id, child) in [("main-tool", false), ("child-tool", true)] {
+                var activity: [String: Any] = ["id": id, "kind": "tool", "title": id,
+                    "detail": "Reported command and result", "status": "running",
+                    "timestamp": ISO8601DateFormatter().string(from: Date())]
+                if child { activity["agentID"] = "worker-1" }
+                try receiveTeam(["type": "activity", "sessionID": "team-session", "activity": activity])
+            }
+            let activitySession = teamStore.registry.sessions["team-session"]!
+            precondition(AgentActivityPanel(session: activitySession, agentID: nil).reported.map(\.id) == ["main-tool"] &&
+                         AgentActivityPanel(session: activitySession, agentID: "worker-1").reported.map(\.id) == ["child-tool"],
+                         "The compact activity panel must show only the selected agent's reported actions")
+        }
         do {
             let recovering = Store(directory: fixtureRoot.appendingPathComponent("error-recovery"), defaults: defaults)
             defer { recovering.stop() }
@@ -104,6 +164,50 @@ import Vision
             automated.setSessionDangerousAutoYes(id, enabled: true)
             automated.steer(id, action: "stop")
             precondition(automated.automation.activeIDs.isEmpty, "Stop must disable dangerous mode")
+            waitForAutomation { automated.registry.sessions[id]?.stopped == true }
+            try sendEvent(["type": "state", "sessionID": id, "state": "working"])
+            precondition(automated.registry.sessions[id]?.stopped == false, "New work clears the stopped pose")
+            automated.steeringWorkspace.setDraft("Only the helper", sessionID: id, agentID: "worker")
+            automated.steer(id, action: "queue", agentID: "worker")
+            waitForAutomation { automated.steeringWorkspace.history[id]?.last?.status == "received" }
+            automated.steer(id, action: "stop", agentID: "worker")
+            waitForAutomation { automated.steeringWorkspace.history[id]?.last?.status == "stopped" }
+            precondition(automated.registry.sessions[id]?.stopped == false, "A child stop must not mark the main agent stopped")
+            let controlsSent = try String(contentsOf: automated.directory.appendingPathComponent("controls.jsonl"), encoding: .utf8)
+                .split(separator: "\n").map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }
+            precondition(controlsSent.count == 3 && controlsSent[1]["agentID"] as? String == "worker" &&
+                         controlsSent[1]["text"] as? String == "Only the helper" && controlsSent[2]["agentID"] as? String == "worker",
+                         "Native messages and stops must preserve the exact child destination over the real socket")
+            automated.steeringWorkspace.setDraft("Keep main conversation draft", sessionID: id)
+            let createdID = automated.steer(id, action: "create_subagent",
+                creation: SubagentCreation(name: "Review helper", agentType: "general-purpose", prompt: "Check edge cases", model: "fixture-model"))!
+            precondition(automated.steer(id, action: "create_subagent",
+                creation: SubagentCreation(name: "Duplicate", agentType: "general-purpose", prompt: "Do not send")) == nil,
+                "A second Create while delivery is pending must not reach the socket")
+            automated.error = nil
+            waitForAutomation { automated.steeringWorkspace.receipt(sessionID: id, commandID: createdID)?.status == "created" &&
+                automated.registry.sessions[id]?.team?.agents.contains(where: { $0.id == "created-helper" }) == true }
+            precondition(automated.steeringWorkspace.draft(sessionID: id) == "Keep main conversation draft")
+            let mainRows = AgentChatView(store: automated, session: automated.registry.sessions[id]!, agentID: nil).rows
+            precondition(!mainRows.contains {
+                if case .command(let receipt) = $0 { return receipt.isManagement }
+                return false
+            }, "Subagent creation instructions must not masquerade as a message sent to the main agent")
+            let removedID = automated.steer(id, action: "remove_subagent", agentID: "created-helper")!
+            waitForAutomation { automated.steeringWorkspace.receipt(sessionID: id, commandID: removedID)?.status == "removed" &&
+                automated.registry.sessions[id]?.team?.agents.contains(where: { $0.id == "created-helper" }) == false }
+            let managementPackets = try String(contentsOf: automated.directory.appendingPathComponent("controls.jsonl"), encoding: .utf8)
+                .split(separator: "\n").map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }
+            precondition(managementPackets.count == 5 && managementPackets[3]["action"] as? String == "create_subagent" &&
+                managementPackets[3]["agentName"] as? String == "Review helper" &&
+                managementPackets[3]["agentType"] as? String == "general-purpose" &&
+                managementPackets[3]["model"] as? String == "fixture-model" &&
+                managementPackets[3]["text"] as? String == "Check edge cases" && managementPackets[3]["agentID"] == nil &&
+                managementPackets[4]["action"] as? String == "remove_subagent" &&
+                managementPackets[4]["agentID"] as? String == "created-helper",
+                "Creation and removal must preserve their exact fields and targets on the native wire")
+            precondition(automated.audit.contains { $0.action.contains("Requested subagent creation") } &&
+                automated.audit.contains { $0.action.contains("Requested removal") }, "Management must be audited before dispatch")
             automated.setSessionDangerousAutoYes(id, enabled: true)
             try sendEvent(["type": "error", "sessionID": id, "text": "Synthetic delivery failure"])
             precondition(automated.automation.activeIDs.isEmpty, "Agent errors must disable dangerous mode")
@@ -111,6 +215,13 @@ import Vision
             let history = automated.directory.appendingPathComponent("history.json")
             try FileManager.default.removeItem(at: history)
             try FileManager.default.createDirectory(at: history, withIntermediateDirectories: false)
+            precondition(automated.steer(id, action: "create_subagent",
+                creation: SubagentCreation(name: "Blocked", agentType: "general-purpose", prompt: "No dispatch")) == nil,
+                "A failed creation audit must prevent dispatch")
+            precondition(automated.steeringWorkspace.history[id]?.last?.status == "failed")
+            let afterAuditFailure = try String(contentsOf: automated.directory.appendingPathComponent("controls.jsonl"), encoding: .utf8)
+                .split(separator: "\n").count
+            precondition(afterAuditFailure == 5, "Audit failure must not create a runtime helper")
             automated.setSessionDangerousAutoYes(id, enabled: false)
             precondition(automated.automation.activeIDs.isEmpty && automated.error != nil, "Off must work even when its audit cannot be saved")
             automated.setSessionDangerousAutoYes(id, enabled: true)
@@ -327,12 +438,21 @@ import Vision
                      "Unknown runtime states must not invent working activity")
         precondition(!AgentPresence.working.animates(visible: false, reduceMotion: false) &&
                      !AgentPresence.thinking.animates(visible: true, reduceMotion: true) &&
-                     !AgentPresence.resting.animates(visible: true, reduceMotion: false) &&
+                     AgentPresence.resting.animates(visible: true, reduceMotion: false) &&
                      AgentPresence.working.animates(visible: true, reduceMotion: false),
-                     "Only visible working/thinking agents may animate, respecting Reduce Motion")
+                     "Visible active and idle poses may animate, respecting Reduce Motion")
+        presenceSession.stopped = true
+        precondition(AgentPresence(session: presenceSession) == .stopped, "An acknowledged Stop needs a distinct resting pose")
+        precondition(!AgentPresence.stopped.animates(visible: true, reduceMotion: false))
+        let typing = AgentPose(presence: .working, time: 0.25)
+        precondition(typing.leftHand != typing.rightHand, "Typing must alternate hands")
+        precondition(AgentPose(presence: .resting, time: 0).blinking &&
+                     !AgentPose(presence: .resting, time: 1).blinking, "Idle blinks must be brief, not constantly closed eyes")
+        precondition(AgentPose(presence: .stopped, time: 0) == AgentPose(presence: .stopped, time: 1),
+                     "Stopped must not keep typing or blinking")
         let host = NSHostingView(rootView: RequestEditor(store: store, session: session, request: request)
             .padding(20).background(Palette.surface).preferredColorScheme(.light))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 410, height: 430),
+        let window = ReplyPanel(contentRect: NSRect(x: 0, y: 0, width: 410, height: 430),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = host
         host.frame = NSRect(x: 0, y: 0, width: 410, height: 430)
@@ -638,14 +758,15 @@ import Vision
         workspaceText.recognitionLevel = .accurate
         try VNImageRequestHandler(cgImage: workspaceBitmap.cgImage!, options: [:]).perform([workspaceText])
         let workspaceLabels = (workspaceText.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
-        precondition(workspaceLabels.contains("Live activity") && workspaceLabels.contains("Controls"),
-                     "The workspace must expose live activity alongside direct agent controls, not hide them in separate screens")
+        precondition(workspaceLabels.contains("Chat") && !workspaceLabels.contains("Controls"),
+                     "Messaging must have one Chat destination, not a duplicate Controls tab")
+        precondition(workspaceLabels.contains("Hierarchy"), "The agent hierarchy must be discoverable in session navigation")
         func showActivity(in view: NSView) {
             guard let tabs = descendants(view).compactMap({ $0 as? NSSegmentedControl }).first(where: {
-                $0.segmentCount == 3 && $0.label(forSegment: 1) == "Controls"
+                $0.segmentCount == 4 && $0.label(forSegment: 2) == "Settings"
             }) else { preconditionFailure("Session navigation must expose recognizable native tabs") }
-            tabs.selectedSegment = 1
-            precondition(tabs.sendAction(tabs.action, to: tabs.target), "Controls navigation must respond without hiding live activity")
+            tabs.selectedSegment = 2
+            precondition(tabs.sendAction(tabs.action, to: tabs.target), "Settings must retain session automation without hiding live activity")
             for _ in 0..<10 {
                 view.layoutSubtreeIfNeeded()
                 RunLoop.current.run(until: Date().addingTimeInterval(0.02))
@@ -671,13 +792,38 @@ import Vision
                 let id = "visual-\(index)"
                 try receive(["type": "hello", "sessionID": id, "agent": index == 1 ? "claude" : "copilot", "cwd": "/Projects/\(projects[index])"])
                 try receive(["type": "metadata", "sessionID": id, "title": title])
-                try receive(["type": "capabilities", "sessionID": id, "activityFeed": true, "steering": true, "sessionAutoYes": true])
+                try receive(["type": "capabilities", "sessionID": id, "activityFeed": true, "steering": true, "sessionAutoYes": true,
+                             "subagentChat": true, "subagentStop": true,
+                             "subagentCreate": true, "subagentRemove": true, "subagentTypes": ["general-purpose", "explore"],
+                             "subagentModels": ["account-model"]])
                 try receive(["type": "state", "sessionID": id, "state": index > 5 ? "ready" : "working", "text": index > 5 ? "Agent idle" : "Reviewing the requested changes"])
                 try receive(["type": "activity", "sessionID": id, "activity": [
                     "id": "tool-\(index)", "kind": "tool", "title": index == 0 ? "Read auth/refresh.ts" : "Inspect project files",
                     "detail": "Read the relevant implementation before making changes.", "status": "complete",
                     "timestamp": ISO8601DateFormatter().string(from: Date().addingTimeInterval(-95))
                 ]])
+                try receive(["type": "activity", "sessionID": id, "activity": [
+                    "id": "reply-\(index)", "kind": "assistant", "title": "Agent response",
+                    "detail": index == 0 ? "I found the expired-token path. The change is ready for a focused check." :
+                        "I am checking the implementation and its edge cases before making changes.",
+                    "status": "complete", "timestamp": ISO8601DateFormatter().string(from: Date().addingTimeInterval(-90))
+                ]])
+                if index != 1 {
+                    let helpers: [[String: Any]] = index == 0 || index == 2 ? [
+                        ["id": "worker-one", "name": "Code explorer", "task": "Trace focus order through the overflow menu", "status": "running", "model": "Claude Sonnet"],
+                        ["id": "worker-two", "name": "Test runner", "task": "Exercise keyboard navigation and dismissal", "status": "running"],
+                        ["id": "worker-three", "name": "Reviewer", "task": "Review the proposed keyboard changes", "status": "idle"]
+                    ] : []
+                    try receive(["type": "team", "sessionID": id, "team": [
+                        "agents": helpers, "runningCount": helpers.isEmpty ? 0 : 2,
+                        "idleCount": helpers.isEmpty ? 0 : 1, "truncated": false
+                    ]])
+                    try receive(["type": "activity", "sessionID": id, "activity": [
+                        "id": "child-tool", "agentID": "worker-one", "kind": "tool", "title": "Reading menu.tsx",
+                        "detail": "PRIVATE CHILD TOOL DETAIL", "status": "running",
+                        "timestamp": ISO8601DateFormatter().string(from: Date())
+                    ]])
+                }
             }
             let choices = [
                 ["id": "session", "label": "Allow every time in this session", "detail": "Command pattern: npm test. Applies to this running session; resume may ask again."],
@@ -701,6 +847,12 @@ import Vision
             visual.select("visual-0", request: "visual-request")
             visual.replyWorkspace.update(requestIDs: ["visual-request", "visual-question"])
             visual.setColor(0xF29A78, for: visual.selected!)
+            let copyExamples = [
+                ("Copy response", "## Full response\n\n```swift\nlet value = 42\n```\n"),
+                ("Copy message", "Keep this exact message.\nSecond line."),
+                ("Copy summary", String(repeating: "A complete summary sentence. ", count: 45).trimmingCharacters(in: .whitespaces))
+            ]
+            var hierarchySelection: String? = "unchanged"
             func capture<V: View>(_ view: V, width: CGFloat, height: CGFloat, name: String,
                                   appearance: NSAppearance.Name = .aqua) throws {
                 if name.hasPrefix("settings") { visual.appearanceMode = appearance == .darkAqua ? .dark : .light }
@@ -866,8 +1018,9 @@ import Vision
                     let right = (recognition.results ?? []).filter { $0.boundingBox.minX > 0.68 }
                         .compactMap { $0.topCandidates(1).first?.string }
                     if name == "control-center.png" {
-                        precondition(right.joined(separator: " ").contains("Read the relevant"),
-                                     "Actual tool activity must be readable without expanding every entry. Found: \(right)")
+                        precondition(right.joined(separator: " ").contains("expired-token") &&
+                                     !right.joined(separator: " ").contains("Read the relevant"),
+                                     "Only agent responses, not tool details, belong in the response feed. Found: \(right)")
                     } else {
                         precondition(right.contains("Disconnected"), "The agent state must not wrap in the middle of a word")
                     }
@@ -899,7 +1052,357 @@ import Vision
                     precondition(text.contains("Connected") && text.contains("Not connected"),
                                  "Rendered connection groups must remain findable. Found: \(text)")
                 }
+                if name.hasPrefix("subagent-management") {
+                    func managementText() throws -> [VNRecognizedTextObservation] {
+                        let image = capture.bitmapImageRepForCachingDisplay(in: capture.bounds)!
+                        capture.cacheDisplay(in: capture.bounds, to: image)
+                        let recognition = VNRecognizeTextRequest()
+                        recognition.recognitionLevel = .accurate
+                        try VNImageRequestHandler(cgImage: image.cgImage!, options: [:]).perform([recognition])
+                        return recognition.results ?? []
+                    }
+                    let rendered = try managementText().compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+                    precondition(rendered.contains("Add subagent") && rendered.contains("Create subagent") &&
+                        rendered.contains("model credits") && rendered.contains("Ended helpers") && rendered.contains("Remove from list"),
+                        "Management must visibly separate paid creation from removing ended helpers: \(rendered)")
+                    if name == "subagent-management.png" {
+                        window.makeKeyAndOrderFront(nil)
+                        NSApp.activate(ignoringOtherApps: true)
+                        pumpNativeEvents()
+                        func clickManagement(_ label: String) throws {
+                            let item = try managementText().first { $0.topCandidates(1).first?.string.contains(label) == true }!
+                            let point = capture.convert(NSPoint(x: item.boundingBox.midX * capture.bounds.width,
+                                y: (capture.isFlipped ? 1 - item.boundingBox.midY : item.boundingBox.midY) * capture.bounds.height), to: nil)
+                            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                                NSApp.postEvent(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                    context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!, atStart: false)
+                            }
+                            pumpNativeEvents()
+                        }
+                        let before = visual.steeringWorkspace.history["visual-0"]?.count ?? 0
+                        try clickManagement("Create subagent")
+                        precondition((visual.steeringWorkspace.history["visual-0"]?.count ?? 0) == before,
+                                     "Empty creation fields must disable Create")
+                        for (placeholder, value) in [("Subagent name", "UI reviewer"), ("Instructions for this subagent", "Review the UI fixture")] {
+                            try clickManagement(placeholder)
+                            guard let editor = window.firstResponder as? NSTextInputClient else {
+                                preconditionFailure("Management fields must accept native text input")
+                            }
+                            editor.insertText(value, replacementRange: NSRange(location: NSNotFound, length: 0))
+                            pumpNativeEvents()
+                        }
+                        try clickManagement("Create subagent")
+                        let receipt = visual.steeringWorkspace.history["visual-0"]?.last
+                        precondition(receipt?.action == "create_subagent" && receipt?.agentName == "UI reviewer" &&
+                            receipt?.message == "Review the UI fixture" && receipt?.agentType == "general-purpose",
+                            "The actual Create button must submit the entered fields, not the main chat draft")
+                        visual.error = nil
+                        window.orderOut(nil)
+                    }
+                }
+                if name.hasPrefix("agent-hierarchy") {
+                    let scroll = descendants(capture).compactMap { $0 as? NSScrollView }.first!
+                    precondition(scroll.documentView!.frame.width <= scroll.contentSize.width + 1 &&
+                                 scroll.documentView!.frame.height <= scroll.contentSize.height + 1,
+                                 "Fit must keep the whole org chart inside its viewport: \(name), document=\(scroll.documentView!.frame.size), viewport=\(scroll.contentSize)")
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+                    if name.contains("large") {
+                        precondition(text.contains("27 hidden inactive agents") && text.contains("2 failed"),
+                                     "A large team's inactive block and failure count must stay separate and visible")
+                    }
+                    precondition(text.contains("Fit") && text.contains("100%"), "Large charts must have fit and readable-size controls")
+                    if name.contains("idle") {
+                        precondition(text.contains("Main agent") && text.contains("Working helper") &&
+                                     text.contains("19 idle subagents") && !text.contains("Resting"),
+                                     "One running and nineteen idle helpers must show only main, working helper and idle-group tiles")
+                    } else if !name.contains("large") && !name.contains("deep") {
+                        precondition(text.contains("Design lead") && !text.contains("Nested reviewer") &&
+                                     text.contains("1 idle subagent") && text.contains("1 hidden inactive agent"),
+                                     "The chart must group idle helpers separately from completed/stopped helpers: \(name)")
+                        precondition(!text.contains("Stopped helper"), "Inactive agents must start folded")
+                        func bounds(_ label: String) -> CGRect {
+                            (recognition.results ?? []).first { $0.topCandidates(1).first?.string == label }!.boundingBox
+                        }
+                        let lead = bounds("Design lead"), peer = bounds("Code explorer")
+                        precondition(abs(lead.midY - peer.midY) < 0.035 && abs(lead.midX - peer.midX) > 0.1,
+                                     "Sibling agents must sit side by side in an org chart, not in a list")
+                        precondition(bounds("Main agent").midY > lead.midY,
+                                     "Children must be laid out below their actual parent")
+                    }
+                    if name == "agent-hierarchy.png" || name == "agent-hierarchy-small.png" || name == "agent-hierarchy-idle.png" {
+                        window.makeKeyAndOrderFront(nil)
+                        NSApp.activate(ignoringOtherApps: true)
+                        pumpNativeEvents()
+                        func hierarchyText() throws -> [VNRecognizedTextObservation] {
+                            let image = capture.bitmapImageRepForCachingDisplay(in: capture.bounds)!
+                            capture.cacheDisplay(in: capture.bounds, to: image)
+                            let recognition = VNRecognizeTextRequest()
+                            recognition.recognitionLevel = .accurate
+                            try VNImageRequestHandler(cgImage: image.cgImage!, options: [:]).perform([recognition])
+                            return recognition.results ?? []
+                        }
+                        func hierarchyClick(_ label: String) throws {
+                            guard let item = try hierarchyText().first(where: { $0.topCandidates(1).first?.string.contains(label) == true }) else {
+                                preconditionFailure("The hierarchy must display \(label)")
+                            }
+                            let point = capture.convert(NSPoint(x: item.boundingBox.midX * capture.bounds.width,
+                                y: (capture.isFlipped ? 1 - item.boundingBox.midY : item.boundingBox.midY) * capture.bounds.height), to: nil)
+                            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                                window.sendEvent(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                    context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!)
+                                pumpNativeEvents()
+                            }
+                            for _ in 0..<8 { RunLoop.current.run(until: Date().addingTimeInterval(0.025)) }
+                        }
+                        if name == "agent-hierarchy-idle.png" {
+                            try hierarchyClick("19 idle subagents")
+                            try hierarchyClick("100%")
+                            precondition(scroll.documentView!.frame.width > scroll.contentSize.width,
+                                         "Expanded idle agents must be available at readable size by scrolling")
+                            scroll.contentView.scroll(to: NSPoint(x: scroll.documentView!.frame.width - scroll.contentSize.width, y: 0))
+                            scroll.reflectScrolledClipView(scroll.contentView)
+                            pumpNativeEvents()
+                            try hierarchyClick("Resting 19")
+                            precondition(hierarchySelection == "idle-19", "Expanded idle helpers must open their exact chat")
+                            try hierarchyClick("Hide idle")
+                            let collapsedIdle = try hierarchyText()
+                            precondition(!collapsedIdle.contains {
+                                $0.topCandidates(1).first?.string.contains("Resting") == true
+                            }, "Collapsing the idle group must hide its individual helpers")
+                            try hierarchyClick("Fit")
+                            let fittedIdle = try hierarchyText()
+                            precondition(fittedIdle.contains {
+                                $0.topCandidates(1).first?.string.contains("19 idle subagents") == true
+                            }, "The idle group must return after collapsing")
+                        } else if name == "agent-hierarchy-small.png" {
+                            try hierarchyClick("1 idle subagent")
+                            try hierarchyClick("100%")
+                            precondition(scroll.documentView!.frame.height > scroll.contentSize.height,
+                                         "Actual-size zoom must allow scrolling rather than clip a larger chart")
+                            try hierarchyClick("Fit")
+                            precondition(scroll.documentView!.frame.height <= scroll.contentSize.height + 1,
+                                         "Fit must restore the complete chart after zooming")
+                        } else {
+                        try hierarchyClick("Design lead")
+                        precondition(hierarchySelection == "design-lead", "Hierarchy nodes must select their exact agent")
+                        try hierarchyClick("1 idle subagent")
+                        let expandedText = try hierarchyText()
+                        let expandedLead = expandedText.first { $0.topCandidates(1).first?.string == "Design lead" }!
+                        let expandedChild = expandedText.first { $0.topCandidates(1).first?.string == "Nested reviewer" }!
+                        precondition(expandedChild.boundingBox.midY < expandedLead.boundingBox.midY,
+                                     "Expanded idle descendants must appear below their actual parent")
+                        try hierarchyClick("Nested reviewer")
+                        precondition(hierarchySelection == "nested-reviewer", "Nested clicks must not select their parent")
+                        try hierarchyClick("Hide 1 branch")
+                        let folded = try hierarchyText()
+                        precondition(!folded.contains { $0.topCandidates(1).first?.string.contains("Nested reviewer") == true },
+                                     "Folding a branch must actually hide its descendants")
+                        try hierarchyClick("Show 1 branch")
+                        try hierarchyClick("1 hidden inactive agent")
+                        try hierarchyClick("Stopped helper")
+                        precondition(hierarchySelection == "nested-reviewer", "Stopped hierarchy nodes must not be interactive")
+                        try hierarchyClick("Hide inactive agents")
+                        let hidden = try hierarchyText()
+                        precondition(!hidden.contains { $0.topCandidates(1).first?.string.contains("Stopped helper") == true },
+                                     "Inactive expansion must be reversible")
+                        try hierarchyClick("Main agent")
+                        precondition(hierarchySelection == nil, "The main tile must still select the main chat")
+                        }
+                        window.orderOut(nil)
+                    }
+                }
+                if name == "control-center-responses.png" || name == "copy-actions.png" {
+                  if name == "control-center-responses.png" {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+                    precondition(text.contains("Tools & thinking") && text.contains("Thinking"),
+                                 "Chat must show distinct tool/thinking entries without first expanding the activity panel. Found: \(text)")
+                  }
+                  let examples = name == "copy-actions.png" ? copyExamples :
+                    [("Copy", "function closeMenu(trigger: HTMLElement) {\n  setOpen(false);\n  trigger.focus();\n}\n")]
+                  for (label, expectedCopy) in examples {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    guard var copy = recognition.results?.first(where: { $0.topCandidates(1).first?.string.hasSuffix(label) == true }) else {
+                        preconditionFailure("A visible \(label) action is required")
+                    }
+                    let pasteboard = NSPasteboard.general
+                    let originalText = pasteboard.string(forType: .string)
+                    let original = (pasteboard.pasteboardItems ?? []).map { item in
+                        let saved = NSPasteboardItem()
+                        for type in item.types {
+                            if let data = item.data(forType: type) { saved.setData(data, forType: type) }
+                        }
+                        return saved
+                    }
+                    let wasVisible = window.isVisible
+                    window.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                    let activationDeadline = Date().addingTimeInterval(2)
+                    while !NSApp.isActive && Date() < activationDeadline {
+                        pumpNativeEvents()
+                        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+                    }
+                    precondition(NSApp.isActive && window.isKeyWindow,
+                                 "Pointer interaction requires an active fixture window (app: \(NSApp.isActive), key: \(window.isKeyWindow))")
+                    capture.layoutSubtreeIfNeeded()
+                    let activeBitmap = capture.bitmapImageRepForCachingDisplay(in: capture.bounds)!
+                    capture.cacheDisplay(in: capture.bounds, to: activeBitmap)
+                    try VNImageRequestHandler(cgImage: activeBitmap.cgImage!, options: [:]).perform([recognition])
+                    guard let activeCopy = recognition.results?.first(where: { $0.topCandidates(1).first?.string.hasSuffix(label) == true }) else {
+                        preconditionFailure("The \(label) action must remain visible after activating the window")
+                    }
+                    copy = activeCopy
+                    let location = capture.convert(NSPoint(x: copy.boundingBox.midX * capture.bounds.width,
+                        y: (capture.isFlipped ? 1 - copy.boundingBox.midY : copy.boundingBox.midY) * capture.bounds.height), to: nil)
+                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                        window.sendEvent(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                            context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!)
+                        pumpNativeEvents()
+                    }
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+                    let copiedCode = pasteboard.string(forType: .string)
+                    pasteboard.clearContents()
+                    precondition(original.isEmpty || pasteboard.writeObjects(original), "The clipboard fixture must restore the previous contents")
+                    if !wasVisible { window.orderOut(nil) }
+                    precondition(copiedCode == expectedCopy, "\(label) must preserve the entire supplied text exactly (clipboard unchanged: \(copiedCode == originalText))")
+                  }
+                }
+                if name == "control-center-responses.png" {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    guard let worker = recognition.results?.first(where: {
+                        $0.topCandidates(1).first?.string.hasPrefix("Code explorer") == true
+                    }) else { preconditionFailure("The clickable Code explorer row must remain visible") }
+                    window.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                    pumpNativeEvents()
+                    let location = capture.convert(NSPoint(x: worker.boundingBox.midX * capture.bounds.width,
+                        y: (capture.isFlipped ? 1 - worker.boundingBox.midY : worker.boundingBox.midY) * capture.bounds.height), to: nil)
+                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                        window.sendEvent(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                            context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!)
+                        pumpNativeEvents()
+                    }
+                    for _ in 0..<8 {
+                        capture.layoutSubtreeIfNeeded()
+                        RunLoop.current.run(until: Date().addingTimeInterval(0.025))
+                    }
+                    let childBitmap = capture.bitmapImageRepForCachingDisplay(in: capture.bounds)!
+                    capture.cacheDisplay(in: capture.bounds, to: childBitmap)
+                    try VNImageRequestHandler(cgImage: childBitmap.cgImage!, options: [:]).perform([recognition])
+                    let childText = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+                    precondition(childText.contains("Stop subagent") && childText.contains("Message Code explorer"),
+                                 "Clicking a worker must open its own composer and controls. Found: \(childText)")
+                    precondition(childText.contains("Subagent chat") && childText.contains("Reading menu.tsx") &&
+                                 !childText.contains("Inspect project files"),
+                                 "Helper chat must show distinct identity and only its own compact activity. Found: \(childText)")
+                    try childBitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("control-center-subagent-chat.png"))
+                    window.orderOut(nil)
+                }
             }
+            try capture(VStack(alignment: .leading, spacing: 26) {
+                ForEach(copyExamples.indices, id: \.self) { index in
+                    CopyTextButton(text: copyExamples[index].1, label: copyExamples[index].0)
+                }
+            }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(Palette.surface),
+                        width: 420, height: 220, name: "copy-actions.png")
+            let presenceLineup = HStack(alignment: .top, spacing: 24) {
+                VStack {
+                    Text("Main agent · working")
+                    AgentIllustration(presence: .working, time: 0.25, isLead: true).frame(width: 220, height: 166)
+                }
+                VStack {
+                    Text("Main agent · idle")
+                    AgentIllustration(presence: .resting, time: 3.5, isLead: true).frame(width: 220, height: 166)
+                }
+                VStack {
+                    Text("Stopped")
+                    AgentIllustration(presence: .stopped, isLead: true).frame(width: 160, height: 121)
+                }
+                VStack {
+                    Text("Subagent")
+                    AgentIllustration(presence: .working, time: 0.25).frame(width: 88, height: 68)
+                }
+            }.font(WorkspaceType.text(13)).foregroundStyle(Palette.ink).padding(20).background(Palette.surface)
+            try capture(presenceLineup, width: 860, height: 235, name: "agent-presence-lineup.png")
+            try capture(presenceLineup, width: 860, height: 235, name: "agent-presence-lineup-dark.png", appearance: .darkAqua)
+            var hierarchySession = visual.selected!
+            hierarchySession.requests = []
+            hierarchySession.team = try JSONDecoder().decode(SubagentTeam.self, from: Data("""
+            {"agents":[
+              {"id":"design-lead","name":"Design lead","task":"Review the interface","status":"running","parentKnown":true},
+              {"id":"nested-reviewer","name":"Nested reviewer","task":"Check keyboard access","status":"idle","parentKnown":true,"parentAgentID":"design-lead"},
+              {"id":"code-explorer","name":"Code explorer","task":"Inspect the existing implementation","status":"running","parentKnown":true},
+              {"id":"stopped-helper","name":"Stopped helper","task":"Retained briefly after cancellation","status":"cancelled","parentKnown":true}
+            ],"runningCount":2,"idleCount":1,"truncated":false}
+            """.utf8))
+            let hierarchyView = AgentHierarchyView(store: visual, session: hierarchySession, selectedAgentID: nil) {
+                hierarchySelection = $0
+            }.padding(20).background(Palette.surface)
+            try capture(hierarchyView, width: 1000, height: 800, name: "agent-hierarchy.png")
+            try capture(hierarchyView, width: 1000, height: 800, name: "agent-hierarchy-dark.png", appearance: .darkAqua)
+            try capture(hierarchyView, width: 780, height: 480, name: "agent-hierarchy-small.png")
+            try capture(hierarchyView, width: 780, height: 480, name: "agent-hierarchy-small-dark.png", appearance: .darkAqua)
+            let managementTeam = visual.registry.sessions["visual-0"]!.team!
+            let managementWorkspace = visual.steeringWorkspace
+            try receive(["type": "team", "sessionID": "visual-0", "team": [
+                "agents": [["id": "ended-reviewer", "name": "Ended reviewer", "task": "Finished review", "status": "completed"]],
+                "runningCount": 0, "idleCount": 0, "truncated": false
+            ]])
+            try capture(SubagentManagementView(store: visual, sessionID: "visual-0"), width: 540, height: 620,
+                        name: "subagent-management.png")
+            visual.steeringWorkspace = managementWorkspace
+            try capture(SubagentManagementView(store: visual, sessionID: "visual-0"), width: 540, height: 620,
+                        name: "subagent-management-dark.png", appearance: .darkAqua)
+            try receive(["type": "team", "sessionID": "visual-0", "team":
+                JSONSerialization.jsonObject(with: JSONEncoder().encode(managementTeam))])
+            var idleHierarchy = hierarchySession
+            idleHierarchy.team = try JSONDecoder().decode(SubagentTeam.self, from: JSONSerialization.data(withJSONObject: [
+                "agents": (0..<20).map { index -> [String: Any] in
+                    ["id": "idle-\(index)", "name": index == 0 ? "Working helper" : "Resting \(index)",
+                     "task": "Review the current task", "status": index == 0 ? "running" : "idle", "parentKnown": true]
+                }, "runningCount": 1, "idleCount": 19, "truncated": false
+            ]))
+            let idleHierarchyView = AgentHierarchyView(store: visual, session: idleHierarchy, selectAgent: {
+                hierarchySelection = $0
+            }).padding(20).background(Palette.surface)
+            try capture(idleHierarchyView, width: 1000, height: 800, name: "agent-hierarchy-idle.png")
+            try capture(idleHierarchyView, width: 780, height: 480, name: "agent-hierarchy-idle-dark.png", appearance: .darkAqua)
+            var largeHierarchy = hierarchySession
+            let largeAgents: [[String: Any]] = (0..<30).map { index in
+                ["id": "wide-\(index)", "name": "Helper \(index)", "task": "A longer task description that must fit the available width",
+                 "status": index < 3 ? "running" : index >= 28 ? "failed" : "completed", "parentKnown": true]
+            }
+            largeHierarchy.team = try JSONDecoder().decode(SubagentTeam.self, from: JSONSerialization.data(withJSONObject: [
+                "agents": largeAgents, "runningCount": 3, "idleCount": 0, "truncated": false
+            ]))
+            let largeHierarchyView = AgentHierarchyView(store: visual, session: largeHierarchy, selectAgent: { _ in })
+                .padding(20).background(Palette.surface)
+            try capture(largeHierarchyView, width: 640, height: 480, name: "agent-hierarchy-large.png")
+            try capture(largeHierarchyView, width: 640, height: 480, name: "agent-hierarchy-large-dark.png", appearance: .darkAqua)
+            let deepAgents: [[String: Any]] = (0..<20).map { index in
+                var agent: [String: Any] = ["id": "deep-\(index)", "name": "Nested helper \(index)",
+                    "task": "Preserve readable content and exact ancestry at every depth", "status": "running", "parentKnown": true]
+                if index > 0 { agent["parentAgentID"] = "deep-\(index - 1)" }
+                return agent
+            }
+            largeHierarchy.team = try JSONDecoder().decode(SubagentTeam.self, from: JSONSerialization.data(withJSONObject: [
+                "agents": deepAgents, "runningCount": 20, "idleCount": 0, "truncated": false
+            ]))
+            try capture(AgentHierarchyView(store: visual, session: largeHierarchy, selectAgent: { _ in })
+                .padding(20).background(Palette.surface), width: 640, height: 480, name: "agent-hierarchy-deep.png")
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center.png")
             try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-small.png")
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center-dark.png", appearance: .darkAqua)
@@ -984,13 +1487,31 @@ import Vision
             visual.select("visual-2")
             for (id, kind, title, text) in [
                 ("reason", "reasoning", "Published reasoning", "The focus order should follow the visible navigation, including the overflow menu."),
-                ("response", "assistant", "Agent response", "I found a focus-order mismatch in the overflow menu. Next I will update the keyboard navigation test.")
+                ("response", "assistant", "Agent response", """
+                ## A clearer keyboard path
+
+                The overflow menu now follows the visible navigation. `Escape` returns focus to the trigger.
+
+                ```typescript
+                function closeMenu(trigger: HTMLElement) {
+                  setOpen(false);
+                  trigger.focus();
+                }
+                ```
+
+                - Keep the current selection.
+                - Check tab order before continuing.
+                """)
             ] {
                 try receive(["type": "activity", "sessionID": "visual-2", "activity": [
                     "id": id, "kind": kind, "title": title, "detail": text, "status": "complete",
                     "timestamp": ISO8601DateFormatter().string(from: Date())
                 ]])
             }
+            try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center-responses.png")
+            try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center-responses-dark.png", appearance: .darkAqua)
+            try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-responses-small.png")
+            try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-responses-small-dark.png", appearance: .darkAqua)
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center-activity.png")
             try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-controls-small.png")
             try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-controls-dark.png", appearance: .darkAqua)
@@ -1167,7 +1688,10 @@ import Vision
         precondition(NSApp.dockTile.badgeLabel == String(previousWaiting + 1), "Dock badge must count pending manual decisions")
         store.replyWorkspace.next(requestIDs: ["dock-test"])
         store.steeringSessionID = nil
-        NSApp.keyWindow?.makeFirstResponder(nil)
+        appDelegate.openCenter()
+        for _ in 0..<8 { pumpNativeEvents(); RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+        precondition(center.isKeyWindow,
+                     "The Control Center focus regression must use the real focused window; active=\(NSApp.isActive), key=\(NSApp.keyWindow?.windowNumber ?? -1), expected=\(center.windowNumber), modal=\(NSApp.modalWindow != nil)")
         store.onAttentionChange?()
         func sendReturn(_ kind: UInt32, key: UInt32 = UInt32(kVK_Return), handled: Bool = true) {
             var event: EventRef?
@@ -1208,7 +1732,31 @@ import Vision
         assertReturnReleased("Return must be released after key-up when the request is already sending")
         store.sending.remove("dock-test")
         store.onAttentionChange?()
-        let replyPanel = NSApp.windows.compactMap { $0 as? ReplyPanel }.first!
+        for key in [UInt32(kVK_Return), UInt32(kVK_ANSI_KeypadEnter)] {
+            appDelegate.openCenter()
+            for _ in 0..<8 { pumpNativeEvents(); RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+            let search = descendants(center.contentView!).compactMap { $0 as? NSTextField }.first {
+                $0.placeholderString == "Search sessions"
+            }!
+            precondition(center.makeFirstResponder(search), "The real Control Center search must accept focus")
+            for _ in 0..<8 { pumpNativeEvents(); RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+            assertReturnReleased("A focused Control Center search must retain ordinary typing keys")
+            center.makeFirstResponder(nil)
+            for _ in 0..<8 { pumpNativeEvents(); RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+            store.requestErrors.removeValue(forKey: "dock-test")
+            sendReturn(UInt32(kEventHotKeyPressed), key: UInt32(kVK_DownArrow))
+            sendReturn(UInt32(kEventHotKeyReleased), key: UInt32(kVK_DownArrow))
+            sendReturn(UInt32(kEventHotKeyPressed), key: UInt32(kVK_UpArrow))
+            sendReturn(UInt32(kEventHotKeyReleased), key: UInt32(kVK_UpArrow))
+            sendReturn(UInt32(kEventHotKeyPressed), key: key)
+            sendReturn(UInt32(kEventHotKeyReleased), key: key)
+            precondition(store.requestErrors["dock-test"] != nil,
+                         "Return and keypad Enter must rearm after editing while the Control Center remains focused")
+            store.requestErrors.removeValue(forKey: "dock-test")
+            center.close()
+            pumpNativeEvents()
+        }
+        let replyPanel = NSApp.windows.compactMap { $0 as? ReplyPanel }.first { $0 !== window }!
         let confirmation = NSAlert()
         confirmation.messageText = "Synthetic dangerous-mode confirmation"
         confirmation.addButton(withTitle: "Cancel")
@@ -1293,6 +1841,18 @@ import Vision
         precondition((replyPanel.firstResponder as? NSTextView)?.isEditable == true && store.requestErrors["keyboard-question"] == nil,
                      "Choosing Other with Return must focus the real answer input")
         assertReturnReleased("Editing Other must restore ordinary keyboard input")
+        let answerEditor = replyPanel.firstResponder as! NSTextView
+        answerEditor.insertText("A custom keyboard answer", replacementRange: NSRange(location: NSNotFound, length: 0))
+        pumpNativeEvents()
+        let submitAnswer = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: replyPanel.windowNumber,
+            context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: UInt16(kVK_Return))!
+        NSApp.sendEvent(submitAnswer)
+        for _ in 0..<8 { pumpNativeEvents(); RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+        precondition(store.requestErrors["keyboard-question"] != nil,
+                     "Typing an answer then Return must dispatch that question, not insert a newline or do nothing")
+        precondition(store.replyWorkspace.drafts["keyboard-question"]?.answers(for: store.activeFloatingRequest!.request)["choice"] == ["A custom keyboard answer"],
+                     "Return must preserve the exact typed answer")
         let nextKeyboardRequest = try JSONSerialization.data(withJSONObject: [
             "type": "request", "sessionID": session.id,
             "request": ["id": "keyboard-next", "kind": "permission", "title": "Next decision",

@@ -3,18 +3,22 @@ import { Bridge } from "./connection.ts";
 import { attachCopilot } from "./attachment.ts";
 import { attachSteering } from "./steering.ts";
 import { ActivityFeed } from "./activity.ts";
+import { attachSubagents } from "./subagents.ts";
 
 const session = await joinSession({
+  streaming: true,
   // Opt into permission events after Copilot's explicit extension-access consent.
   onPermissionRequest: () => ({ kind: "no-result" })
 });
 const bridge = new Bridge("copilot", process.cwd(), undefined, session.sessionId, false);
 const attachment = attachCopilot(session, bridge);
-const steering = attachSteering(session, bridge);
 const activity = new ActivityFeed(entry => bridge.activity(entry));
+const team = attachSubagents(session, bridge);
+const steering = attachSteering(session, bridge, team);
 const unsubscribeActivity = session.on(event => activity.receive(event));
 bridge.enableActivity();
 await bridge.start();
+void team.refresh();
 bridge.setState("ready", "Connected to the original Copilot terminal");
 try { await attachment.recover(); }
 catch (error) { bridge.error(`Could not recover pending approvals; check Copilot: ${String(error)}`); }
@@ -22,6 +26,7 @@ catch (error) { bridge.error(`Could not recover pending approvals; check Copilot
 function stop() {
   unsubscribeActivity();
   activity.stop();
+  team.stop();
   steering.stop();
   attachment.stop();
   bridge.stop();
