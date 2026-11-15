@@ -6,6 +6,7 @@ import { ActivityFeed } from "./activity.ts";
 import { attachSubagents } from "./subagents.ts";
 
 const session = await joinSession({
+  streaming: true,
   // Opt into permission events after Copilot's explicit extension-access consent.
   onPermissionRequest: () => ({ kind: "no-result" })
 });

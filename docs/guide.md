@@ -6,9 +6,9 @@ A native macOS app for answering Claude Code and Copilot requests without switch
 
 ## Quickstart
 
-1. [Build and install Notify](#build-and-install), or open your existing copy with `open ~/Applications/Notify.app`.
+1. [Install the download](#install-the-download), [build from source](#build-and-install), or open your existing copy with `open ~/Applications/Notify.app`.
 2. Choose **Connect agents** and follow the Copilot or Claude setup shown in the app.
-3. Run `~/.local/bin/notify demo` to try the floating controls without starting an agent or spending credits.
+3. Run `~/Applications/Notify.app/Contents/Resources/bin/notify demo` to try the floating controls without starting an agent or spending credits.
 4. Answer connected sessions from their floating panels or the control center. Add your phone through **Settings > Phone connections**.
 
 [Current app screenshots](../README.md#screenshots) · [Update an existing installation](#updating-notify) · [Phone setup](#phone-connections)
@@ -33,6 +33,8 @@ The updated original-Copilot extension supplies the **Live activity** timeline: 
 
 Activity is a bounded in-memory preview (up to 300 entries and 512 KiB of retained native text per session); individual event previews are limited too. Earlier history remains with the original CLI. Notify does not invent reasoning, test results or progress, nor spend model credits to generate this timeline.
 
+The updated Copilot extension streams partial assistant replies before completion. Existing terminals need an explicit extension reload to load this change. Terminal input still waiting in the agent's queue appears when the runtime consumes it; the app does not yet preview queued input.
+
 ## Open and resume in iTerm2
 
 **Saved chats** lists locally saved Copilot metadata. Select a stopped chat and choose **Resume in iTerm2**. Notify opens the original `copilot --resume <exact-id>` in a new iTerm2 window using the saved project folder. It does not send a model prompt.
@@ -45,14 +47,40 @@ iTerm2 must be installed at `/Applications/iTerm.app`; this local build launches
 
 ## Requirements
 
-- macOS 14 or newer; Swift command-line tools to build.
+- macOS 14 or newer; the downloadable beta supports Apple Silicon only. Swift command-line tools are needed only to build from source.
 - Node.js 22.18 or newer.
 - Claude Code or Copilot CLI installed on `PATH` and already signed in.
 - SDK versions are pinned; integration was checked against Claude Code 2.1.81 and Copilot CLI 1.0.112.
 
+## Install the download
+
+1. Download **Notify-0.2.0-beta.1-macos-arm64.zip** and **SHA256SUMS.txt** from the [macOS beta release](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.1). With both files in the same folder, run `shasum -a 256 -c SHA256SUMS.txt` there to check the download.
+2. Unzip the archive. In Finder, open your home folder and create **Applications** there if needed. Move **Notify.app** into that folder. When updating, quit Notify first and replace only the app; leave agent terminals running.
+3. Open Notify, choose **Connect agents**, and follow the setup instructions. Install **Node.js 22.18+** and sign in through your Copilot or Claude CLI beforehand. Node and the CLIs are not bundled.
+
+The beta is **ad-hoc signed, not Developer ID signed or notarized**. If macOS blocks it, first verify that you downloaded the expected release and its checksum. After attempting to open it, look in **System Settings > Privacy & Security** for **Open Anyway**, if offered, and confirm only for this app. Do not disable Gatekeeper globally. Organization-managed Macs may prohibit this build; a notarized distribution is not available yet.
+
+The app contains its local phone companion but no account credentials, session history, paired-phone keys or developer settings. Each Mac connects to its own local agent sessions. Reconnect agents and pair phones separately on the new Mac.
+
+The download does not create a command-line shortcut. Use the bundled launcher directly:
+
+```sh
+~/Applications/Notify.app/Contents/Resources/bin/notify demo
+~/Applications/Notify.app/Contents/Resources/bin/notify setup-copilot
+```
+
+Optionally create the shortcut used elsewhere in this guide:
+
+```sh
+mkdir -p ~/.local/bin
+ln -s "$HOME/Applications/Notify.app/Contents/Resources/bin/notify" ~/.local/bin/notify
+```
+
+`ln` refuses to replace an existing shortcut. Keep an existing working launcher when updating.
+
 ## Build and install
 
-This is a local source build, not a downloadable notarized installer. Start from an empty parent folder and ensure your GitHub account has access to both repositories:
+For a local source build, start from an empty parent folder:
 
 ```sh
 git clone https://github.com/vsvinav/notify.git
@@ -64,7 +92,7 @@ bash scripts/install.sh
 open ~/Applications/Notify.app
 ```
 
-The separate [notify-mobile repository](https://github.com/vsvinav/notify-mobile) is currently private. The build requires that explicit checkout path, bundles its web app and production dependencies, and signs the combined Mac app. Node itself remains a prerequisite. Phone connections are off by default. If Apple's command-line tools are missing, run `xcode-select --install` and finish their installation first.
+The build requires an explicit checkout of the separate [notify-mobile repository](https://github.com/vsvinav/notify-mobile), bundles its web app and production dependencies, and ad-hoc signs the combined Mac app. Node itself remains a prerequisite. Phone connections are off by default. If Apple's command-line tools are missing, run `xcode-select --install` and finish their installation first.
 
 The installer creates `~/.local/bin/notify`, without replacing existing apps or launchers. If that directory is not on your PATH:
 
@@ -90,9 +118,9 @@ notify demo
 
 ### Updating Notify
 
-1. Get the new source for both repositories and rebuild with `NOTIFY_MOBILE_SOURCE=/path/to/notify-mobile bash scripts/build.sh` from the Mac repository.
+1. Download and unzip the new release, or get the new source for both repositories and rebuild with `NOTIFY_MOBILE_SOURCE=/path/to/notify-mobile bash scripts/build.sh` from the Mac repository.
 2. **Quit Notify from its menu**, not just by closing its window. Leave your agent terminals running.
-3. In Finder, replace **`~/Applications/Notify.app`** with the new **`build/Notify.app`**. Keep your existing `~/.local/bin/notify` launcher link; do not run the first-install script again.
+3. In Finder, replace **`~/Applications/Notify.app`** with the downloaded app or new **`build/Notify.app`**. Keep your existing `~/.local/bin/notify` launcher link; do not run the first-install script again.
 4. Reopen Notify. Existing extensions reconnect; a changed extension may still require an explicit reload in its original terminal.
 
 Replacing the app does not remove settings or paired-phone data in `~/Library/Application Support/Notify/`. Session Auto-yes modes reset on restart. A repository-access error is not an installation success: obtain access before building.
@@ -196,7 +224,7 @@ Working agents visibly type; idle agents occasionally blink or glance. An acknow
 
 Chat shows responses observed while Notify is connected and your messages sent from the app. It is not a complete historical transcript; internal helper prompts are omitted. **Tools & thinking** above the conversation opens with separate tool, thinking and status entries. Scroll through up to 12 recent updates; expand an individual entry for its available details and **Copy activity**. You can collapse the panel to give the conversation more room. No hidden reasoning is inferred.
 
-**Hierarchy** shows observed parent-child relationships in a compact tree that fits the window width. Scroll vertically for larger teams. Completed, failed and stopped branches start folded into **+N inactive** groups under their parent; expand a group to see its history. Counts include hidden descendants, with failures called out separately. Idle agents remain visible, as do inactive parents with active descendants. Deep branches show explicit parent names rather than shrinking the text.
+**Hierarchy** shows observed parent-child relationships as a top-down org chart: parents above their children, siblings side by side. Only running and idle/available helpers appear in the chart. **Fit** scales the whole chart into the viewport; use the zoom buttons or **100%** and scroll to inspect larger teams at readable size. Completed, failed and stopped helpers stay in a separate **+N hidden inactive agents** block, with failures called out separately. Expand that block to inspect its history. Active children of inactive parents stay visible separately with the actual parent's name; they are never silently attached to the main agent.
 
 Select a raised agent tile to open its exact chat, or fold an individual branch. Stopped helpers stay flat with X eyes and cannot be selected; an updated Notify extension retains them for five minutes. Reload existing extensions to receive new lifecycle data. Spawn events that were not observed, missing parents and inconsistent relationships are shown separately without invented connections.
 

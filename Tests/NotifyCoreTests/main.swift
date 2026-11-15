@@ -288,43 +288,31 @@ do {
         ["id": "failed", "name": "Failed", "task": "", "status": "failed", "parentKnown": true, "parentAgentID": "stopped"],
         ["id": "old-unknown", "name": "Old unknown", "task": "", "status": "completed"]
     ], running: 1, idle: 1)
-    let mixedHierarchy = SubagentHierarchy(agents: mixed.agents)
-    let compact = mixedHierarchy.outline()
-    check(compact.map(\.id) == ["agent:keeper", "agent:active-child", "agent:ready", "inactive:root",
-                               "unlinked", "inactive:unlinked"],
-          "Only wholly inactive branches fold; idle agents and ancestors of active children stay visible")
-    check(compact[1].parentID == "agent:keeper" && compact.last?.parentID == nil,
-          "Compact rows preserve exact ancestry and never link unknown agents to main")
-    if case .inactive(let count, let failed) = compact[3].kind {
-        check(count == 3 && failed == 1, "Inactive counts include hidden descendants and expose failures")
-    } else { preconditionFailure("A folded inactive group is required") }
-    let expanded = mixedHierarchy.outline(expandedInactive: ["inactive:root"])
-    check(expanded.map(\.id) == ["agent:keeper", "agent:active-child", "agent:ready", "inactive:root",
-                                "agent:finished", "agent:stopped", "agent:failed", "unlinked", "inactive:unlinked"],
-          "Expanding an inactive group reveals its whole subtree without changing other groups")
-    check(expanded[6].parentID == "agent:stopped", "Expanded history keeps its real parent")
-    let folded = mixedHierarchy.outline(collapsed: ["keeper"])
-    check(!folded.contains { $0.id == "agent:active-child" } && folded.contains { $0.id == "agent:keeper" },
-          "Explicit branch folding remains independent of inactive filtering")
+    let activeHierarchy = SubagentHierarchy(agents: mixed.agents, hidingInactive: true)
+    check(activeHierarchy.roots.map(\.id) == ["ready"], "Idle helpers remain available in the active org chart")
+    check(activeHierarchy.unlinked.map(\.id) == ["active-child"] && activeHierarchy.children.isEmpty,
+          "A child of an inactive parent stays visible without a false connection to main")
+    check(activeHierarchy.hidden.map(\.id) == ["keeper", "finished", "stopped", "failed", "old-unknown"],
+          "All inactive agents belong in a separate block, including inactive parents of active children")
     let deep = try team((0..<100).map { index -> [String: Any] in
         var agent: [String: Any] = ["id": "deep-\(index)", "name": "Deep \(index)", "task": "",
                                    "status": index == 99 ? "running" : "completed", "parentKnown": true]
         if index > 0 { agent["parentAgentID"] = "deep-\(index - 1)" }
         return agent
     })
-    let deepRows = SubagentHierarchy(agents: deep.agents).outline()
-    check(deepRows.count == 100 && deepRows.last?.depth == 100,
-          "A deep active branch retains every ancestor in a bounded, flat outline")
-    check(hierarchy.outline().filter { $0.parentID == nil && $0.id.hasPrefix("agent:") }.count == 4,
-          "Unknown and cyclic roots remain unlinked in the compact outline")
+    let deepActive = SubagentHierarchy(agents: deep.agents, hidingInactive: true)
+    check(deepActive.hidden.count == 99 && deepActive.unlinked.map(\.id) == ["deep-99"],
+          "Hidden ancestor chains never become invented connections or visible inactive tiles")
+    let activeLinked = SubagentHierarchy(agents: linked.agents, hidingInactive: true)
+    check(activeLinked.children["lead"]?.map(\.id) == ["nested"] && activeLinked.unlinked.count == 4,
+          "Active-only filtering preserves exact safe edges and rejects cyclic relationships")
     let reactivated = try team([
         ["id": "finished", "name": "Finished", "task": "", "status": "completed", "parentKnown": true],
         ["id": "stopped", "name": "Stopped", "task": "", "status": "cancelled", "parentKnown": true, "parentAgentID": "finished"],
         ["id": "failed", "name": "Resumed", "task": "", "status": "running", "parentKnown": true, "parentAgentID": "stopped"]
     ])
-    check(SubagentHierarchy(agents: reactivated.agents).outline().map(\.id) ==
-          ["agent:finished", "agent:stopped", "agent:failed"],
-          "New activity automatically reveals a previously inactive branch and every required ancestor")
+    check(SubagentHierarchy(agents: reactivated.agents, hidingInactive: true).unlinked.map(\.id) == ["failed"],
+          "A resumed helper returns to the active chart without showing its inactive ancestors")
     teams.disconnect("parent")
     do {
         try teams.team("parent", snapshot: snapshot)

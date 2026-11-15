@@ -866,15 +866,6 @@ import Vision
                                  "Typing a custom answer must replace a single selected option in the actual reply draft")
                     precondition(!visual.sending.contains(item.request.id), "Opening or typing a custom answer must not send it")
                 }
-                if name.contains("agent-hierarchy-large") || name.contains("agent-hierarchy-deep") {
-                    let scroll = descendants(capture).compactMap { $0 as? NSScrollView }.first!
-                    scroll.contentView.scroll(to: NSPoint(x: 0, y: scroll.documentView!.frame.maxY - scroll.contentSize.height))
-                    scroll.reflectScrolledClipView(scroll.contentView)
-                    for _ in 0..<12 {
-                        capture.layoutSubtreeIfNeeded()
-                        RunLoop.current.run(until: Date().addingTimeInterval(0.025))
-                    }
-                }
                 let bitmap = capture.bitmapImageRepForCachingDisplay(in: capture.bounds)!
                 capture.cacheDisplay(in: capture.bounds, to: bitmap)
                 if appearance == .darkAqua {
@@ -1024,26 +1015,32 @@ import Vision
                 }
                 if name.hasPrefix("agent-hierarchy") {
                     let scroll = descendants(capture).compactMap { $0 as? NSScrollView }.first!
-                    precondition(scroll.documentView!.frame.width <= scroll.contentSize.width + 1,
-                                 "Hierarchy content must fit the viewport without horizontal panning: \(name)")
+                    precondition(scroll.documentView!.frame.width <= scroll.contentSize.width + 1 &&
+                                 scroll.documentView!.frame.height <= scroll.contentSize.height + 1,
+                                 "Fit must keep the whole org chart inside its viewport: \(name), document=\(scroll.documentView!.frame.size), viewport=\(scroll.contentSize)")
                     let recognition = VNRecognizeTextRequest()
                     recognition.recognitionLevel = .accurate
                     try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
                     let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
                     if name.contains("large") {
-                        precondition(text.contains("27 inactive") && text.contains("2 failed"),
-                                     "A large team's folded history and failure count must remain reachable by vertical scrolling")
+                        precondition(text.contains("27 hidden inactive agents") && text.contains("2 failed"),
+                                     "A large team's inactive block and failure count must stay separate and visible")
                     }
-                    if name.contains("deep") {
-                        precondition(text.contains("Nested helper 19") && text.contains("Parent: Nested helper 18"),
-                                     "Deep branches must retain readable names and explicit parents without horizontal scrolling")
-                    }
+                    precondition(text.contains("Fit") && text.contains("100%"), "Large charts must have fit and readable-size controls")
                     if !name.contains("large") && !name.contains("deep") {
-                        precondition(text.contains("Design lead") && text.contains("Nested reviewer") && text.contains("1 inactive"),
-                                     "The compact hierarchy must show active children and inactive counts even at minimum height: \(name)")
+                        precondition(text.contains("Design lead") && text.contains("Nested reviewer") && text.contains("1 hidden inactive agent"),
+                                     "The org chart must show active children and a separate inactive block: \(name)")
                         precondition(!text.contains("Stopped helper"), "Inactive agents must start folded")
+                        func bounds(_ label: String) -> CGRect {
+                            (recognition.results ?? []).first { $0.topCandidates(1).first?.string == label }!.boundingBox
+                        }
+                        let lead = bounds("Design lead"), peer = bounds("Code explorer")
+                        precondition(abs(lead.midY - peer.midY) < 0.035 && abs(lead.midX - peer.midX) > 0.1,
+                                     "Sibling agents must sit side by side in an org chart, not in a list")
+                        precondition(bounds("Main agent").midY > lead.midY && bounds("Nested reviewer").midY < lead.midY,
+                                     "Children must be laid out below their actual parent")
                     }
-                    if name == "agent-hierarchy.png" {
+                    if name == "agent-hierarchy.png" || name == "agent-hierarchy-small.png" {
                         window.makeKeyAndOrderFront(nil)
                         NSApp.activate(ignoringOtherApps: true)
                         pumpNativeEvents()
@@ -1069,6 +1066,14 @@ import Vision
                             }
                             for _ in 0..<8 { RunLoop.current.run(until: Date().addingTimeInterval(0.025)) }
                         }
+                        if name == "agent-hierarchy-small.png" {
+                            try hierarchyClick("100%")
+                            precondition(scroll.documentView!.frame.height > scroll.contentSize.height,
+                                         "Actual-size zoom must allow scrolling rather than clip a larger chart")
+                            try hierarchyClick("Fit")
+                            precondition(scroll.documentView!.frame.height <= scroll.contentSize.height + 1,
+                                         "Fit must restore the complete chart after zooming")
+                        } else {
                         try hierarchyClick("Design lead")
                         precondition(hierarchySelection == "design-lead", "Hierarchy nodes must select their exact agent")
                         try hierarchyClick("Nested reviewer")
@@ -1078,15 +1083,16 @@ import Vision
                         precondition(!folded.contains { $0.topCandidates(1).first?.string.contains("Nested reviewer") == true },
                                      "Folding a branch must actually hide its descendants")
                         try hierarchyClick("Show 1 branch")
-                        try hierarchyClick("1 inactive")
+                        try hierarchyClick("1 hidden inactive agent")
                         try hierarchyClick("Stopped helper")
                         precondition(hierarchySelection == "nested-reviewer", "Stopped hierarchy nodes must not be interactive")
-                        try hierarchyClick("Hide 1 inactive")
+                        try hierarchyClick("Hide inactive agents")
                         let hidden = try hierarchyText()
                         precondition(!hidden.contains { $0.topCandidates(1).first?.string.contains("Stopped helper") == true },
                                      "Inactive expansion must be reversible")
                         try hierarchyClick("Main agent")
                         precondition(hierarchySelection == nil, "The main tile must still select the main chat")
+                        }
                         window.orderOut(nil)
                     }
                 }
@@ -1218,8 +1224,9 @@ import Vision
             {"agents":[
               {"id":"design-lead","name":"Design lead","task":"Review the interface","status":"running","parentKnown":true},
               {"id":"nested-reviewer","name":"Nested reviewer","task":"Check keyboard access","status":"idle","parentKnown":true,"parentAgentID":"design-lead"},
+              {"id":"code-explorer","name":"Code explorer","task":"Inspect the existing implementation","status":"running","parentKnown":true},
               {"id":"stopped-helper","name":"Stopped helper","task":"Retained briefly after cancellation","status":"cancelled","parentKnown":true}
-            ],"runningCount":1,"idleCount":1,"truncated":false}
+            ],"runningCount":2,"idleCount":1,"truncated":false}
             """.utf8))
             let hierarchyView = AgentHierarchyView(store: visual, session: hierarchySession, selectedAgentID: nil) {
                 hierarchySelection = $0

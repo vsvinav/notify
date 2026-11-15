@@ -11,12 +11,15 @@ import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { CopilotClient, RuntimeConnection } from "@github/copilot-sdk";
 
-test("joined terminal accepts native-wire steering and stop with a local synthetic provider", { timeout: 45_000 }, async t => {
+test("production joined terminal streams partial activity before completion and accepts native-wire controls", { timeout: 45_000 }, async t => {
   const root = await mkdtemp(resolve(".notify-steering-"));
   const cwd = join(root, "project"), home = join(root, "home");
   await mkdir(cwd); await mkdir(home);
   execFileSync("git", ["init", "--quiet", cwd]);
-  let held = 0, modelCalls = 0, peer;
+  let held = 0, modelCalls = 0, peer, releaseResponse;
+  const stages = {};
+  const consumedAt = new Map(), userWireAt = new Map(), queueNotifications = [];
+  const partial = "Local fixture partial response.";
   const packets = [], delivered = [], diagnostics = [];
   const provider = httpServer(async (request, response) => {
     let body = "";
@@ -27,10 +30,19 @@ test("joined terminal accepts native-wire steering and stop with a local synthet
     if (JSON.stringify(latest?.content).includes("HOLD")) { held++; return; }
     response.writeHead(200, { "content-type": "text/event-stream" });
     const chunk = (delta, finish_reason = null) => `data: ${JSON.stringify({
-      id: randomUUID(), object: "chat.completion.chunk", created: 0, model: "gpt-4",
+      id: randomUUID(), object: "chat.completion.chunk", created: 0, model: "localmodel",
       choices: [{ index: 0, delta, finish_reason }]
     })}\n\n`;
-    response.end(chunk({ role: "assistant", content: "Local fixture response." }) + chunk({}, "stop") + "data: [DONE]\n\n");
+    if (modelCalls === 1) {
+      response.write(chunk({ role: "assistant", content: partial }));
+      stages.providerPartial = performance.now();
+      releaseResponse = () => {
+        stages.providerComplete = performance.now();
+        response.end(chunk({ content: " Finished." }) + chunk({}, "stop") + "data: [DONE]\n\n");
+      };
+    } else {
+      response.end(chunk({ role: "assistant", content: "Local fixture response." }) + chunk({}, "stop") + "data: [DONE]\n\n");
+    }
   });
 
   provider.listen(0, "127.0.0.1"); await once(provider, "listening");
@@ -43,6 +55,12 @@ test("joined terminal accepts native-wire steering and stop with a local synthet
       while ((end = buffer.indexOf("\n")) >= 0) {
         const packet = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
         packets.push(packet);
+        if (packet.type === "activity" && packet.activity.detail === partial && packet.activity.status === "running") {
+          stages.wirePartial ??= performance.now();
+        }
+        if (packet.type === "activity" && packet.activity.clientTurnID) {
+          userWireAt.set(packet.activity.clientTurnID, performance.now());
+        }
         if (packet.type === "hello") {
           assert.equal(packet.token, "fixture-secret");
           socket.write(JSON.stringify({ type: "welcome", sessionID: packet.sessionID }) + "\n");
@@ -51,11 +69,13 @@ test("joined terminal accepts native-wire steering and stop with a local synthet
     });
   });
   transport.listen(0, "127.0.0.1"); await once(transport, "listening");
-  const config = join(root, "connection.json");
+  const discovery = join(home, "Library", "Application Support", "Notify");
+  await mkdir(discovery, { recursive: true });
+  const config = join(discovery, "connection.json");
   await writeFile(config, JSON.stringify({ port: transport.address().port, token: "fixture-secret" }), { mode: 0o600 });
   const client = new CopilotClient({
     connection: RuntimeConnection.forStdio({ path: execFileSync("/usr/bin/which", ["copilot"], { encoding: "utf8" }).trim(),
-      args: ["--experimental"], env: { ...process.env, COPILOT_HOME: home, NODE_TLS_REJECT_UNAUTHORIZED: "1" } }),
+      args: ["--experimental"], env: { PATH: process.env.PATH, HOME: home, COPILOT_HOME: home, NODE_TLS_REJECT_UNAUTHORIZED: "1" } }),
     workingDirectory: cwd
   });
   t.signal.addEventListener("abort", () => { void client.forceStop(); peer?.destroy(); provider.closeAllConnections(); }, { once: true });
@@ -70,31 +90,27 @@ test("joined terminal accepts native-wire steering and stop with a local synthet
     await client.start();
     const session = await client.createSession({
       streaming: true,
-      model: "gpt-4", provider: { type: "openai", baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, apiKey: "fixture" },
+      model: "localmodel", provider: { type: "openai", baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, apiKey: "fixturekey" },
       availableTools: [], workingDirectory: cwd, requestExtensions: true, enableFileHooks: false,
       systemMessage: { mode: "replace", content: "Return the synthetic response. Do not use tools." },
       onPermissionRequest: request => request.kind === "extension-permission-access" && request.extensionName === "project:notify"
         ? { kind: "approve-once", approvedInteractively: false } : { kind: "reject", feedback: "Fixture only" }
     });
     session.on(event => {
-      if (event.type === "user.message") delivered.push(event.data);
+      if (event.type === "user.message") {
+        delivered.push(event.data);
+        consumedAt.set(event.data.clientTurnId, performance.now());
+      }
+      if (event.type === "pending_messages.modified") queueNotifications.push(event.data);
+      if (event.type === "assistant.message_delta" && event.data.deltaContent.includes(partial)) {
+        stages.ownerPartial ??= performance.now();
+      }
       if (["session.error", "assistant.message", "assistant.message_delta"].includes(event.type)) diagnostics.push(event);
     });
     const extension = join(cwd, ".github/extensions/notify");
     await mkdir(extension, { recursive: true });
-    await writeFile(join(extension, "extension.mjs"), `
-import { joinSession } from "@github/copilot-sdk/extension";
-import { Bridge } from ${JSON.stringify(pathToFileURL(resolve("dist/connection.js")).href)};
-import { attachSteering } from ${JSON.stringify(pathToFileURL(resolve("dist/steering.js")).href)};
-import { ActivityFeed } from ${JSON.stringify(pathToFileURL(resolve("dist/activity.js")).href)};
-const session = await joinSession({ onPermissionRequest: () => ({ kind: "no-result" }) });
-const bridge = new Bridge("copilot", process.cwd(), ${JSON.stringify(config)}, session.sessionId, false);
-attachSteering(session, bridge);
-const feed = new ActivityFeed(entry => bridge.activity(entry));
-session.on(event => feed.receive(event));
-bridge.enableActivity();
-await bridge.start();
-`, { mode: 0o600 });
+    await writeFile(join(extension, "extension.mjs"),
+      `await import(${JSON.stringify(pathToFileURL(resolve("dist/copilot-extension.js")).href)});\n`, { mode: 0o600 });
     await session.rpc.extensions.reload();
     diagnostics.push(await session.rpc.extensions.list());
     await waitFor(() => packets.some(p => p.type === "capabilities" && p.steering));
@@ -106,23 +122,49 @@ await bridge.start();
     const first = control("queue", "Use the existing helper");
     await waitFor(() => delivered.some(e => e.clientTurnId === first));
     await waitFor(() => packets.some(p => p.commandID === first && p.status === "received"));
+    await waitFor(() => stages.ownerPartial);
+    await waitFor(() => packets.some(p => p.type === "activity" && p.activity.clientTurnID === first));
+    const partialDeadline = performance.now() + 1500;
+    while (!stages.wirePartial && performance.now() < partialDeadline) await delay(20);
+    t.diagnostic(`Partial stages (ms after provider): owner=${(stages.ownerPartial - stages.providerPartial).toFixed(1)}, wire=${stages.wirePartial ? (stages.wirePartial - stages.providerPartial).toFixed(1) : "missing after 1500ms"}; final withheld.`);
+    assert.ok(stages.wirePartial, "Production extension must deliver running partial activity while the provider withholds completion");
+    assert.equal(stages.providerComplete, undefined, "Partial activity must not wait for the final response");
+    releaseResponse();
     await waitFor(() => packets.some(p => p.type === "activity" && p.activity.kind === "assistant" && p.activity.status === "complete"));
-    assert.ok(packets.some(p => p.type === "activity" && p.activity.detail === "Local fixture response."),
-      "Real streamed response must reach the activity bridge");
+    const final = packets.find(p => p.type === "activity" && p.activity.detail === partial + " Finished.");
+    assert.ok(final, "Final response replaces the partial activity");
+    assert.equal(final.activity.id, packets.find(p => p.type === "activity" && p.activity.detail === partial).activity.id);
     assert.equal(packets.find(p => p.type === "hello").sessionID, session.sessionId);
-    await session.send({ prompt: "HOLD the original turn" });
+    const terminalTurn = randomUUID();
+    await session.send({ prompt: "HOLD the original turn", clientTurnId: terminalTurn });
     await waitFor(() => held > 0);
+    await waitFor(() => userWireAt.has(terminalTurn));
+    t.diagnostic(`Consumed terminal prompt reached wire ${(userWireAt.get(terminalTurn) - consumedAt.get(terminalTurn)).toFixed(1)}ms after owner user.message.`);
     const queued = control("queue", "Queued follow-up");
     await waitFor(() => packets.some(p => p.commandID === queued && p.status === "queued"));
+    const terminalQueued = randomUUID(), queuedText = "TERMINAL_QUEUED_FIXTURE";
+    const notificationCount = queueNotifications.length;
+    const submittedAt = performance.now();
+    await session.send({ prompt: queuedText, mode: "enqueue", clientTurnId: terminalQueued });
+    await waitFor(() => queueNotifications.length > notificationCount);
+    const pending = (await session.rpc.queue.pendingItems()).items.find(item => item.displayText === queuedText);
+    assert.ok(pending?.messageId, "The terminal prompt is already available as a pending queue item");
+    await delay(300);
+    assert.equal(consumedAt.has(terminalQueued), false, "Queued terminal input is not a consumed user.message");
+    assert.equal(userWireAt.has(terminalQueued), false, "Do not misrepresent pending input as consumed chat");
+    assert.ok(queueNotifications.every(data => Object.keys(data).length === 0), "Queue notifications carry no message text");
+    t.diagnostic(`Queued terminal prompt visible in RPC snapshot but absent from user.message/activity after ${(performance.now() - submittedAt).toFixed(1)}ms; pending_messages.modified has empty data.`);
     const redirected = control("interrupt", "Redirect to the minimal fix");
     await waitFor(() => delivered.some(e => e.clientTurnId === redirected));
     await waitFor(() => delivered.some(e => e.clientTurnId === queued));
+    await waitFor(() => userWireAt.has(terminalQueued));
+    t.diagnostic(`Queued terminal prompt reached wire ${(userWireAt.get(terminalQueued) - consumedAt.get(terminalQueued)).toFixed(1)}ms after consumption.`);
     await session.send({ prompt: "HOLD another original turn" });
     await waitFor(() => held > 1);
     const stop = control("stop");
     await waitFor(() => packets.some(p => p.commandID === stop && p.status === "stopped"));
     assert.equal((await session.rpc.metadata.snapshot()).sessionId, session.sessionId);
-    const child = await session.rpc.tasks.startAgent({ agentType: "general-purpose", name: "wire-child", prompt: "Synthetic child", model: "gpt-4" });
+    const child = await session.rpc.tasks.startAgent({ agentType: "general-purpose", name: "wire-child", prompt: "Synthetic child", model: "localmodel" });
     const childReady = Date.now() + 8000;
     while (!(await session.rpc.tasks.list()).tasks.some(task => task.id === child.agentId && task.status === "idle")) {
       assert.ok(Date.now() < childReady, "Synthetic child must become idle");
@@ -156,7 +198,7 @@ test("installed runtime messages and cancels only the exact synthetic child", { 
     if (JSON.stringify(input.messages).includes("HOLD_FIXTURE")) return;
     response.writeHead(200, { "content-type": "text/event-stream" });
     const chunk = (delta, finish_reason = null) => `data: ${JSON.stringify({
-      id: randomUUID(), object: "chat.completion.chunk", created: 0, model: "gpt-4",
+      id: randomUUID(), object: "chat.completion.chunk", created: 0, model: "localmodel",
       choices: [{ index: 0, delta, finish_reason }]
     })}\n\n`;
     response.end(chunk({ role: "assistant", content: "Synthetic child reply." }) + chunk({}, "stop") + "data: [DONE]\n\n");
@@ -180,18 +222,18 @@ test("installed runtime messages and cancels only the exact synthetic child", { 
   try {
     await client.start();
     const session = await client.createSession({
-      streaming: true, model: "gpt-4",
-      provider: { type: "openai", baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, apiKey: "fixture" },
+      streaming: true, model: "localmodel",
+      provider: { type: "openai", baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, apiKey: "fixturekey" },
       availableTools: [], workingDirectory: cwd, enableFileHooks: false,
       systemMessage: { mode: "replace", content: "Synthetic test only. No tools." },
       onPermissionRequest: () => ({ kind: "reject", feedback: "Fixture only" })
     });
-    const target = await session.rpc.tasks.startAgent({ agentType: "general-purpose", name: "fixture-target", prompt: "INITIAL_FIXTURE", model: "gpt-4" });
+    const target = await session.rpc.tasks.startAgent({ agentType: "general-purpose", name: "fixture-target", prompt: "INITIAL_FIXTURE", model: "localmodel" });
     await waitFor(async () => (await session.rpc.tasks.list()).tasks.some(task => task.id === target.agentId && task.status === "idle"));
     assert.deepEqual(await session.rpc.tasks.sendMessage({ id: target.agentId, message: "FOLLOWUP_FIXTURE" }), { sent: true });
     await waitFor(() => requests.some(request => JSON.stringify(request.messages).includes("FOLLOWUP_FIXTURE")));
     await waitFor(async () => (await session.rpc.tasks.list()).tasks.some(task => task.id === target.agentId && task.status === "idle"));
-    const sibling = await session.rpc.tasks.startAgent({ agentType: "general-purpose", name: "fixture-sibling", prompt: "HOLD_FIXTURE_SIBLING", model: "gpt-4" });
+    const sibling = await session.rpc.tasks.startAgent({ agentType: "general-purpose", name: "fixture-sibling", prompt: "HOLD_FIXTURE_SIBLING", model: "localmodel" });
     await session.send({ prompt: "HOLD_FIXTURE_MAIN" });
     await waitFor(() => requests.some(request => JSON.stringify(request.messages).includes("HOLD_FIXTURE_MAIN")));
     assert.deepEqual(await session.rpc.tasks.sendMessage({ id: target.agentId, message: "HOLD_FIXTURE_TARGET" }), { sent: true });

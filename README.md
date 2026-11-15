@@ -21,9 +21,11 @@ A lightweight native Mac app for Copilot and Claude Code. See which session need
 open ~/Applications/Notify.app
 ```
 
-**First installation:** the current version is built locally. There is no downloadable notarized installer yet.
+**Download:** get **Notify-0.2.0-beta.1-macos-arm64.zip** from the [macOS beta release](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.1). Requires an **Apple Silicon Mac, macOS 14+, Node.js 22.18+**, and an installed, signed-in Copilot or Claude Code CLI. Unzip it and move **Notify.app** into **Applications in your home folder**, then open it and choose **Connect agents**. No source checkout or Apple build tools are needed.
 
-You'll need **macOS 14+**, **Node.js 22.18+**, Apple's command-line tools, and an installed, signed-in Copilot or Claude Code CLI. If Apple's tools are missing, run `xcode-select --install` first. Both repositories must be accessible to your GitHub account; the mobile companion repository is currently private.
+This test build is ad-hoc signed, **not Developer ID signed or notarized**. macOS may block its first launch; see [download installation and Gatekeeper guidance](docs/guide.md#install-the-download). It does not include your accounts, settings, paired phones or sessions; connect agents separately on the other Mac.
+
+**Build from source instead:** you'll also need Apple's command-line tools. If missing, run `xcode-select --install` first.
 
 ```sh
 git clone https://github.com/vsvinav/notify.git
@@ -50,7 +52,9 @@ Select a connected Copilot session's **Chat** tab, type a message and choose **S
 
 Helper chats have their own portrait, name and tinted **Subagent chat** header. **Tools & thinking** opens with distinct recent activity entries; expand an entry for its details. All messaging controls live in **Chat**, while Auto-yes remains in **Settings**. There is no separate, duplicate Controls tab.
 
-Agent tiles have subtle raised surfaces and hover/press feedback. **Hierarchy** fits the window width, with vertical scrolling for larger teams. Expand **+N inactive** to reveal completed, failed or stopped branches; idle agents and parents with active descendants stay visible. Select a tile to open its chat or fold an individual branch. Stopped helpers have X eyes and cannot be selected; an updated extension retains them for five minutes. Relationships not observed by the extension are explicitly labeled unknown rather than guessed.
+Agent tiles have subtle raised surfaces and hover/press feedback. **Hierarchy** is a top-down org chart with parent-child connectors and active/available agents only. **Fit** shows the whole chart; zoom or choose **100%** and scroll to inspect it. A separate **+N hidden inactive agents** block reveals completed, failed and stopped helpers. Active children of inactive parents remain visible separately, with their actual parent named rather than a made-up connection. Select a tile to open its chat or fold an individual branch. Stopped helpers have X eyes and cannot be selected; an updated extension retains them for five minutes.
+
+The updated Copilot extension streams partial assistant replies instead of waiting for completion. Reload it explicitly in each existing terminal to receive this change. Messages still queued in the terminal appear when the runtime consumes them.
 
 **Already connected but controls are unavailable?** Reload the Notify extension in that Copilot terminal. Existing Claude terminals and unsupported helpers cannot be messaged through Notify; the app explains when a control is unavailable.
 
@@ -88,7 +92,7 @@ Try a sample request without starting an agent or spending model credits:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/visual-hierarchy-dark.png">
-  <img src="docs/images/visual-hierarchy.png" alt="Compact agent hierarchy with parent-child connections and an expandable inactive-agent group">
+  <img src="docs/images/visual-hierarchy.png" alt="Top-down active-agent org chart with parent-child connections, zoom controls and a separate hidden-inactive block">
 </picture>
 
 <p align="center"><sub>Captured from the native app with example sessions. These are rendered app screens, not mockups.</sub></p>
