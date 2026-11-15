@@ -36,10 +36,24 @@ struct AgentChatView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(targetName).font(WorkspaceType.text(20, strong: true)).lineLimit(2)
+                if agentID != nil {
+                    AgentIllustration(presence: .resting, accent: store.sessionColor(session), portrait: true)
+                        .frame(width: 40, height: 40).accessibilityHidden(true)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(targetName).font(WorkspaceType.text(20, strong: true)).lineLimit(2).textSelection(.enabled)
+                    if agentID != nil {
+                        Text("Subagent chat · messages go to this helper only")
+                            .font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
+                    }
+                }
                 Spacer()
                 CopyTextButton(text: rows.map(\.copyText).joined(separator: "\n\n"), label: "Copy chat")
             }
+            .padding(agentID == nil ? 0 : 10)
+            .background(agentID == nil ? Color.clear : store.sessionColor(session).opacity(0.12),
+                        in: RoundedRectangle(cornerRadius: 8))
+            AgentActivityPanel(session: session, agentID: agentID)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 20) {
@@ -94,7 +108,7 @@ struct AgentChatView: View {
                 }
                 Spacer(minLength: 0)
                 Button(agentID == nil ? "Stop main" : "Stop subagent") { confirmAction = "stop" }
-                    .buttonStyle(.plain).foregroundStyle(Palette.error)
+                    .buttonStyle(ReplyButtonStyle(primary: true, destructive: true))
                     .disabled(sending || store.steeringWorkspace.unavailableReason(session: session, agentID: agentID, action: "stop") != nil)
             }
             Text(agentID == nil ? "Send queues your message if the main agent is busy." :
@@ -125,6 +139,67 @@ struct AgentChatView: View {
             CopyTextButton(text: text, label: "Copy message")
         }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
             .background(Palette.background, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct AgentActivityPanel: View {
+    let session: SessionRecord
+    let agentID: String?
+    @State private var expanded = false
+    var reported: [ActivityEntry] {
+        Array(session.activity.entries.filter {
+            $0.agentID == agentID && ["tool", "reasoning", "status"].contains($0.kind)
+        }.suffix(12))
+    }
+    private var state: String {
+        guard let agentID else { return AgentPresence(session: session).title }
+        guard session.connected, session.team?.error == nil,
+              let agent = session.team?.agents.first(where: { $0.id == agentID }) else { return "Unavailable" }
+        return agent.status == .running ? "Working" : agent.status == .idle ? "At rest" :
+            agent.status == .cancelled ? "Stopped" : agent.status.rawValue.capitalized
+    }
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            if reported.isEmpty {
+                Text("No tool or thinking activity has been reported for this agent yet.")
+                    .font(WorkspaceType.text(12)).foregroundStyle(Palette.muted)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Up to 12 recent updates. Statuses are last reported, not proof of task success.")
+                            .font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
+                        ForEach(reported.reversed()) { entry in
+                            DisclosureGroup {
+                                ScrollView(.horizontal) {
+                                    Text(entry.detail)
+                                        .font(entry.kind == "tool" ? .system(size: 12, design: .monospaced) : WorkspaceType.text(12))
+                                        .textSelection(.enabled).fixedSize(horizontal: true, vertical: true)
+                                }
+                                CopyTextButton(text: entry.detail, label: "Copy activity")
+                            } label: {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(entry.title).font(WorkspaceType.text(12, strong: true)).lineLimit(2)
+                                    Spacer(minLength: 6)
+                                    Text(entry.status.capitalized).font(WorkspaceType.text(11))
+                                        .foregroundStyle(entry.status == "failed" ? Palette.error : Palette.muted)
+                                }
+                            }
+                        }
+                    }.padding(.vertical, 8)
+                }.frame(height: 160)
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Label("Reported activity", systemImage: "wrench.and.screwdriver")
+                        .font(WorkspaceType.text(12, strong: true))
+                    Spacer(minLength: 4)
+                    Text(state).font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
+                }
+                Text(reported.last?.title ?? "Waiting for an activity update")
+                    .font(WorkspaceType.text(12)).foregroundStyle(Palette.muted).lineLimit(1)
+            }
+        }.padding(10).background(Palette.background, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

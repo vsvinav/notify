@@ -48,6 +48,8 @@ This installs **`~/Applications/Notify.app`** and the **`~/.local/bin/notify`** 
 
 Select a connected Copilot session's **Chat** tab, type a message and choose **Send**. Click a helper in **Your team** to open its own chat and **Stop subagent** control. Sending to an idle supported helper wakes it for follow-up; ended helpers stay read-only. The main agent has separate **Interrupt** and **Stop main** controls, with confirmation.
 
+Helper chats have their own portrait, name and tinted **Subagent chat** header. **Reported activity** shows the selected agent's latest action; expand it for recent tools, results and shared reasoning. The red Stop buttons always act on the named target.
+
 **Already connected but controls are unavailable?** Reload the Notify extension in that Copilot terminal. Existing Claude terminals and unsupported helpers cannot be messaged through Notify; the app explains when a control is unavailable.
 
 Try a sample request without starting an agent or spending model credits:

@@ -190,9 +190,13 @@ In the control center, choose **Chat** to message the main agent. **Send** queue
 
 Click a subagent in **Your team** to select that helper. Its composer has its own draft and delivery receipts. **Send** steers a running helper or wakes an idle supported helper; **Stop subagent** confirms before cancelling only that helper. Other agents are not stopped, and existing edits are not undone. Ended, unavailable and unsupported helpers remain read-only. Some runtime task types reject messaging even while listed; that failure is shown rather than redirecting your message. Creating a new helper or restarting an ended one remains in the original terminal.
 
-The larger main agent wears a hat. Working agents visibly type; idle agents occasionally blink or glance. An acknowledged stop has a still pose. Motion pauses when the window is hidden or Reduce Motion is enabled. An idle or finished response does not mean the whole task succeeded.
+The larger main agent wears a hat. Helper chats use a mini portrait, the helper's name and a tinted **Subagent chat** header, with the selected helper highlighted in the team. **Stop main** and **Stop subagent** are filled red buttons and still require confirmation.
 
-Chat shows responses observed while Notify is connected and your messages sent from the app. It is not a complete historical transcript; internal helper prompts and tool command/result logs are omitted. **Copy response**, **Copy message**, **Copy chat** and code-block **Copy** copy their full available text. Scrolling up pauses **Follow chat**; **Latest** returns to the newest message.
+Working agents visibly type; idle agents occasionally blink or glance. An acknowledged stop has a still pose. Motion pauses when the window is hidden or Reduce Motion is enabled. An idle or finished response does not mean the whole task succeeded.
+
+Chat shows responses observed while Notify is connected and your messages sent from the app. It is not a complete historical transcript; internal helper prompts are omitted. **Reported activity** above the conversation shows the selected agent's latest reported action. Expand it to browse up to 12 recent tools, results and provider-shared reasoning updates; expand an individual entry for its available details and **Copy activity**. These details do not clutter the chat, and no hidden reasoning is inferred.
+
+**Copy response**, **Copy message**, **Copy chat** and code-block **Copy** copy their full available text. Scrolling up pauses **Follow chat**; **Latest** returns to the newest message.
 
 Choose **Steer an Agent** from Notify's menu-bar menu, or **Send instruction** from session details. The floating panel stays available even when no permission is pending. Select the target chat, read its latest activity, and type a direction:
 

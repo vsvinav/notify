@@ -498,6 +498,7 @@ struct RequestEditor: View {
 struct ReplyButtonStyle: ButtonStyle {
     let primary: Bool
     var highlighted: Bool?
+    var destructive = false
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         let filled = highlighted ?? primary
@@ -505,7 +506,7 @@ struct ReplyButtonStyle: ButtonStyle {
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 12).padding(.vertical, 8)
             .foregroundStyle(filled ? Palette.highlightInk : Palette.ink)
-            .background(filled ? Palette.accent : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+            .background(filled ? (destructive ? Palette.error : Palette.accent) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(filled ? .clear : Palette.line, lineWidth: 1))
             .opacity(!enabled ? 0.4 : (configuration.isPressed ? 0.7 : 1))
     }

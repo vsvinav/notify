@@ -61,6 +61,17 @@ import Vision
             try receiveTeam(["type": "control_status", "sessionID": "team-session", "commandID": disconnectedStop, "status": "stopped"])
             precondition(teamStore.registry.sessions["team-session"]?.stopped == false,
                          "An old connection's stop must not freeze the reconnected main agent")
+            for (id, child) in [("main-tool", false), ("child-tool", true)] {
+                var activity: [String: Any] = ["id": id, "kind": "tool", "title": id,
+                    "detail": "Reported command and result", "status": "running",
+                    "timestamp": ISO8601DateFormatter().string(from: Date())]
+                if child { activity["agentID"] = "worker-1" }
+                try receiveTeam(["type": "activity", "sessionID": "team-session", "activity": activity])
+            }
+            let activitySession = teamStore.registry.sessions["team-session"]!
+            precondition(AgentActivityPanel(session: activitySession, agentID: nil).reported.map(\.id) == ["main-tool"] &&
+                         AgentActivityPanel(session: activitySession, agentID: "worker-1").reported.map(\.id) == ["child-tool"],
+                         "The compact activity panel must show only the selected agent's reported actions")
         }
         do {
             let recovering = Store(directory: fixtureRoot.appendingPathComponent("error-recovery"), defaults: defaults)
@@ -1065,6 +1076,9 @@ import Vision
                     let childText = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
                     precondition(childText.contains("Stop subagent") && childText.contains("Message Code explorer"),
                                  "Clicking a worker must open its own composer and controls. Found: \(childText)")
+                    precondition(childText.contains("Subagent chat") && childText.contains("Reading menu.tsx") &&
+                                 !childText.contains("Inspect project files"),
+                                 "Helper chat must show distinct identity and only its own compact activity. Found: \(childText)")
                     try childBitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("control-center-subagent-chat.png"))
                     window.orderOut(nil)
                 }
