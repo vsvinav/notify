@@ -21,7 +21,9 @@ enum AppearanceMode: String, CaseIterable {
 }
 
 final class Store: ObservableObject {
-    @Published private(set) var registry = SessionRegistry()
+    @Published private(set) var registry = SessionRegistry() {
+        didSet { mobile.workspaceChanged() }
+    }
     @Published var selectedID: String?
     @Published var selectedRequestID: String?
     private(set) var selectionIsExplicit = false
@@ -34,7 +36,9 @@ final class Store: ObservableObject {
     var sessionErrors: [String: String] {
         agentErrors.merging(localSessionErrors) { _, local in local }
     }
-    @Published private(set) var appearance = SessionAppearance()
+    @Published private(set) var appearance = SessionAppearance() {
+        didSet { mobile.workspaceChanged() }
+    }
     var attentionIDs = Set<String>()
     private var announcedIDs: [String] = []
     private var replyAttempts: [String: UUID] = [:]
@@ -66,7 +70,9 @@ final class Store: ObservableObject {
     @Published var mutedSessions = Set<String>()
     @Published var audit: [AuditEntry] = []
     @Published var replyWorkspace = ReplyWorkspace()
-    @Published var steeringWorkspace = SteeringWorkspace()
+    @Published var steeringWorkspace = SteeringWorkspace() {
+        didSet { mobile.workspaceChanged() }
+    }
     @Published private(set) var automation = SessionAutomation()
     @Published var steeringSessionID: String?
     @Published private(set) var terminalBusy = Set<String>()
@@ -88,6 +94,8 @@ final class Store: ObservableObject {
     let server: LocalServer
     let mobile: MobileConnection
     private var mobileReplies: [String: MobileReply] = [:]
+    private var phoneWorkspace = MobileWorkspace()
+    private var phoneControls: [String: MobileControl] = [:]
     private let defaults: UserDefaults
     private var snoozed = Set<String>()
     private var discoveryTimer: DispatchSourceTimer?
@@ -111,7 +119,17 @@ final class Store: ObservableObject {
         mobile = MobileConnection(directory: self.directory.appendingPathComponent("mobile"), defaults: defaults, resources: mobileResources)
         mobile.snapshot = { [weak self] in self?.phoneSnapshot() ?? [] }
         mobile.onReply = { [weak self] reply in self?.replyFromPhone(reply) }
-        mobile.onUnavailable = { [weak self] in self?.mobileReplies.removeAll() }
+        mobile.workspaceSnapshot = { [weak self] ids in try self?.phoneWorkspaceSnapshot(watching: ids) ?? [] }
+        mobile.onControl = { [weak self] control in self?.controlFromPhone(control) }
+        mobile.onUnavailable = { [weak self] in
+            guard let self else { return }
+            self.mobileReplies.removeAll()
+            for (commandID, control) in self.phoneControls {
+                self.steeringWorkspace.update(sessionID: control.sessionID, commandID: commandID, status: "unknown", text: "Phone connection unavailable. Check the session before retrying.")
+            }
+            self.phoneControls.removeAll()
+            self.phoneWorkspace.invalidate()
+        }
         if let savedAppearance, AppearanceMode(rawValue: savedAppearance) == nil {
             error = "The saved appearance setting is not recognized. Notify is following the system; choose an appearance in Settings to reset it."
         }
@@ -136,6 +154,7 @@ final class Store: ObservableObject {
             self.disableSessionAutoYes(id, reason: "connection closed")
             self.steeringWorkspace.disconnect(id)
             self.registry.disconnect(id)
+            self.expirePhoneControls()
             self.mobile.publish()
             self.onAttentionChange?()
         }
@@ -249,11 +268,11 @@ final class Store: ObservableObject {
     }
     func closeSteering() { steeringSessionID = nil; onAttentionChange?() }
     @discardableResult
-    func steer(_ id: String, action: String, agentID: String? = nil, creation: SubagentCreation? = nil) -> String? {
+    func steer(_ id: String, action: String, agentID: String? = nil, creation: SubagentCreation? = nil, phoneText: String? = nil) -> String? {
         guard let session = registry.sessions[id] else { error = "This session is no longer available."; return nil }
         do {
             if action == "stop", agentID == nil { disableSessionAutoYes(id, reason: "Stop requested") }
-            let commandID = try steeringWorkspace.begin(session: session, action: action, agentID: agentID, creation: creation)
+            let commandID = try steeringWorkspace.begin(session: session, action: action, agentID: agentID, creation: creation, phoneText: phoneText)
             do {
                 if let creation {
                     try record(session: session, action: "Requested subagent creation: \(creation.name) (\(creation.agentType))", automatic: false)
@@ -278,6 +297,7 @@ final class Store: ObservableObject {
                 self.steeringWorkspace.update(sessionID: id, commandID: commandID, status: "unknown",
                     text: "No acknowledgment yet. Check the session before retrying; the action may already have happened.")
                 self.disableSessionAutoYes(id, reason: "steering acknowledgment timed out")
+                self.finishPhoneControl(commandID, status: "unknown", detail: "No runtime acknowledgment. Check the session before retrying.", error: "Delivery is uncertain.")
             }
             return commandID
         } catch {
@@ -516,6 +536,7 @@ final class Store: ObservableObject {
             catch { localSessionErrors[packet.sessionID] = "Invalid activity event; check the original terminal." }
         case "team":
             guard let snapshot = packet.team else {
+                registry.invalidateTeam(packet.sessionID)
                 localSessionErrors[packet.sessionID] = "Agent sent an empty subagent snapshot."
                 return
             }
@@ -524,7 +545,22 @@ final class Store: ObservableObject {
         case "control_status":
             if let id = packet.commandID, let status = packet.status {
                 let previous = steeringWorkspace.receipt(sessionID: packet.sessionID, commandID: id)
+                if let target = packet.agentID, target != previous?.agentID { return }
+                if let control = phoneControls[id] {
+                    guard control.sessionID == packet.sessionID, previous?.agentID == control.agentID else { return }
+                    guard let session = registry.sessions[packet.sessionID],
+                          previous?.workRevision == session.workRevision, phoneWorkspace.isCurrent(control, session: session) else {
+                        finishPhoneControl(id, status: "unknown", detail: "The native session or target changed before acknowledgment.", error: "Stale control generation.")
+                        return
+                    }
+                }
                 steeringWorkspace.update(sessionID: packet.sessionID, commandID: id, status: status, text: packet.text ?? "")
+                if let receipt = steeringWorkspace.receipt(sessionID: packet.sessionID, commandID: id),
+                   receipt.status == status, receipt.status != previous?.status {
+                    let accepted = receipt.action == "stop" ? status == "stopped" : ["queued", "received"].contains(status)
+                    finishPhoneControl(id, status: status, detail: receipt.detail,
+                                       error: accepted ? nil : "Runtime did not accept this control: \(status).")
+                }
                 if status == "stopped", let previous, previous.action == "stop", previous.agentID == nil,
                    ["sending", "unknown"].contains(previous.status) {
                     registry.acknowledgeStop(packet.sessionID, workRevision: previous.workRevision)
@@ -589,6 +625,7 @@ final class Store: ObservableObject {
         default: error = "Unsupported launcher event: \(packet.type)"
         }
         if ["hello", "request", "resolved", "reply", "error", "state", "metadata"].contains(packet.type) { mobile.publish() }
+        expirePhoneControls()
         onAttentionChange?()
     }
     private func record(session: SessionRecord, action: String, automatic: Bool) throws {
@@ -655,6 +692,52 @@ final class Store: ObservableObject {
                 notificationID: (session.sourceSessionID ?? session.id) + ":" + request.id,
                 request: request, fields: RequestContext.fields(from: request.detail, isQuestion: request.kind == "question").map(MobileField.init),
                 sending: sending.contains(request.id), error: requestErrors[request.id])
+        }
+    }
+
+    func phoneWorkspaceSnapshot(watching ids: [String]) throws -> [Data] {
+        expirePhoneControls()
+        let rows = sessions
+        let colors = Dictionary(uniqueKeysWithValues: rows.prefix(256).map { ($0.id, String(format: "#%06X", appearance.color(for: $0))) })
+        var messages = [try phoneWorkspace.overview(sessions: rows, colors: colors)]
+        for id in ids.prefix(8) {
+            guard let session = rows.prefix(256).first(where: { $0.id == id }) else { continue }
+            messages.append(try phoneWorkspace.detail(session: session, controls: steeringWorkspace.history[id] ?? [],
+                                                     controlsTruncated: steeringWorkspace.truncatedHistory.contains(id)))
+        }
+        return messages
+    }
+
+    func controlFromPhone(_ control: MobileControl) {
+        guard let session = registry.sessions[control.sessionID], phoneControls.count < 8 else {
+            mobile.completeControl(control.id, status: "failed", detail: "", error: "Session unavailable or too many phone controls pending.")
+            return
+        }
+        do {
+            try phoneWorkspace.reserve(control, session: session)
+            // Audit metadata only: phone prompt contents remain ephemeral.
+            try record(session: session, action: "Phone requested \(control.action) for \(control.agentID.map { "subagent \($0)" } ?? "main agent")", automatic: false)
+            guard let commandID = steer(session.id, action: control.action, agentID: control.agentID, phoneText: control.text) else {
+                mobile.completeControl(control.id, status: "failed", detail: "", error: "Control could not be dispatched. Check the Mac.")
+                return
+            }
+            phoneControls[commandID] = control
+        } catch {
+            mobile.completeControl(control.id, status: "failed", detail: "", error: "No control sent: session stale, unsupported, duplicate, or audit unavailable.")
+        }
+    }
+
+    private func finishPhoneControl(_ commandID: String, status: String, detail: String, error: String?) {
+        guard let control = phoneControls.removeValue(forKey: commandID) else { return }
+        mobile.completeControl(control.id, commandID: commandID, status: status, detail: detail, error: error)
+    }
+
+    private func expirePhoneControls() {
+        for (commandID, control) in phoneControls {
+            guard let session = registry.sessions[control.sessionID], phoneWorkspace.isCurrent(control, session: session) else {
+                finishPhoneControl(commandID, status: "unknown", detail: "Session generation or exact target changed. Check the Mac before retrying.", error: "Control acknowledgment is uncertain.")
+                continue
+            }
         }
     }
 

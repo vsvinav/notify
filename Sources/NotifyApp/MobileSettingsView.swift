@@ -8,7 +8,7 @@ struct MobileSettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Phone connections").font(WorkspaceType.text(18, strong: true))
             Toggle("Allow phone connections", isOn: Binding(get: { mobile.enabled }, set: { mobile.setEnabled($0) }))
-            Text("Review and reply on the same Wi-Fi. Lock-screen alerts use internet push services, without sending request details.")
+            Text("Review requests, read chats and control supported agents on the same Wi-Fi. Sending instructions can use model credits. Push alerts contain no conversation details.")
                 .font(WorkspaceType.text(12)).foregroundStyle(Palette.muted)
             if mobile.starting { ProgressView("Starting local connection…").controlSize(.small) }
             if let error = mobile.error {

@@ -24,7 +24,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     record({ type: "environment", tls: process.env.NODE_TLS_REJECT_UNAUTHORIZED });
     const connection = JSON.parse(readFileSync(join(dirname(directory), "connection.json"), "utf8"));
     agent = createConnection({ host: "127.0.0.1", port: connection.port }, () =>
-      sendAgent({ type: "hello", token: connection.token, agent: "demo", cwd: "/fixture" }));
+      sendAgent({ type: "hello", token: connection.token, agent: "copilot", cwd: "/fixture" }));
     let buffer = "";
     agent.on("data", data => {
       buffer += data;
@@ -33,6 +33,7 @@ for await (const line of createInterface({ input: process.stdin })) {
         const packet = JSON.parse(buffer.slice(0, end));
         buffer = buffer.slice(end + 1);
         if (packet.type === "welcome") {
+          sendAgent({ type: "capabilities", steering: true, subagentChat: true, subagentStop: true });
           for (const id of ["custom", "fixed"]) {
             sendAgent({ type: "request", request: { id, kind: "question", title: "Pick an approach", detail: "",
               autoEligible: false, questions: [{ id: "choice", text: "Approach", multiple: false,
@@ -45,6 +46,8 @@ for await (const line of createInterface({ input: process.stdin })) {
           if (packet.requestID === "fixed") {
             sendAgent({ ...packet, type: "resolved", answers: { choice: ["A different terminal answer"] } });
           }
+        } else if (packet.type === "control") {
+          record({ ...packet, type: "agent-control" });
         }
       }
     });
@@ -72,9 +75,11 @@ for await (const line of createInterface({ input: process.stdin })) {
     } else if (step === 3) {
       const item = requests.find(item => item.request.id === "fixed");
       phoneReply("fixed-reply", "fixed", item.ticket, "Unsupported custom answer");
-    } else {
+    } else if (step === 4) {
       const item = requests.find(item => item.request.id === "fixed");
       phoneReply("mismatched-answer", "fixed", item.ticket, "Listed answer");
+    } else if (step === 5) {
+      for (let i = 0; i < 16; i++) emit({ type: "workspace_watch", sessionIDs: ["mobile-fixture"] });
     }
   } else {
     record(command);

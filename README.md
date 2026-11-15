@@ -21,7 +21,7 @@ A lightweight native Mac app for Copilot and Claude Code. See which session need
 open ~/Applications/Notify.app
 ```
 
-**Download:** get **Notify-0.2.0-beta.2-macos-arm64.zip** from the [macOS beta release](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.2). Requires an **Apple Silicon Mac, macOS 14+, Node.js 22.18+**, and an installed, signed-in Copilot or Claude Code CLI. Unzip it and move **Notify.app** into **Applications in your home folder**, then open it and choose **Connect agents**. No source checkout or Apple build tools are needed. **INSTALL.txt** inside the ZIP includes first-launch instructions.
+**Download:** get **Notify-0.2.0-beta.3-macos-arm64.zip** from the [macOS beta release](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.3). Requires an **Apple Silicon Mac, macOS 14+, Node.js 22.18+**, and an installed, signed-in Copilot or Claude Code CLI. Unzip it and move **Notify.app** into **Applications in your home folder**, then open it and choose **Connect agents**. No source checkout or Apple build tools are needed. **INSTALL.txt** inside the ZIP includes first-launch instructions.
 
 This test build is ad-hoc signed, **not Developer ID signed or notarized**. If Apple's warning offers only **Move to Trash** or **Done**, click **Done**, then find Notify's **Open Anyway** button in **System Settings > Privacy & Security**. See [full Gatekeeper guidance](docs/guide.md#install-the-download). A checksum does not bypass this warning. The download does not include your accounts, settings, paired phones or sessions; connect agents separately on the other Mac.
 
@@ -110,13 +110,15 @@ Try a sample request without starting an agent or spending model credits:
 - **Chat and steer.** Send to the main session or a supported helper. Separate stop controls keep the destination clear. This is native chat, not an embedded terminal.
 - **Copy and catch up.** Copy responses, messages, code or the observed chat. Optional Haiku summaries use a limited excerpt and return complete paragraphs up to 250 words.
 - **Choose when to step aside.** Supported Copilot sessions offer separate Dangerous Auto-yes for waiting and future eligible tools, with explicit confirmation, red warnings and an Off control.
-- **Use your phone.** Pair an iPhone or Android Home Screen app for same-network replies and optional generic background alerts.
+- **Use your phone.** Pair an iPhone or Android Home Screen app for approvals, live session chat, exact-agent controls, a grouped org chart and optional generic background alerts.
 
 **Keyboard priority:** while a request is visible, Up/Down and Return go to Notify, even from another app. Return activates the highlighted choice, including a remembered approval or Deny. Hide or snooze the panel to give those keys back.
 
 **Dangerous means dangerous:** auto-approved tools can delete files or perform external actions. The mode is temporary and session-specific; it does not answer questions or override agent restrictions. [Approval controls and limits](docs/guide.md#dangerous-auto-yes).
 
 ## Use your phone
+
+Alongside **Requests**, the phone's **Sessions** view now offers live main-agent/subagent chat, separate tool and thinking updates, and an org chart with expandable idle helpers. Send, Interrupt and Stop respect the connected agent's capabilities and preserve your Mac drafts. Update the Mac app, then reopen the installed phone web app on the same network. [Phone workspace guide](https://github.com/vsvinav/notify-mobile#sessions-chat-and-hierarchy).
 
 **Android: there is no APK or Play Store download.** Install Notify as a web app from Chrome:
 

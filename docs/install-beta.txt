@@ -1,4 +1,4 @@
-Notify 0.2.0 beta 2 - manual-approval macOS build
+Notify 0.2.0 beta 3 - manual-approval macOS build
 
 REQUIREMENTS
 Apple Silicon Mac, macOS 14 or newer, Node.js 22.18 or newer,
@@ -7,7 +7,7 @@ Node and the agent CLIs are not bundled. No Xcode or source build is needed.
 
 INSTALL
 1. Download the ZIP and SHA256SUMS.txt from:
-   https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.2
+   https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.3
 2. In their download folder, run: shasum -a 256 -c SHA256SUMS.txt
 3. Unzip. Move Notify.app into Applications inside your home folder.
    If updating, quit Notify first; leave your agent terminals running.
@@ -43,5 +43,16 @@ Existing Claude terminals cannot be attached; use Notify's Claude launcher.
 This archive contains no developer settings, accounts, sessions or phone keys.
 Each Mac connects to its own local agents; pair phones separately on that Mac.
 
+PHONE WORKSPACE
+On the Mac, enable Settings > Phone connections and pair your phone.
+For an already paired phone, close and reopen its installed web app on the same
+network after updating this Mac app. Open Sessions for live chat and hierarchy.
+Instructions target only the selected supported agent and can use model credits.
+An accepted queue entry is not a completed task. No message is retried for you.
+Mac drafts remain separate. Reloading the phone page clears unsent phone drafts.
+The phone remains a Home Screen web app, not an App Store app or Android APK.
+Phone installation and certificate instructions:
+https://github.com/vsvinav/notify-mobile#quickstart
+
 Full guide:
-https://github.com/vsvinav/notify/blob/v0.2.0-beta.2/docs/guide.md
+https://github.com/vsvinav/notify/blob/v0.2.0-beta.3/docs/guide.md

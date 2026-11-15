@@ -274,11 +274,16 @@ import Vision
             try input.fileHandleForWriting.close()
             waitForHTTPS { phone.mobile.pairing != nil || !client.isRunning }
             precondition(phone.mobile.pairing?.name == "HTTPS fixture phone", "Only the disposable test phone may be confirmed")
+            phone.steeringWorkspace.setDraft("Preserve identical native draft", sessionID: "https-fixture")
+            phone.steeringWorkspace.setDraft("Preserve identical native draft", sessionID: "https-fixture", agentID: "worker")
             phone.mobile.confirmPairing(true)
             waitForHTTPS { !client.isRunning }
             let errors = String(decoding: diagnostics.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
             precondition(client.terminationStatus == 0, "Real native/HTTPS phone round-trip failed: \(errors)")
             precondition(String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).contains("\"ok\":true"))
+            precondition(phone.steeringWorkspace.draft(sessionID: "https-fixture") == "Preserve identical native draft" &&
+                phone.steeringWorkspace.draft(sessionID: "https-fixture", agentID: "worker") == "Preserve identical native draft",
+                "Real phone controls and runtime ACKs must preserve both identical native drafts")
             print("Packaged HTTPS phone, native Store and agent acknowledgment round-trip passed")
         }
         do {
@@ -350,6 +355,30 @@ import Vision
             let mismatchEvents = try events()
             precondition(mismatchEvents.contains { $0.id == "mismatched-answer" && $0.ok == false },
                          "A different terminal answer must not acknowledge the phone's answer")
+            let overviewData = try mobileStore.phoneWorkspaceSnapshot(watching: []).first!
+            let overview = try JSONSerialization.jsonObject(with: overviewData) as! [String: Any]
+            let row = (overview["sessions"] as! [[String: Any]]).first { $0["id"] as? String == "mobile-fixture" }!
+            let blockedControlID = UUID().uuidString
+            let phoneControl = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+                "id": blockedControlID, "sessionID": "mobile-fixture", "ticket": row["ticket"]!,
+                "action": "queue", "text": "Do not send when audit fails"
+            ]))
+            let history = mobileStore.directory.appendingPathComponent("history.json")
+            try FileManager.default.removeItem(at: history)
+            try FileManager.default.createDirectory(at: history, withIntermediateDirectories: false)
+            mobileStore.controlFromPhone(phoneControl)
+            try waitFor { try events().contains { $0.type == "control_result" && $0.id == blockedControlID } }
+            let auditedEvents = try events()
+            precondition(auditedEvents.contains { $0.type == "control_result" && $0.id == blockedControlID && $0.ok == false } &&
+                         !auditedEvents.contains { $0.type == "agent-control" },
+                         "Phone control audit failure must prevent any native socket dispatch")
+            try FileManager.default.removeItem(at: history)
+            let beforeWatchBurst = try events().filter { $0.type == "workspace" }.count
+            mobileStore.mobile.testPush()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+            let watchBurstPublishes = try events().filter { $0.type == "workspace" }.count - beforeWatchBurst
+            precondition((1...2).contains(watchBurstPublishes),
+                         "Watch selection bursts must coalesce instead of flooding the bounded native child pipe: \(watchBurstPublishes)")
         }
         do {
             let welcomeDefaults = UserDefaults(suiteName: suite + "-welcome")!
