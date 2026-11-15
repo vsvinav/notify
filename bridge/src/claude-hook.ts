@@ -216,12 +216,12 @@ function handleHookEvent(
     if (hookName === "Stop") {
       bridge.setState("ready", "Session stopped.");
     }
-    sock.write("{}\n"); sock.end();
-    return;
-  }
-
-  if (hookName === "UserPromptSubmit") {
-    bridge.setState("working", "Processing prompt...");
+    if (hookName === "UserPromptSubmit") {
+      bridge.setState("working", "Processing prompt...");
+    }
+    if (hookName === "SubagentStop") {
+      team.stopped(event);
+    }
     sock.write("{}\n"); sock.end();
     return;
   }
@@ -253,12 +253,6 @@ function handleHookEvent(
 
   if (hookName === "SubagentStart") {
     team.started(event);
-    sock.write("{}\n"); sock.end();
-    return;
-  }
-
-  if (hookName === "SubagentStop") {
-    team.stopped(event);
     sock.write("{}\n"); sock.end();
     return;
   }
@@ -350,7 +344,7 @@ function processTranscriptEntry(
       if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim()) {
         bridge.activity({
           id: (uuid || randomUUID()) + "-thinking",
-          kind: "thinking" as "assistant",
+          kind: "assistant",
           title: "Thinking",
           detail: boundActivityText(block.thinking),
           status: "complete",
