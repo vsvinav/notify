@@ -1,409 +1,359 @@
 #!/usr/bin/env node
 import { createServer, createConnection, type Socket } from "node:net";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, lstatSync, readFileSync, writeFileSync, unlinkSync, chmodSync } from "node:fs";
 import { open, constants } from "node:fs/promises";
 import { chdir } from "node:process";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
+import { setTimeout as sleep } from "node:timers/promises";
+import type { PermissionUpdate } from "@anthropic-ai/claude-agent-sdk";
 import { Bridge } from "./connection.ts";
 import { ClaudeTeam } from "./claude-team.ts";
-import { object } from "./protocol.ts";
+import { object, claudeQuestions, validateReply, type Request, type Reply } from "./protocol.ts";
+import { claudePermissionOptions } from "./permission-options.ts";
 import { boundActivityText } from "./activity.ts";
 
-const NOTIFY_DIR = join(homedir(), "Library", "Application Support", "Notify");
-const CLAUDE_SOCKET_DIR = join(NOTIFY_DIR, "claude");
-const KILLED_TTL_MS = 300_000;
-const TRANSCRIPT_POLL_MS = 1_000;
-const WATCHDOG_INTERVAL_MS = 5_000;
-const HISTORY_SKIP_BYTES = 256 * 1024;
-
-// Suppress unused variable warning for KILLED_TTL_MS (kept for spec compliance).
-void KILLED_TTL_MS;
+const SOCKET_DIR = join(homedir(), "Library", "Application Support", "Notify", "claude");
+const MAX_FRAME = 1_048_576;
+const PERMISSION_TIMEOUT = 120_000;
+const EVENTS = new Set(["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+  "PostToolUseFailure", "PermissionRequest", "Stop", "SubagentStart", "SubagentStop", "SessionEnd"]);
 
 function socketName(sessionID: string): string {
   return createHash("sha256").update(sessionID).digest("hex").slice(0, 16) + ".sock";
 }
 
-function deriveSessionUUID(claudeSessionID: string): string {
-  const hex = createHash("sha256").update("notify-" + claudeSessionID).digest("hex");
+function deriveSessionUUID(sessionID: string): string {
+  const hex = createHash("sha256").update("notify-" + sessionID).digest("hex");
   return `${hex.slice(0,8)}-${hex.slice(8,12)}-4${hex.slice(13,16)}-${((parseInt(hex.slice(16,18),16)&0x3f)|0x80).toString(16).padStart(2,"0")}${hex.slice(18,20)}-${hex.slice(20,32)}`;
 }
 
-// ── Hook event mode ───────────────────────────────────────────────────────────
+function privateSocketDirectory(): void {
+  mkdirSync(SOCKET_DIR, { recursive: true, mode: 0o700 });
+  const info = lstatSync(SOCKET_DIR);
+  if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid?.() || (info.mode & 0o077)) {
+    throw new Error("Unsafe Claude hook directory.");
+  }
+  chdir(SOCKET_DIR); // Short relative names also work under long macOS home paths.
+}
+
+async function connectHook(name: string): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(name);
+    socket.once("connect", () => { socket.removeListener("error", reject); resolve(socket); });
+    socket.once("error", reject);
+  });
+}
+
+function hookOwnerPID(): number | undefined {
+  let pid = process.ppid;
+  for (let depth = 0; depth < 16 && pid > 1; depth++) {
+    let line: string;
+    try {
+      line = execFileSync("/bin/ps", ["-o", "pid=,ppid=,uid=,comm=", "-p", String(pid)],
+        { encoding: "utf8", timeout: 1000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    } catch {
+      // macOS sandboxed hosts forbid ps; our installed exec hook keeps the direct parent.
+      return pid;
+    }
+    const match = /^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/.exec(line);
+    if (!match || Number(match[1]) !== pid || Number(match[3]) !== process.getuid?.()) return;
+    // Command shells can remain around an exec hook and disappear as soon as it returns.
+    if (!["sh", "bash", "zsh", "dash", "ksh", "fish"].includes(basename(match[4]).replace(/^-/, ""))) return pid;
+    pid = Number(match[2]);
+  }
+}
 
 async function hookMode(): Promise<void> {
-  let raw = "";
-  for await (const chunk of process.stdin) raw += String(chunk);
-  if (!raw.trim()) return;
-
-  let event: Record<string, unknown>;
-  try { event = JSON.parse(raw); } catch { return; }
-
-  const sessionID = String(event.session_id ?? "");
-  const hookName = String(event.hook_event_name ?? "");
-  if (!sessionID) return;
-
-  if (hookName === "SessionStart") {
-    // Spawn daemon detached — do not await.
-    try { mkdirSync(CLAUDE_SOCKET_DIR, { recursive: true, mode: 0o700 }); } catch {}
-    const child = spawn(process.execPath, [
-      process.argv[1],
-      "--serve", sessionID,
-      String(event.cwd ?? process.cwd()),
-      String(process.ppid ?? 0),
-      String(event.transcript_path ?? "")
-    ], { detached: true, stdio: "ignore", cwd: CLAUDE_SOCKET_DIR });
-    child.unref();
-    return;
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    size += chunk.length;
+    if (size > MAX_FRAME) return;
+    chunks.push(Buffer.from(chunk));
   }
-
-  // Forward to daemon.
-  try { chdir(CLAUDE_SOCKET_DIR); } catch { return; }
-  const name = socketName(sessionID);
-
+  let event: unknown;
+  try { event = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { return; }
+  if (!object(event) || typeof event.session_id !== "string" || !event.session_id ||
+      event.session_id.length > 256 || !EVENTS.has(String(event.hook_event_name))) return;
+  privateSocketDirectory();
+  const name = socketName(event.session_id);
+  let socket: Socket;
+  try { socket = await connectHook(name); }
+  catch {
+    if (event.hook_event_name === "SessionEnd") return;
+    const ownerPID = hookOwnerPID();
+    if (!ownerPID) return;
+    // Every installed event can attach an already-open session after explicit hook reload.
+    const child = spawn(process.execPath, [process.argv[1], "--serve", event.session_id,
+      typeof event.cwd === "string" ? event.cwd : process.cwd(), String(ownerPID),
+      typeof event.transcript_path === "string" ? event.transcript_path : ""],
+      { detached: true, stdio: "ignore", cwd: SOCKET_DIR });
+    child.on("error", () => {});
+    child.unref();
+    let connected: Socket | undefined;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      await sleep(50);
+      try { connected = await connectHook(name); break; } catch {}
+    }
+    if (!connected) return; // No decision: Claude retains its ordinary permission flow.
+    socket = connected;
+  }
   await new Promise<void>(resolve => {
-    const timeoutMs = hookName === "PermissionRequest" ? 86_400_000 : 10_000;
-    const timer = setTimeout(() => { sock.destroy(); resolve(); }, timeoutMs);
-    const sock = createConnection(name);
-    let buf = "";
-    sock.on("connect", () => { sock.write(JSON.stringify(event) + "\n"); });
-    sock.on("data", data => {
-      buf += data.toString();
-      const nl = buf.indexOf("\n");
-      if (nl >= 0) {
-        const response = buf.slice(0, nl).trim();
-        clearTimeout(timer);
-        if (response && response !== "{}") {
-          try { process.stdout.write(response + "\n"); } catch {}
-        }
-        sock.end();
-        resolve();
-      }
+    let buffer = Buffer.alloc(0), responded = false;
+    const finish = () => { clearTimeout(timer); socket.destroy(); resolve(); };
+    const timer = setTimeout(finish, event.hook_event_name === "PermissionRequest" ? PERMISSION_TIMEOUT : 10_000);
+    socket.on("error", finish);
+    socket.on("close", finish);
+    process.stdout.on("error", finish);
+    socket.on("data", chunk => {
+      if (responded) return;
+      buffer = Buffer.concat([buffer, chunk]);
+      if (buffer.length > MAX_FRAME) { finish(); return; }
+      const end = buffer.indexOf(10);
+      if (end < 0) return;
+      responded = true;
+      const response = buffer.subarray(0, end).toString("utf8");
+      if (!response || response === "{}") { finish(); return; }
+      // ACK means stdout delivery, not acceptance by Claude's permission engine.
+      process.stdout.write(response + "\n", error => {
+        if (error) { finish(); return; }
+        socket.end('{"ack":true}\n');
+      });
     });
-    sock.on("error", () => { clearTimeout(timer); resolve(); });
-    sock.on("close", () => { clearTimeout(timer); resolve(); });
+    socket.write(JSON.stringify(event) + "\n");
   });
 }
 
-// ── Daemon mode ───────────────────────────────────────────────────────────────
-
-async function daemonMode(sessionID: string, cwd: string, claudePID: number, transcriptPath: string): Promise<void> {
-  try { chdir(CLAUDE_SOCKET_DIR); } catch (err) {
-    console.error(`Notify Claude daemon: cannot chdir to socket dir: ${err}`);
-    process.exit(1);
+function claimDaemon(name: string): (() => void) | undefined {
+  const lock = name + ".lock";
+  try { writeFileSync(lock, String(process.pid), { flag: "wx", mode: 0o600 }); }
+  catch (error) {
+    if (!object(error) || error.code !== "EEXIST") throw error;
+    const info = lstatSync(lock);
+    if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o077)) return;
+    const owner = Number(readFileSync(lock, "utf8"));
+    if (!Number.isInteger(owner) || owner <= 1) return;
+    try { process.kill(owner, 0); return; }
+    catch (error) { if (!object(error) || error.code !== "ESRCH") return; }
+    // Do not remove a lock replaced by another concurrently starting hook.
+    if (lstatSync(lock).ino !== info.ino) return;
+    unlinkSync(lock);
+    try { writeFileSync(lock, String(process.pid), { flag: "wx", mode: 0o600 }); } catch { return; }
   }
+  try {
+    const info = lstatSync(name);
+    if (!info.isSocket() || info.uid !== process.getuid?.()) throw new Error("Unsafe Claude hook socket.");
+    unlinkSync(name);
+  } catch (error) {
+    if (!object(error) || error.code !== "ENOENT") { unlinkSync(lock); throw error; }
+  }
+  return () => {
+    try { unlinkSync(name); } catch {}
+    try { if (readFileSync(lock, "utf8") === String(process.pid)) unlinkSync(lock); } catch {}
+  };
+}
 
+type Waiting = { socket: Socket; request: Request; input: Record<string, unknown>;
+  suggestions?: PermissionUpdate[]; reply?: Reply };
+
+async function daemonMode(sessionID: string, cwd: string, ownerPID: number, transcript: string): Promise<void> {
+  if (!Number.isInteger(ownerPID) || ownerPID <= 1) throw new Error("Missing live Claude owner.");
+  process.kill(ownerPID, 0);
+  privateSocketDirectory();
+  const name = socketName(sessionID);
+  const release = claimDaemon(name);
+  if (!release) return;
   const bridge = new Bridge("claude", cwd, undefined, deriveSessionUUID(sessionID), false);
   const team = new ClaudeTeam(bridge);
-  let pendingPermissionSocket: Socket | undefined;
-
+  const waiting = new Map<string, Waiting>();
+  const sockets = new Set<Socket>();
+  const controller = new AbortController();
+  let stopped = false;
   bridge.enableActivity();
-  bridge.setCapabilities({ steering: true, sessionAutoYes: false,
-    subagentChat: false, subagentStop: true, subagentCreate: false,
-    subagentRemove: false, subagentTypes: [], subagentModels: [] });
-  bridge.setState("ready", "Claude session connected.");
+  bridge.setCapabilities({ steering: false, sessionAutoYes: false, subagentChat: false, subagentStop: false,
+    subagentCreate: false, subagentRemove: false });
+  bridge.setTitle("", sessionID);
+  bridge.setState("ready", "Claude hooks connected; controls remain in the original terminal.");
+  bridge.team({ agents: [], runningCount: 0, idleCount: 0, truncated: false,
+    error: "Only subagents observed since these hooks connected are shown." });
 
-  // ── Steering via iTerm2 ──────────────────────────────────────────────────
-  bridge.onControl = async value => {
-    if (!object(value) || typeof value.commandID !== "string") throw new Error("Invalid control");
-    const id = value.commandID;
-    const action = String(value.action ?? "");
-    const text = String(value.text ?? "");
-    if (!["queue", "interrupt", "stop"].includes(action)) throw new Error("Unsupported Claude action.");
-    if (action !== "stop" && !text.trim()) throw new Error("Message text is empty.");
-
-    let tty: string;
-    try { tty = await findClaudeTTY(claudePID); }
-    catch (err) {
-      bridge.controlStatus(id, "failed", `Cannot find Claude's terminal: ${String(err)}`);
-      return;
-    }
-
-    const escaped = text.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-    // Prepend "tty" so ps output "s002" becomes "ttys002"; iTerm2 reports "/dev/ttys002".
-    const ttyDevice = `tty${tty}`;
-    let script: string;
-    const sessionFinder = `set foundSession to missing value
-  repeat with w in windows
-    repeat with t in tabs of w
-      repeat with s in sessions of t
-        if tty of s ends with "/dev/${ttyDevice}" then set foundSession to s
-      end repeat
-    end repeat
-  end repeat
-  if foundSession is missing value then error "Claude terminal not found."`;
-    if (action === "stop") {
-      script = `tell application "iTerm2"\n  ${sessionFinder}\n  tell foundSession to write text "${"\u001b"}" newline NO\nend tell`;
-    } else if (action === "interrupt") {
-      script = `tell application "iTerm2"\n  ${sessionFinder}\n  tell foundSession to write text "${"\u001b"}" newline NO\n  tell foundSession to write text "${escaped}"\nend tell`;
-    } else {
-      script = `tell application "iTerm2"\n  ${sessionFinder}\n  tell foundSession to write text "${escaped}"\nend tell`;
-    }
-
-    try {
-      await runOsascript(script, tty);
-      bridge.controlStatus(id, action === "stop" ? "stopped" : "received",
-        action === "stop" ? "Escape sent to Claude terminal." :
-        action === "interrupt" ? "Interrupted and message typed into Claude terminal." :
-        "Message typed into Claude terminal.");
-    } catch (err) {
-      bridge.controlStatus(id, "failed", `iTerm2 delivery failed: ${String(err)}`);
-    }
+  bridge.onReply = async value => {
+    if (!object(value) || typeof value.requestID !== "string") return false;
+    const pending = waiting.get(value.requestID);
+    if (!pending || pending.reply || pending.socket.destroyed || !validateReply(pending.request, value) || value.automatic) return false;
+    const decision = value.decision === "deny"
+      ? { behavior: "deny", message: value.feedback?.trim() || "User declined in Notify." }
+      : { behavior: "allow", updatedInput: pending.request.kind === "question"
+          ? { ...pending.input, answers: Object.fromEntries(pending.request.questions.map(q =>
+            [q.text, value.answers![q.id].join(", ")])) } : pending.input,
+        ...(value.permissionOptionID ? { updatedPermissions: pending.suggestions } : {}) };
+    pending.reply = value;
+    pending.socket.setTimeout(5000, () => pending.socket.destroy());
+    pending.socket.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision } }) + "\n");
+    return true;
   };
 
-  void bridge.start();
-
-  // ── Unix socket server ───────────────────────────────────────────────────
-  const name = socketName(sessionID);
-  const server = createServer(sock => {
-    let buf = "";
-    sock.on("data", data => {
-      buf += data.toString();
-      const nl = buf.indexOf("\n");
-      if (nl < 0) return;
-      const line = buf.slice(0, nl);
-      buf = buf.slice(nl + 1);
-      let evt: Record<string, unknown>;
-      try { evt = JSON.parse(line); } catch { sock.write("{}\n"); sock.end(); return; }
-      handleHookEvent(evt, sock, bridge, team, (s) => { pendingPermissionSocket = s; }, () => pendingPermissionSocket);
-    });
-    sock.on("error", () => {});
-  });
-
-  server.listen(name, () => {
-    // Set socket permissions.
-    try { require("node:fs").chmodSync(name, 0o600); } catch {}
-  });
-
-  // ── Transcript follower ──────────────────────────────────────────────────
-  if (transcriptPath) {
-    void followTranscript(transcriptPath, bridge, sessionID);
-  }
-
-  // ── Claude-PID watchdog ──────────────────────────────────────────────────
-  const watchdog = setInterval(() => {
-    try { process.kill(claudePID, 0); }
-    catch {
-      clearInterval(watchdog);
-      server.close();
-      bridge.stop();
-      team.stop();
-      process.exit(0);
-    }
-  }, WATCHDOG_INTERVAL_MS);
-
-  process.on("SIGTERM", () => {
+  function stop(): void {
+    if (stopped) return;
+    stopped = true;
     clearInterval(watchdog);
+    controller.abort();
+    for (const socket of sockets) socket.destroy();
+    waiting.clear();
+    bridge.pending.discardAll();
+    bridge.stop();
+    team.stop();
     server.close();
-    bridge.stop();
-    team.stop();
-    process.exit(0);
-  });
-}
-
-function handleHookEvent(
-  event: Record<string, unknown>,
-  sock: Socket,
-  bridge: Bridge,
-  team: ClaudeTeam,
-  setPending: (s: Socket | undefined) => void,
-  getPending: () => Socket | undefined
-): void {
-  const hookName = String(event.hook_event_name ?? "");
-
-  // Approval parity: dismiss pending permission when terminal acts.
-  const dismissesPending = ["PostToolUse", "PostToolUseFailure", "Stop",
-    "UserPromptSubmit", "SubagentStop", "Notification"];
-  if (dismissesPending.includes(hookName)) {
-    const pending = getPending();
-    if (pending) {
-      bridge.pending.discardAll();
-      pending.write('{"decision":"allow"}\n');
-      pending.end();
-      setPending(undefined);
-    }
-    if (hookName === "Stop") {
-      bridge.setState("ready", "Session stopped.");
-    }
-    if (hookName === "UserPromptSubmit") {
-      bridge.setState("working", "Processing prompt...");
-    }
-    if (hookName === "SubagentStop") {
-      team.stopped(event);
-    }
-    sock.write("{}\n"); sock.end();
-    return;
+    release!();
   }
 
-  if (hookName === "PermissionRequest") {
-    const tool = String(event.tool_name ?? "tool");
-    const input = event.tool_input ?? {};
-    const detail = JSON.stringify(input, null, 2).slice(0, 120_000);
-    setPending(sock);
-    bridge.ask({
-      kind: "permission",
-      title: `Allow ${tool}?`,
-      detail,
-      autoEligible: false,
-      questions: []
-    }).then(reply => {
-      if (getPending() !== sock) return; // already dismissed by terminal
-      setPending(undefined);
-      const response = reply.decision === "allow"
-        ? '{"decision":"allow"}'
-        : '{"decision":"deny","reason":"User declined in Notify."}';
-      sock.write(response + "\n"); sock.end();
-    }).catch(() => {
-      setPending(undefined);
-      sock.write('{"decision":"deny","reason":"Notify request failed."}\n'); sock.end();
+  const server = createServer(socket => {
+    if (sockets.size >= 128) { socket.destroy(); return; }
+    sockets.add(socket);
+    socket.setTimeout(10_000, () => socket.destroy());
+    let buffer = Buffer.alloc(0), requestID: string | undefined, received = false;
+    socket.on("error", () => {});
+    socket.on("close", () => {
+      sockets.delete(socket);
+      if (requestID && waiting.delete(requestID)) bridge.pending.cancel(requestID);
     });
-    return;
-  }
-
-  if (hookName === "SubagentStart") {
-    team.started(event);
-    sock.write("{}\n"); sock.end();
-    return;
-  }
-
-  if (hookName === "SessionEnd") {
-    sock.write("{}\n"); sock.end();
-    bridge.stop();
-    team.stop();
-    process.exit(0);
-  }
-
-  sock.write("{}\n"); sock.end();
+    socket.on("data", chunk => {
+      buffer = Buffer.concat([buffer, chunk]);
+      if (buffer.length > MAX_FRAME) { socket.destroy(); return; }
+      let end: number;
+      while ((end = buffer.indexOf(10)) >= 0) {
+        const line = buffer.subarray(0, end).toString("utf8");
+        buffer = buffer.subarray(end + 1);
+        let event: unknown;
+        try { event = JSON.parse(line); } catch { socket.end("{}\n"); return; }
+        if (!object(event)) { socket.end("{}\n"); return; }
+        if (received) {
+          const pending = requestID ? waiting.get(requestID) : undefined;
+          if (event.ack === true && pending?.reply) {
+            waiting.delete(requestID!);
+            bridge.pending.reply(pending.reply);
+            socket.end();
+          } else socket.destroy();
+          return;
+        }
+        received = true;
+        if (event.session_id !== sessionID) { socket.end("{}\n"); return; }
+        const hook = String(event.hook_event_name);
+        if (hook === "PermissionRequest") {
+          if (waiting.size >= 64 || typeof event.tool_name !== "string" || !object(event.tool_input)) {
+            socket.end("{}\n"); return;
+          }
+          const question = event.tool_name === "AskUserQuestion";
+          let questions: Request["questions"] = [], options: Request["permissionOptions"] = [];
+          try {
+            questions = question ? claudeQuestions(event.tool_input) : [];
+            options = question ? [] : claudePermissionOptions(event.permission_suggestions as PermissionUpdate[] | undefined);
+          } catch { socket.end("{}\n"); return; }
+          const request: Request = {
+            id: randomUUID(), kind: question ? "question" : "permission",
+            title: question ? "Claude needs your answer" : `Allow ${event.tool_name.slice(0, 200)}?`,
+            detail: question ? "" : JSON.stringify(event.tool_input, null, 2).slice(0, 120_000),
+            autoEligible: false, supportsFeedback: !question, questions, permissionOptions: options
+          };
+          requestID = request.id;
+          waiting.set(request.id, { socket, request, input: event.tool_input,
+            ...(options.length ? { suggestions: event.permission_suggestions as PermissionUpdate[] } : {}) });
+          socket.setTimeout(PERMISSION_TIMEOUT, () => socket.destroy());
+          bridge.offer(request);
+          return;
+        }
+        if (hook === "UserPromptSubmit") bridge.setState("working", "Processing prompt…");
+        if (hook === "Stop") bridge.setState("ready", "Claude finished responding.");
+        if (hook === "SubagentStart") team.started(event);
+        if (hook === "SubagentStop") team.stopped(event);
+        if (["PreToolUse", "PostToolUse", "PostToolUseFailure"].includes(hook) &&
+            typeof event.tool_use_id === "string" && event.tool_use_id.length <= 128) {
+          bridge.activity({ id: event.tool_use_id, kind: "tool",
+            title: String(event.tool_name ?? "Tool").slice(0, 200),
+            detail: hook === "PostToolUseFailure" ? boundActivityText(String(event.error ?? "Tool failed")) : "",
+            status: hook === "PreToolUse" ? "running" : hook === "PostToolUseFailure" ? "failed" : "complete",
+            timestamp: new Date().toISOString(),
+            ...(typeof event.agent_id === "string" ? { agentID: event.agent_id.slice(0, 128) } : {}) });
+        }
+        socket.end("{}\n", () => { if (hook === "SessionEnd") stop(); });
+      }
+    });
+  });
+  server.on("error", stop);
+  server.listen(name, () => { chmodSync(name, 0o600); void bridge.start(); });
+  if (transcript) void followTranscript(transcript, bridge, sessionID, controller.signal);
+  const watchdog = setInterval(() => {
+    try { process.kill(ownerPID, 0); } catch { stop(); }
+  }, 5000);
+  process.once("SIGTERM", stop);
+  process.once("SIGINT", stop);
 }
 
-// ── Transcript follower ───────────────────────────────────────────────────────
-
-async function followTranscript(path: string, bridge: Bridge, sessionID: string): Promise<void> {
-  let offset = 0;
-  const seenUUIDs = new Set<string>();
-  let started = false;
-
-  while (true) {
-    await new Promise(r => setTimeout(r, TRANSCRIPT_POLL_MS));
+async function followTranscript(path: string, bridge: Bridge, sessionID: string, signal: AbortSignal): Promise<void> {
+  let offset = 0, started = false, skipping = false;
+  let partial = Buffer.alloc(0), identity = "";
+  const seen = new Set<string>();
+  while (!signal.aborted) {
+    try { await sleep(1000, undefined, { signal }); } catch { return; }
     try {
-      const fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
-        const info = await fd.stat();
-        if (!info.isFile()) continue;
+        const info = await file.stat();
+        if (!info.isFile() || info.uid !== process.getuid?.()) continue;
+        const nextIdentity = `${info.dev}:${info.ino}`;
+        if (identity !== nextIdentity || info.size < offset) { offset = 0; partial = Buffer.alloc(0); started = false; }
+        identity = nextIdentity;
         if (!started) {
           started = true;
-          // Skip old history if file is large.
-          if (info.size > HISTORY_SKIP_BYTES) {
-            offset = info.size - HISTORY_SKIP_BYTES;
-            // Align to next newline.
-            const buf = Buffer.alloc(512);
-            const { bytesRead } = await fd.read(buf, 0, 512, offset);
-            const nl = buf.subarray(0, bytesRead).indexOf(10);
-            offset = nl >= 0 ? offset + nl + 1 : offset + bytesRead;
-          }
+          offset = Math.max(0, info.size - 256 * 1024);
+          skipping = offset > 0;
         }
-        if (info.size <= offset) continue;
-        const toRead = Math.min(info.size - offset, 65_536);
-        const buf = Buffer.alloc(toRead);
-        const { bytesRead } = await fd.read(buf, 0, toRead, offset);
+        const buffer = Buffer.alloc(Math.min(Math.max(0, info.size - offset), 65_536));
+        const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
         offset += bytesRead;
-        const text = buf.subarray(0, bytesRead).toString("utf8");
-        const lines = text.split("\n");
-        for (const line of lines) {
-          if (!line.trim()) continue;
+        partial = Buffer.concat([partial, buffer.subarray(0, bytesRead)]);
+        let end: number;
+        while ((end = partial.indexOf(10)) >= 0) {
+          const line = partial.subarray(0, end).toString("utf8");
+          partial = partial.subarray(end + 1);
+          if (skipping) { skipping = false; continue; }
           let entry: unknown;
           try { entry = JSON.parse(line); } catch { continue; }
-          if (!object(entry)) continue;
-          processTranscriptEntry(entry, bridge, sessionID, seenUUIDs);
+          if (object(entry) && !signal.aborted) processTranscriptEntry(entry, bridge, sessionID, seen);
         }
-      } finally { await fd.close(); }
-    } catch { /* file not yet created or unreadable */ }
+        if (partial.length > MAX_FRAME) { partial = Buffer.alloc(0); skipping = true; }
+      } finally { await file.close(); }
+    } catch { /* A transcript may not exist until the first turn is saved. */ }
   }
 }
 
-function processTranscriptEntry(
-  entry: Record<string, unknown>,
-  bridge: Bridge,
-  sessionID: string,
-  seenUUIDs: Set<string>
-): void {
-  const type = String(entry.type ?? "");
-
-  if (type === "assistant") {
-    const uuid = String(entry.uuid ?? "");
-    if (uuid && seenUUIDs.has(uuid)) return;
-    if (uuid) seenUUIDs.add(uuid);
-    // Only main-thread messages (parentToolUseId === null/undefined).
-    if (entry.parentToolUseId !== null && entry.parentToolUseId !== undefined) return;
-    const message = entry.message;
-    if (!object(message) || !Array.isArray(message.content)) return;
-    for (const block of message.content) {
-      if (!object(block)) continue;
-      if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
-        bridge.output(block.text + "\n");
-        bridge.activity({
-          id: uuid || randomUUID(),
-          kind: "assistant",
-          title: "Agent response",
-          detail: boundActivityText(block.text),
-          status: "complete",
-          timestamp: new Date().toISOString()
-        });
-      }
-      if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim()) {
-        bridge.activity({
-          id: (uuid || randomUUID()) + "-thinking",
-          kind: "assistant",
-          title: "Thinking",
-          detail: boundActivityText(block.thinking),
-          status: "complete",
-          timestamp: new Date().toISOString()
-        });
-      }
-    }
+function processTranscriptEntry(entry: Record<string, unknown>, bridge: Bridge, sessionID: string, seen: Set<string>): void {
+  if (entry.type === "custom-title" || entry.type === "ai-title") {
+    const title = entry.type === "custom-title" ? entry.customTitle : entry.aiTitle;
+    if (typeof title === "string" && title.trim()) bridge.setTitle(title, sessionID);
+    return;
   }
-
-  if (type === "summary") {
-    const title = String((entry.customTitle ?? entry.aiTitle) ?? "");
-    if (title.trim()) bridge.setTitle(title.trim().slice(0, 300), sessionID);
-  }
+  if (entry.type !== "assistant" || entry.isSidechain === true || entry.parentToolUseId || entry.parent_tool_use_id) return;
+  if (!object(entry.message) || !Array.isArray(entry.message.content)) return;
+  const text = entry.message.content.filter(block => object(block) && block.type === "text" && typeof block.text === "string")
+    .map(block => block.text).join("\n");
+  if (!text.trim()) return;
+  const id = typeof entry.uuid === "string" ? entry.uuid : randomUUID();
+  if (seen.has(id)) return;
+  seen.add(id);
+  if (seen.size > 1000) seen.delete(seen.values().next().value!);
+  bridge.activity({ id, kind: "assistant", title: "Agent response", detail: boundActivityText(text),
+    status: "complete", timestamp: typeof entry.timestamp === "string" ? entry.timestamp : new Date().toISOString() });
 }
-
-// ── iTerm2 helpers ────────────────────────────────────────────────────────────
-
-async function findClaudeTTY(pid: number): Promise<string> {
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  const exec = promisify(execFile);
-  const { stdout } = await exec("/bin/ps", ["-axo", "pid=,ppid=,uid=,tty=,comm="]);
-  const uid = process.getuid?.() ?? -1;
-  const rows = stdout.trim().split("\n").map(line => {
-    const parts = line.trim().split(/\s+/);
-    return { pid: Number(parts[0]), ppid: Number(parts[1]), uid: Number(parts[2]), tty: parts[3], comm: parts[4] ?? "" };
-  });
-  // Walk ancestry: find the row for our claudePID and get its TTY.
-  const row = rows.find(r => r.pid === pid && r.uid === uid);
-  if (!row || row.tty === "??" || !row.tty) throw new Error("Claude process has no TTY.");
-  return row.tty;
-}
-
-async function runOsascript(script: string, tty: string): Promise<void> {
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  const exec = promisify(execFile);
-  const { stderr } = await exec("/usr/bin/osascript", ["-e", script]);
-  if (stderr.trim()) throw new Error(stderr.trim());
-}
-
-// ── Entry point ───────────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2);
 if (args[0] === "--serve") {
-  const [, sessionID, cwd, pidStr, transcriptPath] = args;
-  if (!sessionID || !cwd) { console.error("Usage: claude-hook.js --serve <sessionID> <cwd> <pid> [transcriptPath]"); process.exit(1); }
-  void daemonMode(sessionID, cwd, Number(pidStr) || 0, transcriptPath ?? "");
+  const [, sessionID, cwd, pid, transcript] = args;
+  if (!sessionID || !cwd) process.exitCode = 1;
+  else void daemonMode(sessionID, cwd, Number(pid), transcript ?? "").catch(() => { process.exitCode = 1; });
 } else {
-  void hookMode().catch(err => { console.error(`Notify Claude hook: ${err}`); process.exit(0); });
+  void hookMode().catch(() => { process.exitCode = 0; });
 }

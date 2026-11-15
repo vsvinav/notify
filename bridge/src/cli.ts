@@ -29,7 +29,7 @@ async function main() {
     }
     const { setupClaude } = await import("./setup.ts");
     const path = await setupClaude();
-    console.log(`Installed hooks at ${path}\n\nFor existing Claude terminals: restart them or type /hooks in Claude to reload.\nFor new terminals: hooks load automatically.\n\nNo running sessions or permission settings were changed.`);
+    console.log(`Installed hooks at ${path}\n\nFor existing Claude terminals: wait until Claude is idle, then open /hooks to reload and review the configuration and close the menu. Opening /hooks ends the current turn. Notify attaches when the next installed event fires; installing alone cannot attach an idle session or recover an already-open prompt.\nFor new terminals: hooks load automatically.\n\nMain-session steering and subagent controls stay in the original Claude terminal. Plain claude -p without a permission channel does not emit PermissionRequest in Claude Code 2.1.81.\nNo running sessions or permission settings were changed.`);
     return;
   }
   if (!["claude", "copilot", "demo", "setup-copilot", "setup-claude"].includes(name)) throw new Error("Choose claude, copilot, demo, setup-copilot, or setup-claude.");

@@ -370,7 +370,7 @@ private struct WorkDetail: View {
                         Text("This session is running, but Notify is not connected to its requests or activity.")
                         if session.agent == "claude" {
                             Button("Add hooks for Claude Code") { store.showSetup(.claude) }
-                            Text("After adding hooks, restart Claude or type /hooks in its terminal to connect.")
+                            Text("After adding hooks, wait until Claude is idle before reviewing and closing /hooks; opening it ends the current turn. Notify connects on its next hook event. Already-waiting prompts remain in the terminal.")
                                 .foregroundStyle(Palette.muted)
                         } else {
                             Button("Set up Copilot connection") { store.showSetup(.copilot) }
@@ -388,22 +388,6 @@ private struct WorkDetail: View {
                          ? "Resume opens the saved session in iTerm2 with its original CLI and permissions. Notify connects once the hooks or extension load."
                          : "Previous activity is available, but controls stay disabled until the agent reconnects.")
                         .font(.system(size: 14)).foregroundStyle(Palette.muted)
-                    if session.isSaved {
-                        HStack(spacing: 12) {
-                            Button(store.terminalBusy.contains(session.id) ? "Opening..." : "Open / Resume in iTerm2") {
-                                store.openTerminal(session, resume: true)
-                            }
-                            .disabled(store.terminalBusy.contains(session.id) || store.launching.contains(session.id))
-                            if store.launching.contains(session.id) {
-                                ProgressView().controlSize(.small)
-                            }
-                        }
-                        if let err = store.sessionErrors[session.id] {
-                            Label(err, systemImage: "exclamationmark.triangle")
-                                .font(.system(size: 12)).foregroundStyle(Palette.error)
-                                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
                     Spacer()
                 }
             } else if let request = store.activeRequest {

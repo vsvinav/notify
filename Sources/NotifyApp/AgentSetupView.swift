@@ -5,12 +5,13 @@ import NotifyCore
 struct AgentSetupView: View {
     @ObservedObject var store: Store
     @State private var confirmInstall = false
+    @State private var confirmClaudeInstall = false
     @State private var copiedCommand: String?
     private var agent: SetupAgent { store.setupAgent }
     private var snapshot: AgentSetupSnapshot? { store.setupSnapshot }
     private var connected: Int { store.setupConnectionCount(agent) }
     private var executable: URL? { agent == .copilot ? snapshot?.copilot : snapshot?.claude }
-    private var visibleError: String? { store.setupError ?? (agent == .copilot ? store.copilotSetupError : nil) }
+    private var visibleError: String? { store.setupError ?? (agent == .copilot ? store.copilotSetupError : store.claudeSetupError) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -92,6 +93,12 @@ struct AgentSetupView: View {
             } message: {
                 Text("Adds Notify at \(snapshot?.extensionPath.path ?? ""). Existing files are not overwritten. You'll enable it and grant access in Copilot yourself. No running terminal or permission policy is changed.")
             }
+            .alert("Add Notify hooks to Claude Code?", isPresented: $confirmClaudeInstall) {
+                Button("Cancel", role: .cancel) {}
+                Button("Add hooks") { store.installClaudeHooks() }
+            } message: {
+                Text("Adds hooks to \(snapshot?.claudeSettingsPath.path ?? ""). Hooks share session activity and supported permission requests with Notify, including any phones you have paired. Existing settings are preserved. No terminal is restarted or permission rule relaxed.")
+            }
     }
 
     private func setupSteps(_ snapshot: AgentSetupSnapshot) -> some View {
@@ -136,7 +143,7 @@ struct AgentSetupView: View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("1. Add Notify to Copilot").font(WorkspaceType.text(16, strong: true))
-                Text(store.setupInstalled ? "Extension installed. Enable it in the terminal next." :
+                Text(store.setupInstalledAgent == .copilot ? "Extension installed. Enable it in the terminal next." :
                      snapshot.extensionPresent ? "An extension file is present. Installation checks it without replacing an existing file." :
                      "Install the local extension once, then enable it in each terminal you want to connect.")
                     .foregroundStyle(Palette.muted)
@@ -164,25 +171,29 @@ struct AgentSetupView: View {
     }
 
     private func claudeSteps(_ snapshot: AgentSetupSnapshot) -> some View {
-        let hooksInstalled = AgentSetup.claudeHooksInstalled(snapshot)
+        let hooksInstalled = store.setupInstalledAgent == .claude || AgentSetup.claudeHooksInstalled(snapshot)
         return VStack(alignment: .leading, spacing: 24) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("1. Add Notify hooks").font(WorkspaceType.text(16, strong: true))
-                Text(store.setupInstalled || hooksInstalled
-                     ? "Hooks installed. New Claude terminals will connect automatically."
-                     : "Install hooks once; each new Claude terminal loads them automatically. Existing terminals need a restart or /hooks.")
+                Text(hooksInstalled
+                     ? "Hooks installed. For existing terminals, wait until Claude is idle, then review and close /hooks. Notify connects on the next hook event."
+                     : "Add hooks once. Wait until Claude is idle, then review and close /hooks to accept the changes. Notify connects on the next hook event.")
                     .foregroundStyle(Palette.muted)
                 Button(store.setupBusy ? "Working..." :
-                       (store.setupInstalled || hooksInstalled) ? "Reinstall hooks" : "Add hooks") {
-                    store.installClaudeHooks()
+                       hooksInstalled ? "Reinstall hooks" : "Add hooks") {
+                    confirmClaudeInstall = true
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(store.setupBusy || !snapshot.nodeReady || !snapshot.resourcesReady || executable == nil)
-                if store.setupInstalled || hooksInstalled {
-                    Label("Hooks are present in ~/.claude/settings.json",
+                .disabled(store.setupBusy || !snapshot.nodeReady || !snapshot.resourcesReady || !snapshot.claudeHookReady || executable == nil)
+                if hooksInstalled {
+                    Label("Hooks are present in \(snapshot.claudeSettingsPath.path)",
                           systemImage: "checkmark.circle")
                         .foregroundStyle(Palette.accent)
                         .font(WorkspaceType.text(13, strong: true))
+                }
+                if !snapshot.claudeHookReady {
+                    Text("The Claude hook helper is missing. Rebuild or update Notify before adding hooks.")
+                        .foregroundStyle(Palette.error)
                 }
             }
             VStack(alignment: .leading, spacing: 8) {
@@ -191,6 +202,10 @@ struct AgentSetupView: View {
                     .foregroundStyle(Palette.muted)
             }
             DisclosureGroup("Prefer an SDK-backed chat instead?") { launchInstructions(snapshot) }
+            Text("Already-waiting prompts cannot be recovered. Keep using the terminal for unsupported questions, messaging and subagent controls.")
+                .font(WorkspaceType.text(12)).foregroundStyle(Palette.muted)
+            Text("Opening /hooks ends the current turn in Claude Code 2.1.81. Do not open it during active work.")
+                .font(WorkspaceType.text(12)).foregroundStyle(Palette.amber)
         }
     }
 

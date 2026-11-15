@@ -209,12 +209,12 @@ struct TerminalSessionButton: View {
                 (session.isSaved ? "Resume in iTerm2" : "Open in iTerm2")) {
             if session.isSaved { confirmResume = true }
             else { store.openTerminal(session) }
-        }.disabled(session.agent != "copilot" || store.terminalBusy.contains(session.id) || store.launching.contains(session.id) || session.cwd.isEmpty)
+        }.disabled(!["copilot", "claude"].contains(session.agent) || store.terminalBusy.contains(session.id) || store.launching.contains(session.id) || session.cwd.isEmpty)
             .alert("Resume this saved chat in iTerm2?", isPresented: $confirmResume) {
                 Button("Cancel", role: .cancel) {}
                 Button("Resume") { store.openTerminal(session, resume: true) }
             } message: {
-                Text("Open “\(session.name)” in its project folder using the original Copilot CLI. Saved model, mode and permission settings (including allow-all, if previously enabled) carry over. Notify's session Auto-yes stays off.\n\nNo prompt or extension consent is sent automatically. A running owner will be opened instead of creating a duplicate.")
+                Text("Open “\(session.name)” in its project folder using the original \(agentName(session.agent)) CLI. Saved model, mode and permission settings (including allow-all, if previously enabled) carry over. Notify's session Auto-yes stays off.\n\nNo prompt or connection consent is sent automatically. A running owner will be opened instead of creating a duplicate.")
             }
     }
 }

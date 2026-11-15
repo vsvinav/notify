@@ -11,6 +11,10 @@ import Vision
         NSApp.setActivationPolicy(.accessory)
         NSApp.appearance = NSAppearance(named: .aqua)
         NSApp.finishLaunching()
+        if CommandLine.arguments.contains("--claude-parity") {
+            try ClaudeNativeChecks.run()
+            return
+        }
         if CommandLine.arguments.contains("--notification-focus") {
             try NotificationFocusChecks.run(previousApplication: previousApplication)
             return
@@ -1616,7 +1620,9 @@ import Vision
                 try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: file.path)
             }
             try Data().write(to: setupResources.appendingPathComponent("bridge/dist/cli.js"))
-            empty.setupSnapshot = try AgentSetup.inspect(resources: setupResources, path: setupBin.path, copilotHome: fixtureRoot.appendingPathComponent("copilot-home"))
+            try Data().write(to: setupResources.appendingPathComponent("bridge/dist/claude-hook.js"))
+            empty.setupSnapshot = try AgentSetup.inspect(resources: setupResources, path: setupBin.path,
+                copilotHome: fixtureRoot.appendingPathComponent("copilot-home"), claudeHome: fixtureRoot.appendingPathComponent("claude-home"))
             try capture(AgentSetupView(store: empty), width: 960, height: 620, name: "welcome-copilot.png")
             try capture(AgentSetupView(store: empty), width: 960, height: 620, name: "welcome-copilot-dark.png", appearance: .darkAqua)
             empty.setupAgent = .claude

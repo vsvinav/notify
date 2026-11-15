@@ -1,7 +1,9 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, lstat, open, rename, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { object } from "./protocol.ts";
+import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 
 export async function setupCopilot(home = process.env.COPILOT_HOME ?? join(homedir(), ".copilot")) {
   const directory = join(home, "extensions", "notify");
@@ -16,43 +18,63 @@ export async function setupCopilot(home = process.env.COPILOT_HOME ?? join(homed
   return path;
 }
 
-export async function setupClaude(): Promise<string> {
-  const { readFile: readFile2, writeFile: writeFile2, mkdir: mkdir2, stat, chmod } = await import("node:fs/promises");
-  const { join: join2, dirname } = await import("node:path");
-  const { homedir: homedir2 } = await import("node:os");
-  const { fileURLToPath } = await import("node:url");
-  // The hook script lives next to this built cli.js.
-  const scriptDir = dirname(fileURLToPath(import.meta.url));
-  const hookScript = join2(scriptDir, "claude-hook.js");
-  const configDir = process.env.CLAUDE_CONFIG_DIR ?? join2(homedir2(), ".claude");
-  const settingsPath = join2(configDir, "settings.json");
-  // Find node executable.
-  const nodePath = process.execPath;
-  const hookCommand = `${JSON.stringify(nodePath)} ${JSON.stringify(hookScript)}`;
-  // Load or init settings.
-  let settings: Record<string, unknown> = {};
-  try {
-    const info = await stat(settingsPath);
-    if ((info.mode & 0o077) !== 0) throw new Error("settings.json has insecure permissions. Fix with: chmod 600 " + settingsPath);
-    const raw = await readFile2(settingsPath, "utf8");
-    settings = JSON.parse(raw);
-  } catch (err: unknown) {
-    if (object(err) && err.code !== "ENOENT") throw err;
-    await mkdir2(configDir, { recursive: true });
-  }
+export async function setupClaude(configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")): Promise<string> {
+  const settingsPath = join(configDir, "settings.json");
+  const script = fileURLToPath(new URL("./claude-hook.js", import.meta.url));
+  const quote = (text: string) => "'" + text.replace(/'/g, "'\\''") + "'";
+  // exec leaves the hook's parent as Claude, rather than an ephemeral command shell.
+  const hookCommand = `exec ${quote(process.execPath)} ${quote(script)}`;
+  const legacyCommand = `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`;
   const events = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
-    "PermissionRequest", "Stop", "SubagentStart", "SubagentStop", "SessionEnd"];
-  const hooks = (settings.hooks as Record<string, unknown[]> | undefined) ?? {};
-  const entry = { hooks: [{ type: "command", command: hookCommand }] };
-  for (const event of events) {
-    const existing = Array.isArray(hooks[event]) ? (hooks[event] as unknown[]) : [];
-    const present = existing.some(g => object(g) &&
-      Array.isArray(g.hooks) && g.hooks.some((h: unknown) => object(h) && h.command === hookCommand));
-    if (!present) existing.push(entry);
-    hooks[event] = existing;
+    "PostToolUseFailure", "PermissionRequest", "Stop", "SubagentStart", "SubagentStop", "SessionEnd"];
+  await mkdir(configDir, { recursive: true, mode: 0o700 });
+  const directory = await lstat(configDir);
+  if (!directory.isDirectory() || directory.uid !== process.getuid?.()) throw new Error("Claude settings directory must be an owned regular directory.");
+  const lockPath = join(configDir, ".notify-setup.lock");
+  const lock = await open(lockPath, "wx", 0o600);
+  const replacement = join(configDir, `.settings.notify-${randomUUID()}.json`);
+  async function readSettings(): Promise<string | undefined> {
+    try {
+      const info = await lstat(settingsPath);
+      if (!info.isFile() || info.uid !== process.getuid?.()) throw new Error("Claude settings must be an owned regular file, not a symlink.");
+      return await readFile(settingsPath, "utf8");
+    } catch (error) {
+      if (object(error) && error.code === "ENOENT") return undefined;
+      throw error;
+    }
   }
-  settings.hooks = hooks;
-  await writeFile2(settingsPath, JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
-  await chmod(settingsPath, 0o600);
-  return settingsPath;
+  try {
+    const original = await readSettings();
+    const settings: unknown = original === undefined ? {} : JSON.parse(original);
+    if (!object(settings) || (settings.hooks !== undefined && !object(settings.hooks))) {
+      throw new Error("Claude settings and hooks must be JSON objects.");
+    }
+    const hooks = (settings.hooks ?? {}) as Record<string, unknown>;
+    for (const event of events) {
+      if (hooks[event] !== undefined && !Array.isArray(hooks[event])) throw new Error(`Invalid Claude hook groups for ${event}.`);
+      const existing = (hooks[event] ?? []) as unknown[];
+      let present = false;
+      for (const group of existing) {
+        if (!object(group) || !Array.isArray(group.hooks)) throw new Error(`Invalid Claude hook group for ${event}.`);
+        for (const handler of group.hooks) {
+          if (object(handler) && handler.type === "command" && [hookCommand, legacyCommand].includes(String(handler.command))) {
+            handler.command = hookCommand;
+            handler.timeout = event === "PermissionRequest" ? 120 : 10;
+            present = true;
+          }
+        }
+      }
+      if (!present) existing.push({ hooks: [{ type: "command", command: hookCommand, timeout: event === "PermissionRequest" ? 120 : 10 }] });
+      hooks[event] = existing;
+    }
+    settings.hooks = hooks;
+    await writeFile(replacement, JSON.stringify(settings, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+    if (await readSettings() !== original) throw new Error("Claude settings changed during setup; retry without concurrent edits.");
+    await rename(replacement, settingsPath);
+    return settingsPath;
+  } finally {
+    await unlink(replacement).catch(() => {});
+    await lock.close();
+    await unlink(lockPath);
+  }
 }

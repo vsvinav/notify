@@ -152,12 +152,12 @@ struct SessionDescriptionView: View {
                 Text("AI / \(description.model) / \(description.generatedAt.formatted(date: .abbreviated, time: .shortened))")
                     .font(.system(size: 9)).foregroundStyle(Palette.muted)
             }
-            if session.agent == "copilot" {
+            if ["copilot", "claude"].contains(session.agent) {
                 HStack {
                     if store.summarizingID == session.id { ProgressView().controlSize(.mini) }
                     Button(store.summarizingID == session.id ? "Summarizing..." : (description == nil ? "Summarize" : "Refresh description")) { target = session }
                         .disabled(store.summarizingID != nil).buttonStyle(.plain).foregroundStyle(Palette.accent)
-                        .help("Uses Haiku through your Copilot account only when requested.")
+                        .help("Uses Haiku through your \(agentName(session.agent)) account only when requested.")
                 }.font(.system(size: 11))
             }
         }
@@ -629,7 +629,7 @@ struct SettingsView: View {
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.frame(height: 180)
-            Text("History contains session labels and decisions, not answers. Conversation previews stay on this Mac unless you explicitly request an AI description; that sends a limited excerpt through your Copilot account.")
+            Text("History contains session labels and decisions, not answers. Conversation previews stay on this Mac unless you explicitly request an AI description; that sends a limited excerpt through the selected agent's account.")
                 .font(.system(size: 10)).foregroundStyle(Palette.muted)
             Button("Remove disconnected sessions") { store.clearDisconnected() }
             }.frame(maxWidth: .infinity, alignment: .leading)

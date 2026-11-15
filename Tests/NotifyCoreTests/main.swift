@@ -758,14 +758,14 @@ assert(noSessions.isEmpty, "sessions should be empty for empty home")
 let noCatalog = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
 assert(noCatalog.isEmpty, "catalog should be empty for empty home")
 
-// catalog reads title from summary entry
+// Claude persists session names in custom-title records.
 let projDir = claudeHome.appendingPathComponent("projects/abc123")
 try FileManager.default.createDirectory(at: projDir, withIntermediateDirectories: true)
 let uuid = UUID().uuidString.lowercased()
 let jsonlURL = projDir.appendingPathComponent("\(uuid).jsonl")
 let lines = [
   #"{"cwd":"/tmp/myproject"}"#,
-  #"{"type":"summary","customTitle":"My Test Project","aiTitle":"Fallback Title"}"#
+  #"{"type":"custom-title","customTitle":"My Test Project"}"#
 ].joined(separator: "\n")
 try lines.write(to: jsonlURL, atomically: true, encoding: .utf8)
 let cat = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
@@ -793,3 +793,103 @@ reg2.register(id: "claude-sess", agent: "claude", cwd: "/tmp")
 reg2.capabilities("claude-sess", steering: true, autoYes: false)
 assert(reg2.sessions["claude-sess"]?.canSteer == true, "Claude session should allow capabilities")
 print("SessionRegistry Claude: OK")
+
+reg2.catalog([])
+check(reg2.sessions[savedID]?.agent == "claude",
+      "Refreshing Copilot history must not delete saved Claude sessions")
+reg.discover([])
+check(reg.sessions["test-id-123"]?.needsSetup == true,
+      "Refreshing Copilot owners must not delete discovered Claude sessions")
+reg2.discoverClaude([DiscoveredClaude(id: savedID, pid: 999, cwd: "/tmp/p")])
+check(reg2.sessions[savedID]?.isSaved == false && reg2.sessions[savedID]?.needsSetup == true,
+      "A running Claude session must not remain eligible for saved-session launch")
+
+try """
+{"cwd":"/tmp/myproject"}
+{"type":"custom-title","customTitle":"My renamed Claude session"}
+{"type":"ai-title","aiTitle":"Generated title"}
+""".write(to: jsonlURL, atomically: true, encoding: .utf8)
+let renamedClaude = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(renamedClaude.first?.title == "My renamed Claude session",
+      "Claude discovery must read actual custom-title records and preserve explicit names")
+let claudeSessions = claudeHome.appendingPathComponent("sessions")
+try FileManager.default.createDirectory(at: claudeSessions, withIntermediateDirectories: true)
+let claudeOwner = claudeSessions.appendingPathComponent("999.json")
+try Data(#"{"sessionId":"../../not-a-session","cwd":"/tmp"}"#.utf8).write(to: claudeOwner)
+let malformedClaude = try ClaudeDiscovery.sessions(livePIDs: [999], home: claudeHome)
+check(malformedClaude.isEmpty, "Claude discovery must reject non-UUID session identities")
+try FileManager.default.removeItem(at: claudeOwner)
+let linkedOwnerSource = claudeHome.appendingPathComponent("owner-source.json")
+try Data("{\"sessionId\":\"\(uuid)\",\"cwd\":\"/tmp\"}".utf8).write(to: linkedOwnerSource)
+try FileManager.default.createSymbolicLink(at: claudeOwner, withDestinationURL: linkedOwnerSource)
+let linkedClaudeOwners = try ClaudeDiscovery.sessions(livePIDs: [999], home: claudeHome)
+check(linkedClaudeOwners.isEmpty, "Claude discovery must not follow linked session metadata")
+let linkedProject = claudeHome.appendingPathComponent("projects/linked")
+try FileManager.default.createSymbolicLink(at: linkedProject, withDestinationURL: projDir)
+let plainClaudeCatalog = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(plainClaudeCatalog.count == 1, "Claude history must not follow linked project directories")
+try ("""
+{"cwd":"/tmp/myproject"}
+{"type":"custom-title","customTitle":"Keep the saved name"}
+
+""" + String(repeating: #"{"type":"assistant","message":{"content":"fixture"}}"# + "\n", count: 1800))
+    .write(to: jsonlURL, atomically: true, encoding: .utf8)
+let longClaudeHistory = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(longClaudeHistory.first?.title == "Keep the saved name",
+      "A saved Claude title must survive more than 64 KB of later conversation")
+let metadataWriter = try FileHandle(forWritingTo: jsonlURL)
+try metadataWriter.seekToEnd()
+try metadataWriter.write(contentsOf: Data(("""
+{"type":"custom-title","customTitle":"Later saved name"}
+
+""" + String(repeating: #"{"type":"assistant","message":{"content":"fixture"}}"# + "\n", count: 1800)).utf8))
+try metadataWriter.close()
+let appendedClaude = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(appendedClaude.first?.title == "Later saved name", "Incremental indexing must preserve the latest name in the middle of long history")
+try Data(#"{"type":"ai-title","aiTitle":"Rewritten history"}"#.utf8).write(to: jsonlURL, options: .atomic)
+let rewrittenClaude = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(rewrittenClaude.first?.title == "Rewritten history", "Replacing a transcript must invalidate its old cached name")
+let partialMetadataWriter = try FileHandle(forWritingTo: jsonlURL)
+try partialMetadataWriter.seekToEnd()
+try partialMetadataWriter.write(contentsOf: Data(("\n" + #"{"type":"custom-title","customTitle":"caf"#).utf8) + Data([0xc3]))
+let partialClaude = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(partialClaude.first?.title == "Rewritten history", "An incomplete UTF-8 record must not overwrite the last complete title")
+try partialMetadataWriter.write(contentsOf: Data([0xa9]) + Data("\"}\n".utf8))
+let completeClaude = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(completeClaude.first?.title == "caf\u{00e9}", "An appended UTF-8 record must be reread from its complete line boundary")
+try partialMetadataWriter.truncate(atOffset: 0)
+let truncatedClaude = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(truncatedClaude.first?.title == "", "Truncation must clear stale metadata")
+try partialMetadataWriter.seek(toOffset: 0)
+try partialMetadataWriter.write(contentsOf: Data(repeating: 120, count: 150_000))
+_ = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+try partialMetadataWriter.write(contentsOf: Data(("\n" + #"{"type":"custom-title","customTitle":"After oversized line"}"# + "\n").utf8))
+try partialMetadataWriter.close()
+let recoveredClaude = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(recoveredClaude.first?.title == "After oversized line", "Oversized partial records must not consume following valid metadata")
+let unchangedClaude = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(unchangedClaude.first?.title == "After oversized line", "Unchanged cached history must preserve metadata")
+
+do {
+    let resources = claudeHome.appendingPathComponent("setup-resources")
+    let scripts = resources.appendingPathComponent("bridge/dist")
+    try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+    let target = claudeHome.appendingPathComponent("configured home")
+    let setupURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("bridge/dist/setup.js")
+    let encodedModule = String(decoding: try JSONEncoder().encode(setupURL.absoluteString), as: UTF8.self)
+    let encodedTarget = String(decoding: try JSONEncoder().encode(target.path), as: UTF8.self)
+    try Data("""
+    if (process.argv[2] !== "setup-claude" || process.env.CLAUDE_CONFIG_DIR !== \(encodedTarget)) throw new Error("Wrong setup target");
+    const { setupClaude } = await import(\(encodedModule));
+    await setupClaude();
+    """.utf8).write(to: scripts.appendingPathComponent("cli.js"))
+    try Data().write(to: scripts.appendingPathComponent("claude-hook.js"))
+    let snapshot = try AgentSetup.inspect(resources: resources, claudeHome: target)
+    try AgentSetup.installClaude(snapshot)
+    check(FileManager.default.fileExists(atPath: target.appendingPathComponent("settings.json").path),
+          "Native Claude setup must use its displayed home through the shared installer")
+    let installedSnapshot = try AgentSetup.inspect(resources: URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
+                                                   claudeHome: target)
+    check(AgentSetup.claudeHooksInstalled(installedSnapshot),
+          "Native setup must recognize the exact command installed by the shared CLI")
+}

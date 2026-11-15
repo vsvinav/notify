@@ -106,6 +106,29 @@ let command = try TerminalSession.resumeCommand(id: id, cwd: fixture.path, copil
     executableURL: executable, livePIDs: [])
 check(command.contains("--resume") && command.contains(id), "Resume exact UUID")
 check(command.contains("COPILOT_HOME="), "Launch uses the same configured state directory as ownership checks")
+let claudeHome = fixture.appendingPathComponent("claude home")
+let claudeProject = claudeHome.appendingPathComponent("projects/fixture")
+let claudeOwners = claudeHome.appendingPathComponent("sessions")
+try fm.createDirectory(at: claudeProject, withIntermediateDirectories: true)
+try fm.createDirectory(at: claudeOwners, withIntermediateDirectories: true)
+try Data(#"{"cwd":"/tmp"}"#.utf8).write(to: claudeProject.appendingPathComponent("\(id).jsonl"))
+try Data("{\"sessionId\":\"\(id)\",\"cwd\":\"/tmp\"}".utf8).write(to: claudeOwners.appendingPathComponent("42.json"))
+let claudeCommand = try TerminalSession.resumeClaudeCommand(id: id, cwd: fixture.path,
+    home: claudeHome, executableURL: executable, livePIDs: [])
+check(claudeCommand.hasPrefix("/bin/sh -c ") && claudeCommand.contains("CLAUDE_CONFIG_DIR="),
+      "Claude resume must launch a real shell and preserve its configured home")
+rejects("Claude resume must refuse an existing live owner") {
+    _ = try TerminalSession.resumeClaudeCommand(id: id, cwd: fixture.path, home: claudeHome,
+        executableURL: executable, livePIDs: [42])
+}
+rejects("Claude resume must refuse a missing saved transcript") {
+    _ = try TerminalSession.resumeClaudeCommand(id: UUID().uuidString, cwd: fixture.path, home: claudeHome,
+        executableURL: executable, livePIDs: [])
+}
+rejects("Claude resume must refuse executable directories") {
+    _ = try TerminalSession.resumeClaudeCommand(id: id, cwd: fixture.path, home: claudeHome,
+        executableURL: fixture, livePIDs: [])
+}
 let quotedDirectory = fixture.appendingPathComponent("project ' \" ; $HOME")
 let quotedExecutable = fixture.appendingPathComponent("copilot ' \" ; $HOME")
 try fm.createDirectory(at: quotedDirectory, withIntermediateDirectories: false)

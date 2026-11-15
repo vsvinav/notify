@@ -4,6 +4,8 @@
 
 A lightweight native Mac app for Copilot and Claude Code. See which session needs you, review its request, and approve, deny or answer from a floating panel. Connect your phone when you want to step away from the Mac.
 
+**Claude integration preview:** the hook integration described below is on `feature/claude-code-parity`, not in the published beta 3 download. Build this branch to use it; unsupported Claude controls remain disabled.
+
 **Chat with your team:** message connected Copilot sessions and supported subagents, follow readable responses, and spot the larger hat-wearing main agent at a glance. The [previous app and its installation guide are preserved on v1](https://github.com/vsvinav/notify/tree/v1).
 
 [Install on Mac](#install-on-macos) · [Quickstart](#quickstart) · [Screenshots](#screenshots) · [Install on your phone](#use-your-phone)
@@ -28,7 +30,7 @@ This test build is ad-hoc signed, **not Developer ID signed or notarized**. If A
 **Build from source instead:** you'll also need Apple's command-line tools. If missing, run `xcode-select --install` first.
 
 ```sh
-git clone https://github.com/vsvinav/notify.git
+git clone --branch feature/claude-code-parity https://github.com/vsvinav/notify.git
 git clone https://github.com/vsvinav/notify-mobile.git
 cd notify
 
@@ -44,7 +46,7 @@ This installs **`~/Applications/Notify.app`** and the **`~/.local/bin/notify`** 
 ## Quickstart
 
 1. **Open Notify and choose Connect agents.** The setup screen finds your installed CLIs and explains how to connect them.
-2. **Connect a session.** Copilot can keep its original terminal through Notify's extension. Claude currently uses a new SDK-backed chat started with Notify's launcher. Follow the agent-specific instructions in the app.
+2. **Connect a session.** Copilot keeps its original terminal through Notify's extension. Claude Code uses explicitly installed hooks; new sessions load them automatically, while existing sessions need to accept the changes and emit a new hook event. Follow the agent-specific instructions in the app.
 3. **Answer a request.** A floating panel shows the session, project and exact command, address or question. Approve, deny, choose an option, or write your own answer where supported.
 4. **Make it yours.** Pick System, Light or Dark in main Settings. Assign session colors, reorder sessions, or connect your phone.
 
@@ -67,6 +69,10 @@ Try a sample request without starting an agent or spending model credits:
 ```
 
 **Existing Copilot sessions:** if experimental mode is already enabled, enable Notify through `/extensions manage`, press **Esc** to close the manager, then grant the extension permission access. Do not turn experimental mode on during active work: that can restart Copilot's UI. [Full connection steps](docs/guide.md#existing-copilot-terminals).
+
+**Existing Claude Code sessions:** choose **Connect agents > Claude Code > Add hooks** and review the destination and access notice. Wait until Claude is idle, then review and close `/hooks` in its original terminal. **Opening `/hooks` ends the current turn in Claude 2.1.81; do not do it during active work.** Connection starts on the next hook event, without resuming a second copy of the session. Prompts already waiting before attachment stay in the terminal. [Claude setup and limits](docs/guide.md#existing-claude-code-terminals).
+
+Claude sessions share the native session list, floating decisions, reported responses, observed team chart, session colors, exact iTerm2 navigation and optional summaries. This is **not complete control parity**: original Claude terminals cannot receive Notify's Send/Interrupt/Stop or direct subagent creation/removal commands.
 
 ## Screenshots
 

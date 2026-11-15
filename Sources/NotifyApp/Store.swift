@@ -50,8 +50,9 @@ final class Store: ObservableObject {
     @Published var setupSnapshot: AgentSetupSnapshot?
     @Published var setupError: String?
     @Published var copilotSetupError: String?
+    @Published var claudeSetupError: String?
     @Published private(set) var setupBusy = false
-    @Published private(set) var setupInstalled = false
+    @Published private(set) var setupInstalledAgent: SetupAgent?
     private var welcomePending: Bool
     @Published var appearanceMode: AppearanceMode {
         didSet { defaults.set(appearanceMode.rawValue, forKey: "appearanceMode") }
@@ -186,7 +187,7 @@ final class Store: ObservableObject {
         guard !setupBusy else { return }
         setupBusy = true
         setupError = nil
-        setupInstalled = false
+        setupInstalledAgent = nil
         setupSnapshot = nil
         let resources = Bundle.main.resourceURL
         Task { @MainActor [weak self] in
@@ -199,7 +200,7 @@ final class Store: ObservableObject {
     func installCopilotExtension() {
         guard !setupBusy, let snapshot = setupSnapshot else { return }
         setupBusy = true
-        setupInstalled = false
+        setupInstalledAgent = nil
         copilotSetupError = nil
         let resources = Bundle.main.resourceURL
         Task { @MainActor [weak self] in
@@ -208,9 +209,10 @@ final class Store: ObservableObject {
             do {
                 self.setupSnapshot = try await Task.detached {
                     try AgentSetup.installCopilot(snapshot)
-                    return try AgentSetup.inspect(resources: resources, path: snapshot.searchPath, copilotHome: snapshot.copilotHome)
+                    return try AgentSetup.inspect(resources: resources, path: snapshot.searchPath,
+                        copilotHome: snapshot.copilotHome, claudeHome: snapshot.claudeHome)
                 }.value
-                self.setupInstalled = true
+                self.setupInstalledAgent = .copilot
             } catch { self.copilotSetupError = "Copilot extension setup did not finish: \(AgentSetup.failureDescription(error))" }
         }
     }
@@ -218,6 +220,8 @@ final class Store: ObservableObject {
         guard !setupBusy else { return }
         setupBusy = true
         setupError = nil
+        claudeSetupError = nil
+        setupInstalledAgent = nil
         let snapshot = setupSnapshot
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -228,12 +232,13 @@ final class Store: ObservableObject {
             }
             do {
                 try await Task.detached { try AgentSetup.installClaude(snapshot) }.value
-                self.setupInstalled = true
+                self.setupInstalledAgent = .claude
                 self.setupSnapshot = try await Task.detached {
                     try AgentSetup.inspect(resources: Bundle.main.resourceURL,
-                                           path: snapshot.searchPath)
+                                           path: snapshot.searchPath, copilotHome: snapshot.copilotHome,
+                                           claudeHome: snapshot.claudeHome)
                 }.value
-            } catch { self.setupError = "Could not install Claude hooks: \(AgentSetup.failureDescription(error))" }
+            } catch { self.claudeSetupError = "Could not install Claude hooks: \(AgentSetup.failureDescription(error))" }
         }
     }
     func setColor(_ value: UInt32?, for session: SessionRecord) {
@@ -274,12 +279,12 @@ final class Store: ObservableObject {
                     if let owner = live.first(where: { $0.id == sourceID }) {
                         try await TerminalSession.focus(pid: owner.pid)
                     } else if resume && session.isSaved {
-                        guard let snapshot = self.setupSnapshot, snapshot.copilot != nil else {
+                        guard let executable = self.setupSnapshot?.copilot ?? AgentSetup.findExecutable("copilot", path: AgentSetup.searchPath) else {
                             self.localSessionErrors[session.id] = "Copilot CLI not found. Check setup before resuming."
                             return
                         }
                         try await TerminalSession.resume(id: sourceID, cwd: session.cwd,
-                            executableURL: snapshot.copilot!)
+                            executableURL: executable)
                         self.launching.insert(session.id)
                         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
                             guard let self, self.launching.remove(rowID) != nil else { return }
@@ -295,7 +300,7 @@ final class Store: ObservableObject {
                     if let owner = live.first(where: { $0.id == sourceID }) {
                         try await TerminalSession.focus(pid: owner.pid)
                     } else if resume && session.isSaved {
-                        guard let snapshot = self.setupSnapshot, let claude = snapshot.claude else {
+                        guard let claude = self.setupSnapshot?.claude ?? AgentSetup.findExecutable("claude", path: AgentSetup.searchPath) else {
                             self.localSessionErrors[session.id] = "Claude CLI not found. Check setup before resuming."
                             return
                         }
@@ -400,13 +405,15 @@ final class Store: ObservableObject {
         descriptions[session.sourceSessionID ?? session.id]
     }
     func summarize(_ session: SessionRecord) {
-        guard summarizingID == nil, session.agent == "copilot" else { return }
+        guard summarizingID == nil, ["copilot", "claude"].contains(session.agent) else { return }
         guard let resources = Bundle.main.resourceURL else { error = "Notify's installed resources are missing."; return }
-        let script = resources.appendingPathComponent("bridge/dist/summarize.js")
+        let helper = session.agent == "claude" ? "summarize-claude.js" : "summarize.js"
+        let script = resources.appendingPathComponent("bridge/dist/\(helper)")
         guard FileManager.default.fileExists(atPath: script.path) else { error = "The summary helper is missing. Reinstall Notify."; return }
         let id = session.sourceSessionID ?? session.id
         do {
-            try descriptionRunner.run(sessionID: id, script: script) { [weak self] result in
+            let argument = session.agent == "claude" ? try ClaudeDiscovery.transcript(id: id).path : id
+            try descriptionRunner.run(sessionID: argument, script: script) { [weak self] result in
                 guard let self else { return }
                 self.summarizingID = nil
                 switch result {
@@ -421,54 +428,6 @@ final class Store: ObservableObject {
                 }
             }
             summarizingID = session.id
-        } catch { self.error = "Could not start summary: \(error.localizedDescription)" }
-    }
-    func summarizeClaude(session: SessionRecord) {
-        guard !descriptionRunner.isRunning else {
-            error = "A summary is already running. Wait for it to finish."
-            return
-        }
-        guard let script = setupSnapshot?.script else {
-            error = "Notify launcher not found. Open an installed build of Notify to summarize."
-            return
-        }
-        // The summarize-claude.ts script takes a transcript path.
-        // Find the transcript: ~/.claude/projects/<*>/<sourceSessionID>.jsonl
-        let sessionID = session.sourceSessionID ?? session.id
-        let home = ClaudeDiscovery.home
-        let projectsDir = home.appendingPathComponent("projects")
-        let manager = FileManager.default
-        var transcriptPath: String?
-        if let dirs = try? manager.contentsOfDirectory(at: projectsDir,
-            includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) {
-            for dir in dirs {
-                let candidate = dir.appendingPathComponent("\(sessionID).jsonl")
-                if manager.fileExists(atPath: candidate.path) {
-                    transcriptPath = candidate.path
-                    break
-                }
-            }
-        }
-        guard let transcriptPath else {
-            error = "Claude session transcript not found for \(sessionID.prefix(8)). The session may not have saved yet."
-            return
-        }
-        let claudeScript = script.deletingLastPathComponent().appendingPathComponent("summarize-claude.js")
-        summarizingID = session.id
-        do {
-            try descriptionRunner.run(sessionID: transcriptPath, script: claudeScript) { [weak self] result in
-                guard let self else { return }
-                self.summarizingID = nil
-                switch result {
-                case .success(let desc):
-                    var updated = self.descriptions
-                    updated[session.sourceSessionID ?? session.id] = desc
-                    self.descriptions = updated
-                    try? DescriptionCache.save(updated, in: self.directory)
-                case .failure(let err):
-                    self.error = "Summary failed: \(err.localizedDescription)"
-                }
-            }
         } catch { self.error = "Could not start summary: \(error.localizedDescription)" }
     }
     func stop() {
@@ -515,18 +474,22 @@ final class Store: ObservableObject {
             } catch {
                 DispatchQueue.main.async { self?.error = "Copilot discovery failed: \(error.localizedDescription)" }
             }
-            // Claude catalog
-            DispatchQueue.global(qos: .background).async { [weak self] in
-                let claudeLivePIDs = (try? ClaudeDiscovery.runningPIDs()) ?? []
-                let claudeSaved = (try? ClaudeDiscovery.catalog(livePIDs: Set(claudeLivePIDs))) ?? []
-                let claudeRunning = (try? ClaudeDiscovery.sessions(livePIDs: Set(claudeLivePIDs))) ?? []
+            do {
+                let claudeLivePIDs = try ClaudeDiscovery.runningPIDs()
+                let claudeSaved = try ClaudeDiscovery.catalog(livePIDs: claudeLivePIDs)
+                let claudeRunning = try ClaudeDiscovery.sessions(livePIDs: claudeLivePIDs)
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.registry.catalogClaude(claudeSaved)
                     self.registry.discoverClaude(claudeRunning)
+                    let liveIDs = Set(claudeRunning.map(\.id))
+                    for row in self.sessions where row.agent == "claude" && liveIDs.contains(row.sourceSessionID ?? row.id) {
+                        self.launching.remove(row.id)
+                    }
+                    if self.selectedID == nil { self.selectedID = self.sessions.first?.id }
                     self.onAttentionChange?()
                 }
-            }
+            } catch { DispatchQueue.main.async { self?.error = "Claude discovery failed: \(error.localizedDescription)" } }
         }
         discoveryTimer = timer
         timer.resume()

@@ -6,11 +6,11 @@ public struct SessionRegistry {
 
     public mutating func catalog(_ found: [SavedCopilot]) {
         let ids = Set(found.map(\.id))
-        for row in sessions.values where row.isSaved && !ids.contains(row.sourceSessionID ?? row.id) {
+        for row in sessions.values where row.agent == "copilot" && row.isSaved && !ids.contains(row.sourceSessionID ?? row.id) {
             sessions.removeValue(forKey: row.id)
         }
         for item in found {
-            let rowID = sessions.values.first { $0.sourceSessionID == item.id }?.id ?? item.id
+            let rowID = sessions.values.first { $0.agent == "copilot" && $0.sourceSessionID == item.id }?.id ?? item.id
             var row = sessions[rowID] ?? SessionRecord(id: rowID, agent: "copilot", cwd: item.cwd)
             if sessions[rowID]?.connected != true {
                 row.connected = false
@@ -30,14 +30,15 @@ public struct SessionRegistry {
 
     public mutating func discover(_ found: [DiscoveredCopilot]) {
         let live = Set(found.map(\.id))
-        for session in sessions.values where session.needsSetup && !live.contains(session.sourceSessionID ?? session.id) {
+        for session in sessions.values where session.agent == "copilot" && session.needsSetup && !live.contains(session.sourceSessionID ?? session.id) {
             sessions.removeValue(forKey: session.id)
         }
         for foundSession in found {
-            let rowID = sessions.values.first { $0.sourceSessionID == foundSession.id }?.id ?? foundSession.id
+            let rowID = sessions.values.first { $0.agent == "copilot" && $0.sourceSessionID == foundSession.id }?.id ?? foundSession.id
             var session = sessions[rowID] ?? SessionRecord(id: foundSession.id, agent: "copilot", cwd: foundSession.cwd)
             if sessions[rowID]?.connected != true {
                 session.connected = false
+                session.isSaved = false
                 session.needsSetup = true
                 session.summary = "Running in terminal (PID \(foundSession.pid)). Connect the Notify extension."
             }
@@ -55,10 +56,11 @@ public struct SessionRegistry {
             sessions.removeValue(forKey: session.id)
         }
         for item in found {
-            let rowID = sessions.values.first { $0.sourceSessionID == item.id }?.id ?? item.id
+            let rowID = sessions.values.first { $0.agent == "claude" && $0.sourceSessionID == item.id }?.id ?? item.id
             var session = sessions[rowID] ?? SessionRecord(id: item.id, agent: "claude", cwd: item.cwd)
             if sessions[rowID]?.connected != true {
                 session.connected = false
+                session.isSaved = false
                 session.needsSetup = true
                 session.summary = "Running in terminal (PID \(item.pid)). Add Notify hooks to connect."
             }
@@ -76,16 +78,17 @@ public struct SessionRegistry {
             sessions.removeValue(forKey: row.id)
         }
         for item in found {
-            let rowID = sessions.values.first { $0.sourceSessionID == item.id }?.id ?? item.id
+            let rowID = sessions.values.first { $0.agent == "claude" && $0.sourceSessionID == item.id }?.id ?? item.id
             var row = sessions[rowID] ?? SessionRecord(id: rowID, agent: "claude", cwd: item.cwd)
             if sessions[rowID]?.connected != true {
                 row.connected = false
-                row.isSaved = true
-                row.needsSetup = false
+                row.isSaved = item.pid == nil
+                row.needsSetup = item.pid != nil
                 row.updated = item.lastActivity ?? .distantPast
-                row.summary = "Saved chat. Resume in iTerm2 to continue."
+                row.summary = item.pid == nil ? "Saved chat. Resume in iTerm2 to continue." : "Running in terminal. Add Notify hooks to connect."
                 row.requests.removeAll()
             }
+            row.ownerPID = item.pid
             if !item.title.isEmpty { row.title = item.title }
             if !item.cwd.isEmpty { row.cwd = item.cwd }
             sessions[rowID] = row
@@ -110,7 +113,7 @@ public struct SessionRegistry {
         }
         if let sourceSessionID, UUID(uuidString: sourceSessionID) != nil {
             sessions[id]?.sourceSessionID = sourceSessionID
-            for source in sessions.values where source.id != id && !source.connected &&
+            for source in sessions.values where source.id != id && source.agent == sessions[id]?.agent && !source.connected &&
                 (source.id == sourceSessionID || source.sourceSessionID == sourceSessionID) {
                 if sessions[id]?.title.isEmpty == true { sessions[id]?.title = source.title }
                 sessions[id]?.synopsis = source.synopsis

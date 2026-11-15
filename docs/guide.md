@@ -37,13 +37,13 @@ The updated Copilot extension streams partial assistant replies before completio
 
 ## Open and resume in iTerm2
 
-**Saved chats** lists locally saved Copilot metadata. Select a stopped chat and choose **Resume in iTerm2**. Notify opens the original `copilot --resume <exact-id>` in a new iTerm2 window using the saved project folder. It does not send a model prompt.
+**Saved chats** lists locally saved Copilot and Claude sessions. Select a stopped chat and choose **Resume in iTerm2**. Notify opens the original `copilot --resume <exact-id>` or `claude --resume <exact-id>` in a new iTerm2 window using the saved project folder and configured agent home. It does not send a model prompt.
 
 **Saved Copilot mode and permission settings—including allow-all, if previously enabled—carry over.** The launch confirmation warns about this; Notify's broader per-session Auto-yes stays off. Extension setup and experimental-mode requirements remain explicit.
 
 **Open in iTerm2** checks live ownership and matches the process's terminal to an exact iTerm2 session. A currently running chat is opened instead of resumed again. An absent/ambiguous terminal or denied Automation access produces an error rather than choosing a random tab. Launching is not the same as connecting: permissions remain unavailable until the extension connects.
 
-iTerm2 must be installed at `/Applications/iTerm.app`; this local build launches Copilot at `/opt/homebrew/bin/copilot`. macOS may ask permission for Notify to control iTerm2. Missing project folders block resume. Existing Claude terminals and saved Claude launching are not supported in this release.
+iTerm2 must be installed at `/Applications/iTerm.app`; Notify finds the agent executable using its setup search paths. macOS may ask permission for Notify to control iTerm2. Missing project folders, linked/ambiguous history locations and existing live owners block a duplicate resume. Claude support requires the `feature/claude-code-parity` build; the beta 3 download predates it.
 
 ## Requirements
 
@@ -144,7 +144,7 @@ Setup finds Copilot, Claude Code and Node in the app's PATH and standard user/Ho
 
 For Copilot, **Install extension** asks before adding the local extension at the displayed path. Existing files are never replaced. Enable Notify and grant permission access in the original terminal yourself, as described below. The app does not toggle experimental mode or restart terminals.
 
-For Claude, copy the launch command and run it from your project folder. Commands use the installed app's absolute launcher path, preserve your terminal PATH, and can be inspected before copying. A CLI installed only in a custom terminal environment may not be found by the app; the copied command can still use that environment. Existing Claude-terminal attachment and other agent adapters are not implemented.
+For Claude, **Add hooks** asks before updating the displayed Claude settings file. It uses the same installer as `notify setup-claude`, preserves existing configuration, and does not restart a terminal or relax permission rules. The SDK-backed launcher remains available as a separate option; it is not a way to attach to an original terminal.
 
 **Check again** refreshes prerequisites; it does not change configuration. Accounts, models and API keys remain with the agent. Global approval shortcuts pause while setup is open. **Back to sessions** exits setup without disconnecting anything.
 
@@ -172,15 +172,42 @@ The app discovers live and saved Copilot sessions every 30 seconds using same-us
 
 Once connected, permissions, choices, forms, and plan decisions can be answered in Notify or the original terminal. The first accepted response wins. Pending permission prompts are recovered when attaching; a question already blocking initial setup may need one terminal reply first. Closing Notify leaves the original terminal usable, and reopening reconnects outstanding requests.
 
-Original Claude Code windows are not attached by this extension; continue using `notify claude` for Claude floating replies.
+The Copilot extension does not attach Claude terminals; Claude uses its own hooks below.
+
+## Existing Claude Code terminals
+
+This section requires a build from `feature/claude-code-parity`, not the published beta 3 app.
+
+1. Open **Connect agents > Claude Code > Add hooks**. Check the exact settings path and confirm sharing supported requests/activity with Notify and any paired phones.
+2. Wait until the already-open Claude terminal is idle, then review and close `/hooks` to accept the changes. **Opening `/hooks` ends the current turn in Claude 2.1.81; do not open it during active work.** Installing hooks alone does not replay a session-start event.
+3. Wait for the next hook event from your normal work. **Connected** appears only after the actual hook connection arrives. Do not restart active work or create a duplicate session just to make the row connect.
+
+Alternatively, run `~/.local/bin/notify setup-claude` after installing this build. It respects `CLAUDE_CONFIG_DIR`; use it from that terminal if your shell has a different Claude home than the Mac app. New terminals load accepted hooks automatically.
+
+Notify discovers live Claude owner metadata and indexes saved transcripts in bounded chunks for project/name metadata. It caches only names, project paths and file positions; later refreshes read appended data instead of rescanning unchanged history. The hook connection follows reported conversation entries and subagent lifecycle events; it does not invent missing ancestry or recover a complete earlier conversation.
+
+| Capability | Original Copilot terminal | Original Claude terminal |
+| --- | --- | --- |
+| Native session list, colors, terminal navigation | Yes | Yes |
+| Supported permission requests and supplied remembered scopes | Yes | Via hooks |
+| Already-waiting permission recovery on attachment | Yes | No |
+| Questions and custom answers | Supported runtime forms | Only if Claude delivers a supported question hook |
+| Reported responses and observed team chart | Yes | Yes |
+| Native main/subagent messaging and stop controls | Supported connections | Unavailable |
+| Direct subagent creation, removal and model selection | Supported connections | Unavailable |
+| Explicit Haiku summaries of saved conversation | Yes | Yes |
+
+Questions not delivered through hooks, existing blocked prompts and unsupported controls remain in the original Claude terminal. A hook reply receipt means the response reached the hook's standard output; it does not prove that Claude executed a tool or saved a permission rule. Closing or cancelling a hook retires only its own request. Phone views use the same capability limits.
+
+Claude 2.1.81 was checked with an isolated local provider and its real SDK permission channel: installed hooks delivered allow/deny decisions and question answers to the actual runtime. Plain `claude -p` did not emit a question permission hook. Reloading hooks inside an already-open interactive TUI has not been exercised; the idle-only reload guidance follows that version's command behavior.
 
 ## Session descriptions
 
-The session list uses Copilot's existing chat title rather than a UUID, with project and connection status shown separately. Select a session to see its latest activity.
+The session list uses reported Copilot and Claude chat titles rather than a UUID when available, with project and connection status shown separately. Select a session to see its latest activity.
 
-For a richer description, select a Copilot session and click **Summarize**. After confirmation, Notify sends at most 12,000 characters of saved user/assistant text to an available Haiku model through your Copilot account. It excludes tool arguments/results, does not read referenced files, and uses a separate tool-free session. This consumes account allowance; nothing runs automatically, and Notify never silently falls back to a different model family. Missing login, model availability and generation failures are shown explicitly.
+For a richer description, select a Copilot or Claude session and click **Summarize**. After confirmation, Notify sends at most 12,000 characters of saved user/assistant text to Haiku through that agent's account. It excludes tool arguments/results, does not read referenced files, and uses a separate tool-free session. The Claude helper also disables project settings and hooks. This consumes account allowance; nothing runs automatically, and Notify never silently falls back to a different model family. Missing login, model availability and generation failures are shown explicitly.
 
-Descriptions are cached locally with their model and generation time. **Refresh description** is another explicit request. The original chat title and terminal session are never changed. Only one summary runs at a time, with a 60-second generation timeout. This feature currently uses saved Copilot sessions, not Claude history.
+Descriptions are cached locally with their model and generation time. **Refresh description** is another explicit request. The original chat title and terminal session are never changed. Only one summary runs at a time, with a 60-second generation timeout.
 
 Summaries contain complete paragraphs, up to 250 words and 6,000 characters, rather than being cut off with an ellipsis. Use **Copy summary** to copy the full text. Older cached summaries are not regenerated automatically; choose **Refresh description** to replace one.
 
@@ -324,7 +351,7 @@ After updating Notify on the Mac, close and reopen the installed phone web app o
 - Phone keys, paired-device credentials, push subscriptions and bounded hashed notification identities stay in the private `mobile` subdirectory. Request snapshots are in memory, not saved there.
 - Browser-auth requests require completing the shown URL yourself before confirming. Secret/password prompts are not a supported floating-input workflow; authenticate in the original CLI first.
 - The panel is configured for other Spaces and full-screen apps, but secure desktops, locked screens, and individual full-screen app behavior are controlled by macOS.
-- Library/skill/plugin management, existing Claude attachment, internet request/reply relay access, and a full terminal emulator remain later work.
+- Library/skill/plugin management, Claude control parity and historical pending-prompt recovery, internet request/reply relay access, and a full terminal emulator remain later work.
 
 ## Checks
 

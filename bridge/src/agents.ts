@@ -111,7 +111,7 @@ export class ClaudeAgent {
           }
           if (message.subtype === "task_notification") {
             const status = String((message as Record<string, unknown>).status ?? "");
-            if (["completed", "failed", "cancelled"].includes(status)) {
+            if (["completed", "failed", "stopped"].includes(status)) {
               this.team?.stopped(message as Record<string, unknown>);
             }
           }
@@ -146,6 +146,7 @@ export class ClaudeAgent {
   }
   async stop(): Promise<void> {
     this.team?.stop();
+    this.team = undefined;
     this.bridge.pending.discardAll();
     this.controller?.abort();
     this.current?.close();
