@@ -21,6 +21,7 @@ export class ClaudeTeam {
   private agents = new Map<string, Agent>();
   private cancelled = new Map<string, CancelledEntry>();
   private notifyStopped = new Set<string>();
+  private terminalAgents: Agent[] = [];
   private expiryTimer: NodeJS.Timeout | undefined;
   private isStopped = false;
 
@@ -60,7 +61,8 @@ export class ClaudeTeam {
     } else {
       const exitCode = typeof event.exit_code === "number" ? event.exit_code : 0;
       const updated: Agent = { ...agent, status: exitCode === 0 ? "completed" : "failed" };
-      this.agents.set(id, updated);
+      this.agents.delete(id);
+      this.terminalAgents.push(updated);
     }
     this.publish();
   }
@@ -75,7 +77,8 @@ export class ClaudeTeam {
     }
     const live = [...this.agents.values()];
     const retained = [...this.cancelled.values()].map(e => e.agent);
-    const all = [...live, ...retained];
+    const terminal = this.terminalAgents.splice(0);
+    const all = [...live, ...retained, ...terminal];
     const running = all.filter(a => a.status === "running");
     const idle = all.filter(a => a.status === "idle");
     this.bridge.team({
@@ -105,5 +108,6 @@ export class ClaudeTeam {
     this.agents.clear();
     this.cancelled.clear();
     this.notifyStopped.clear();
+    this.terminalAgents = [];
   }
 }
