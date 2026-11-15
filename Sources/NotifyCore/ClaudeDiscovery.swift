@@ -4,8 +4,11 @@ import Darwin
 public struct DiscoveredClaude {
     public let id: String
     public let pid: Int32
-    public var cwd: String = ""
-    public var title: String = ""
+    public var cwd: String
+    public var title: String
+    public init(id: String, pid: Int32, cwd: String = "", title: String = "") {
+        self.id = id; self.pid = pid; self.cwd = cwd; self.title = title
+    }
 }
 
 public struct SavedClaude: Identifiable {
@@ -13,6 +16,9 @@ public struct SavedClaude: Identifiable {
     public let title: String
     public let cwd: String
     public let lastActivity: Date?
+    public init(id: String, title: String, cwd: String, lastActivity: Date?) {
+        self.id = id; self.title = title; self.cwd = cwd; self.lastActivity = lastActivity
+    }
 }
 
 public enum ClaudeDiscovery {

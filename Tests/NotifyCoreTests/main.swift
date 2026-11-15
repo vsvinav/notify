@@ -773,3 +773,23 @@ assert(cat.count == 1, "Should find 1 saved session")
 assert(cat[0].title == "My Test Project", "Should use customTitle")
 assert(cat[0].cwd == "/tmp/myproject", "Should read cwd")
 print("ClaudeDiscovery: OK")
+
+// SessionRegistry Claude support
+var reg = SessionRegistry()
+// discoverClaude creates a needsSetup entry
+reg.discoverClaude([DiscoveredClaude(id: "test-id-123", pid: 999, cwd: "/tmp/proj")])
+assert(reg.sessions["test-id-123"] != nil, "Should create entry")
+assert(reg.sessions["test-id-123"]?.needsSetup == true, "Should be needsSetup")
+assert(reg.sessions["test-id-123"]?.agent == "claude", "Should be claude agent")
+// catalogClaude creates a saved entry
+var reg2 = SessionRegistry()
+let savedID = UUID().uuidString.lowercased()
+reg2.catalogClaude([SavedClaude(id: savedID, title: "Test Project", cwd: "/tmp/p", lastActivity: nil)])
+assert(reg2.sessions[savedID]?.isSaved == true, "Should be saved")
+assert(reg2.sessions[savedID]?.title == "Test Project", "Should have title")
+// capabilities() works for claude
+reg2.register(id: "claude-sess", agent: "claude", cwd: "/tmp")
+// register() sets connected = true by default
+reg2.capabilities("claude-sess", steering: true, autoYes: false)
+assert(reg2.sessions["claude-sess"]?.canSteer == true, "Claude session should allow capabilities")
+print("SessionRegistry Claude: OK")
