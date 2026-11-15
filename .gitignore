@@ -3,6 +3,7 @@ build/
 bridge/node_modules/
 bridge/dist/
 .superpowers/
+.worktrees/
 .DS_Store
 .env
 .env.*
