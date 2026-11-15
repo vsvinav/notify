@@ -258,6 +258,27 @@ do {
     }
     let partial = try team([worker], running: 150, truncated: true)
     check(partial.isValid, "Capped detail must retain the runtime's complete running count")
+    var malformedParent = worker
+    malformedParent["parentKnown"] = true
+    malformedParent["parentAgentID"] = "child"
+    let selfParent = try team([malformedParent])
+    check(!selfParent.isValid, "An agent cannot be its own parent")
+    malformedParent["parentAgentID"] = String(repeating: "p", count: 129)
+    let longParent = try team([malformedParent])
+    check(!longParent.isValid, "Parent identities must use the same wire bounds as agent identities")
+    let linked = try team([
+        ["id": "lead", "name": "Lead", "task": "", "status": "running", "parentKnown": true],
+        ["id": "nested", "name": "Nested", "task": "", "status": "running", "parentKnown": true, "parentAgentID": "lead"],
+        ["id": "unknown", "name": "Unknown", "task": "", "status": "running"],
+        ["id": "orphan", "name": "Orphan", "task": "", "status": "running", "parentKnown": true, "parentAgentID": "missing"],
+        ["id": "cycle-a", "name": "A", "task": "", "status": "running", "parentKnown": true, "parentAgentID": "cycle-b"],
+        ["id": "cycle-b", "name": "B", "task": "", "status": "running", "parentKnown": true, "parentAgentID": "cycle-a"]
+    ], running: 6)
+    let hierarchy = SubagentHierarchy(agents: linked.agents)
+    check(hierarchy.roots.map(\.id) == ["lead"], "Only observed main-agent spawns belong under the main node")
+    check(hierarchy.children["lead"]?.map(\.id) == ["nested"], "Nested children keep the exact spawning parent")
+    check(Set(hierarchy.unlinked.map(\.id)) == Set(["unknown", "orphan", "cycle-a", "cycle-b"]),
+          "Unknown, missing and cyclic parents remain visible without fabricated connections or recursion")
     teams.disconnect("parent")
     do {
         try teams.team("parent", snapshot: snapshot)

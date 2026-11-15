@@ -10,10 +10,16 @@ public struct SubagentRecord: Codable, Identifiable, Equatable {
     public let task: String
     public let status: SubagentStatus
     public let model: String?
+    public let parentKnown: Bool?
+    public let parentAgentID: String?
 
     public var isValid: Bool {
-        !id.isEmpty && id.count <= 128 && !name.isEmpty && name.count <= 160 &&
-        task.count <= 1000 && (model?.count ?? 0) <= 200
+        if let parentAgentID {
+            guard parentKnown == true, parentAgentID != id, !parentAgentID.isEmpty,
+                  parentAgentID.count <= 128 else { return false }
+        }
+        return !id.isEmpty && id.count <= 128 && !name.isEmpty && name.count <= 160 &&
+            task.count <= 1000 && (model?.count ?? 0) <= 200
     }
 }
 
@@ -32,6 +38,33 @@ public struct SubagentTeam: Codable, Equatable {
         let running = agents.filter { $0.status == .running }.count
         let idle = agents.filter { $0.status == .idle }.count
         return truncated ? runningCount >= running && idleCount >= idle : runningCount == running && idleCount == idle
+    }
+}
+
+public struct SubagentHierarchy {
+    public private(set) var roots: [SubagentRecord] = []
+    public private(set) var unlinked: [SubagentRecord] = []
+    public private(set) var children: [String: [SubagentRecord]] = [:]
+
+    public init(agents: [SubagentRecord]) {
+        let records = Dictionary(agents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        func cyclic(_ agent: SubagentRecord) -> Bool {
+            var visited = Set([agent.id])
+            var current = agent
+            while let parentID = current.parentAgentID, let parent = records[parentID] {
+                guard visited.insert(parentID).inserted else { return true }
+                current = parent
+            }
+            return false
+        }
+        for agent in agents {
+            if agent.parentKnown != true || cyclic(agent) {
+                unlinked.append(agent)
+            } else if let parentID = agent.parentAgentID {
+                if records[parentID] != nil { children[parentID, default: []].append(agent) }
+                else { unlinked.append(agent) }
+            } else { roots.append(agent) }
+        }
     }
 }
 

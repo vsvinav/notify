@@ -87,12 +87,69 @@ test("late task reads cannot publish after detach", async () => {
 });
 
 test("bounded snapshots retain active tasks ahead of historical completions", async () => {
-  const tasks = [...Array.from({ length: 150 }, (_, n) => agent(String(n), "completed")), agent("active")];
+  const tasks = [...Array.from({ length: 150 }, (_, n) => agent(String(n), "completed")), agent("active"), agent("just-stopped", "cancelled")];
   const { tracker, snapshots } = fixture(async () => ({ tasks }));
   try {
     await tracker.refresh();
     assert.equal(snapshots.at(-1).agents.length, 100);
     assert.equal(snapshots.at(-1).agents[0].id, "active");
+    assert.ok(snapshots.at(-1).agents.some(item => item.id === "just-stopped"), "Recently stopped helpers must not be hidden behind old completions");
     assert.equal(snapshots.at(-1).truncated, true);
+  } finally { tracker.stop(); }
+});
+
+test("ancestry uses spawning lifecycle metadata, never the journal's previous-event ID", async () => {
+  const { tracker, snapshots, emit } = fixture(async () => ({
+    tasks: [agent("parent"), agent("child"), agent("unobserved")]
+  }));
+  try {
+    emit({ type: "subagent.started", parentId: "previous-journal-event",
+      data: { toolCallId: "tool-parent" } });
+    emit({ type: "subagent.started", parentId: "another-journal-event",
+      data: { toolCallId: "tool-child", parentId: "parent" } });
+    await tracker.refresh();
+    const byID = Object.fromEntries(snapshots.at(-1).agents.map(item => [item.id, item]));
+    assert.equal(byID.parent.parentKnown, true);
+    assert.equal(byID.parent.parentAgentID, undefined, "Observed root spawns belong to the main agent");
+    assert.equal(byID.child.parentAgentID, "parent");
+    assert.equal(byID.child.parentKnown, true);
+    assert.equal(byID.unobserved.parentKnown, false, "Already-running tasks must not be assigned an invented parent");
+    await tracker.refresh();
+    assert.equal(snapshots.at(-1).agents.find(item => item.id === "child").parentAgentID, "parent");
+  } finally { tracker.stop(); }
+});
+
+test("cancelled retention respects the runtime completion time and detach cancels expiry", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1000000 });
+  const { tracker, snapshots } = fixture(async () => ({ tasks: [
+    { ...agent("old", "cancelled"), completedAt: new Date(600000).toISOString() },
+    { ...agent("recent", "cancelled"), completedAt: new Date(900000).toISOString() }
+  ] }));
+  await tracker.refresh();
+  assert.deepEqual(snapshots.at(-1).agents.map(item => item.id), ["recent"]);
+  tracker.stop();
+  const count = snapshots.length;
+  t.mock.timers.tick(300000);
+  assert.equal(snapshots.length, count, "A detached bridge must not publish expired state");
+});
+
+test("cancelled helpers remain for five minutes without polling or resurrecting expired rows", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1000000 });
+  let tasks = [agent("stopped", "cancelled"), agent("live")], calls = 0;
+  const { tracker, snapshots } = fixture(async () => { calls++; return { tasks }; });
+  try {
+    await tracker.refresh();
+    assert.equal(snapshots.at(-1).agents.find(item => item.id === "stopped")?.status, "cancelled");
+    tasks = [agent("live")];
+    await tracker.refresh();
+    assert.ok(snapshots.at(-1).agents.some(item => item.id === "stopped"), "Retain an observed cancellation even if the runtime removes it");
+    t.mock.timers.tick(299999);
+    assert.ok(snapshots.at(-1).agents.some(item => item.id === "stopped"));
+    t.mock.timers.tick(1);
+    assert.deepEqual(snapshots.at(-1).agents.map(item => item.id), ["live"]);
+    assert.equal(calls, 2, "Expiry must not poll the runtime");
+    tasks = [agent("stopped", "cancelled"), agent("live")];
+    await tracker.refresh();
+    assert.deepEqual(snapshots.at(-1).agents.map(item => item.id), ["live"], "Refresh must not restart the retention clock");
   } finally { tracker.stop(); }
 });
