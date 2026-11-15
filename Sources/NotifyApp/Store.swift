@@ -29,7 +29,11 @@ final class Store: ObservableObject {
     @Published private(set) var sessionOrder: [String]
     @Published var error: String?
     @Published var requestErrors: [String: String] = [:]
-    @Published var sessionErrors: [String: String] = [:]
+    @Published private var localSessionErrors: [String: String] = [:]
+    @Published private var agentErrors: [String: String] = [:]
+    var sessionErrors: [String: String] {
+        agentErrors.merging(localSessionErrors) { _, local in local }
+    }
     @Published private(set) var appearance = SessionAppearance()
     var attentionIDs = Set<String>()
     private var announcedIDs: [String] = []
@@ -209,11 +213,11 @@ final class Store: ObservableObject {
     func openTerminal(_ session: SessionRecord, resume: Bool = false) {
         guard !terminalBusy.contains(session.id), !launching.contains(session.id) else { return }
         guard session.agent == "copilot" else {
-            sessionErrors[session.id] = "Exact terminal navigation is currently available for discovered Copilot sessions."
+            localSessionErrors[session.id] = "Exact terminal navigation is currently available for discovered Copilot sessions."
             return
         }
         terminalBusy.insert(session.id)
-        sessionErrors.removeValue(forKey: session.id)
+        localSessionErrors.removeValue(forKey: session.id)
         let rowID = session.id
         let sourceID = session.sourceSessionID ?? session.id
         terminalTasks[session.id] = Task { @MainActor [weak self] in
@@ -231,12 +235,12 @@ final class Store: ObservableObject {
                     self.launching.insert(session.id)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
                         guard let self, self.launching.remove(rowID) != nil else { return }
-                        self.sessionErrors[rowID] = "iTerm2 opened, but no live owner was detected yet. Check that terminal before launching again."
+                        self.localSessionErrors[rowID] = "iTerm2 opened, but no live owner was detected yet. Check that terminal before launching again."
                     }
                 } else {
-                    self.sessionErrors[session.id] = "This chat has no identifiable live Copilot terminal. Refresh the saved session list before resuming."
+                    self.localSessionErrors[session.id] = "This chat has no identifiable live Copilot terminal. Refresh the saved session list before resuming."
                 }
-            } catch { self.sessionErrors[session.id] = error.localizedDescription }
+            } catch { self.localSessionErrors[session.id] = error.localizedDescription }
         }
     }
     func showSteering(_ id: String?) {
@@ -442,6 +446,8 @@ final class Store: ObservableObject {
         for session in sessions where !session.connected && !session.needsSetup {
             for request in session.requests { replyWorkspace.resolve(request.id) }
             registry.remove(session.id)
+            agentErrors.removeValue(forKey: session.id)
+            localSessionErrors.removeValue(forKey: session.id)
         }
     }
     private func receive(_ packet: AgentPacket) {
@@ -458,6 +464,10 @@ final class Store: ObservableObject {
             if selectedID == nil { selectedID = packet.sessionID }
         case "state":
             registry.state(packet.sessionID, state: packet.state ?? "", text: packet.text ?? "")
+            // Idle can follow a failed turn; retire its error only when work resumes.
+            if packet.state == "working", agentErrors[packet.sessionID] != nil {
+                agentErrors.removeValue(forKey: packet.sessionID)
+            }
         case "metadata":
             let aliases = registry.sessions.values.filter {
                 !$0.connected && ($0.id == packet.sourceSessionID || $0.sourceSessionID == packet.sourceSessionID && packet.sourceSessionID != nil)
@@ -472,7 +482,7 @@ final class Store: ObservableObject {
             registry.activityCapability(packet.sessionID, enabled: packet.activityFeed == true)
             if packet.sessionAutoYes != true { disableSessionAutoYes(packet.sessionID, reason: "capability unavailable") }
         case "activity":
-            guard let activity = packet.activity else { sessionErrors[packet.sessionID] = "Agent sent an empty activity event."; return }
+            guard let activity = packet.activity else { localSessionErrors[packet.sessionID] = "Agent sent an empty activity event."; return }
             do {
                 let previous = registry.sessions[packet.sessionID]?.activity.entries.first(where: { $0.id == activity.id })
                 try registry.activity(packet.sessionID, entry: activity)
@@ -480,7 +490,7 @@ final class Store: ObservableObject {
                     registry.output(packet.sessionID, text: activity.detail + "\n\n")
                 }
             }
-            catch { sessionErrors[packet.sessionID] = "Invalid activity event; check the original terminal." }
+            catch { localSessionErrors[packet.sessionID] = "Invalid activity event; check the original terminal." }
         case "control_status":
             if let id = packet.commandID, let status = packet.status {
                 steeringWorkspace.update(sessionID: packet.sessionID, commandID: id, status: status, text: packet.text ?? "")
@@ -537,7 +547,7 @@ final class Store: ObservableObject {
                 for request in registry.sessions[packet.sessionID]?.requests ?? [] {
                     finishPhoneReply(request.id, sessionID: packet.sessionID, error: packet.text ?? "The agent connection reported an error.")
                 }
-                sessionErrors[packet.sessionID] = packet.text ?? "Agent reported an error."
+                agentErrors[packet.sessionID] = packet.text ?? "Agent reported an error."
                 sending.subtract(registry.sessions[packet.sessionID]?.requests.map(\.id) ?? [])
                 automaticallySending.subtract(registry.sessions[packet.sessionID]?.requests.map(\.id) ?? [])
             }

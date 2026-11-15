@@ -19,6 +19,44 @@ import Vision
         defaults.set("dark", forKey: "appearanceMode")
         let store = Store(directory: fixtureRoot, defaults: defaults)
         do {
+            let recovering = Store(directory: fixtureRoot.appendingPathComponent("error-recovery"), defaults: defaults)
+            defer { recovering.stop() }
+            func receiveErrorEvent(_ value: [String: Any]) throws {
+                recovering.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: JSONSerialization.data(withJSONObject: value)))
+            }
+            for id in ["recovering", "other"] {
+                try receiveErrorEvent(["type": "hello", "sessionID": id, "agent": "copilot", "cwd": "/Projects/example"])
+                try receiveErrorEvent(["type": "error", "sessionID": id, "text": "Synthetic model DNS failure"])
+            }
+            try receiveErrorEvent(["type": "request", "sessionID": "recovering", "request": [
+                "id": "unresolved-reply", "kind": "permission", "title": "Synthetic approval", "detail": "",
+                "autoEligible": false, "questions": []
+            ]])
+            try receiveErrorEvent(["type": "error", "sessionID": "recovering", "requestID": "unresolved-reply",
+                                   "text": "Reply delivery remains uncertain"])
+            for state in ["ready", "waiting", "error"] {
+                try receiveErrorEvent(["type": "state", "sessionID": "recovering", "state": state, "text": "Synthetic status"])
+                precondition(recovering.sessionErrors["recovering"] == "Synthetic model DNS failure",
+                             "Idle, waiting and failed states do not establish recovery")
+            }
+            try receiveErrorEvent(["type": "state", "sessionID": "recovering", "state": "working", "text": "A new turn started"])
+            precondition(recovering.sessionErrors["recovering"] == nil,
+                         "Resumed work must retire the previous agent error from both native surfaces. Fixture: \(fixtureRoot.path)")
+            precondition(recovering.sessionErrors["other"] == "Synthetic model DNS failure",
+                         "Recovery must not dismiss another session's error")
+            precondition(recovering.requestErrors["unresolved-reply"] == "Reply delivery remains uncertain",
+                         "Resumed work must not hide an unresolved reply failure")
+            try receiveErrorEvent(["type": "error", "sessionID": "recovering", "text": "A new model failure"])
+            precondition(recovering.sessionErrors["recovering"] == "A new model failure",
+                         "A later failure must remain visible")
+            try receiveErrorEvent(["type": "activity", "sessionID": "recovering"])
+            let localError = recovering.sessionErrors["recovering"]
+            precondition(localError == "Agent sent an empty activity event.")
+            try receiveErrorEvent(["type": "state", "sessionID": "recovering", "state": "working", "text": "Work resumed"])
+            precondition(recovering.sessionErrors["recovering"] == localError,
+                         "Agent recovery must preserve local validation failures")
+        }
+        do {
             let automated = Store(directory: fixtureRoot.appendingPathComponent("automation"), defaults: defaults)
             let client = Process()
             defer { if client.isRunning { client.terminate() }; automated.stop() }
