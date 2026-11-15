@@ -116,8 +116,15 @@ public struct SessionRegistry {
     }
     public mutating func team(_ id: String, snapshot: SubagentTeam) throws {
         guard sessions[id]?.connected == true else { throw ProtocolError.stale }
-        guard snapshot.isValid else { throw ProtocolError.invalid }
+        guard snapshot.isValid else {
+            invalidateTeam(id)
+            throw ProtocolError.invalid
+        }
         sessions[id]?.team = snapshot
+    }
+    public mutating func invalidateTeam(_ id: String) {
+        sessions[id]?.team = SubagentTeam(agents: [], runningCount: 0, idleCount: 0, truncated: false,
+                                          error: "Invalid subagent status. Controls are unavailable until a fresh team snapshot arrives.")
     }
     public mutating func add(_ request: AgentRequest, to id: String) throws {
         guard request.isValid, var session = sessions[id], session.connected else { throw ProtocolError.invalid }
