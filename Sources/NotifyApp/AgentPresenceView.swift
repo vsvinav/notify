@@ -104,10 +104,7 @@ struct AgentPose: Equatable {
 struct AgentPresenceView: View {
     let presence: AgentPresence
     let visible: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     var body: some View {
-        let moving = presence.animates(visible: visible, reduceMotion: reduceMotion)
         VStack(alignment: .leading, spacing: 6) {
             Text(presence.title).font(WorkspaceType.text(20, strong: true))
                 .fixedSize(horizontal: false, vertical: true)
@@ -115,23 +112,58 @@ struct AgentPresenceView: View {
                 Text(presence.detail).font(WorkspaceType.text(12)).foregroundStyle(Palette.muted)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
-                TimelineView(.animation(minimumInterval: 0.125, paused: !moving)) { clock in
-                    AgentIllustration(presence: presence, phase: moving ? sin(clock.date.timeIntervalSinceReferenceDate * 4) : 0,
-                                      time: moving ? clock.date.timeIntervalSinceReferenceDate : nil)
-                }.frame(width: 116, height: 88).accessibilityHidden(true)
+                AnimatedAgentIllustration(presence: presence, visible: visible)
+                    .frame(width: 116, height: 88).accessibilityHidden(true)
             }
         }.accessibilityElement(children: .combine)
     }
 
 }
 
-struct AgentIllustration: View {
+struct AnimatedAgentIllustration: View {
+    let presence: AgentPresence
+    let visible: Bool
+    var accent: Color = Palette.accent
+    var isLead = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var time: Double?
+
+    var body: some View {
+        let active = presence.animates(visible: visible, reduceMotion: reduceMotion)
+        let animationTime = active ? time : nil
+        AgentIllustration(presence: presence, phase: animationTime.map { sin($0 * 4) } ?? 0,
+                          accent: accent, time: animationTime, isLead: isLead)
+            .equatable()
+            .task(id: active) {
+                guard active else { return }
+                do {
+                    while !Task.isCancelled {
+                        time = Date().timeIntervalSinceReferenceDate
+                        try await Task.sleep(for: .milliseconds(125))
+                    }
+                } catch is CancellationError {
+                    // Hiding the view or enabling Reduce Motion cancels its clock.
+                } catch {
+                    NSLog("Notify animation clock stopped: %@", error.localizedDescription)
+                }
+            }
+    }
+}
+
+struct AgentIllustration: View, Equatable {
     let presence: AgentPresence
     var phase: Double = 0
     var accent: Color = Palette.accent
     var portrait = false
     var time: Double? = nil
     var isLead = false
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.presence == rhs.presence && lhs.accent == rhs.accent && lhs.portrait == rhs.portrait &&
+            lhs.isLead == rhs.isLead &&
+            AgentPose(presence: lhs.presence, time: lhs.time) == AgentPose(presence: rhs.presence, time: rhs.time) &&
+            (lhs.presence != .thinking || lhs.phase == rhs.phase)
+    }
 
     var body: some View {
         Canvas { context, size in
@@ -165,8 +197,13 @@ struct AgentIllustration: View {
                 line([CGPoint(x: 46 + lean, y: 23), CGPoint(x: 73 + lean, y: 23)], color: accent, width: 4)
                 line([CGPoint(x: 38 + lean, y: 29), CGPoint(x: 81 + lean, y: 29)], color: Palette.ink, width: 4)
             }
-            let resting = pose.blinking || presence == .stopped || presence == .saved || presence == .disconnected
-            if resting {
+            let resting = pose.blinking || presence == .saved || presence == .disconnected
+            if presence == .stopped {
+                for x: CGFloat in [54, 67] {
+                    line([CGPoint(x: x + lean - 2, y: 39), CGPoint(x: x + lean + 2, y: 44)])
+                    line([CGPoint(x: x + lean - 2, y: 44), CGPoint(x: x + lean + 2, y: 39)])
+                }
+            } else if resting {
                 line([CGPoint(x: 52 + lean, y: 41), CGPoint(x: 56 + lean, y: 42)])
                 line([CGPoint(x: 65 + lean, y: 42), CGPoint(x: 69 + lean, y: 41)])
             } else {
@@ -230,32 +267,29 @@ struct SubagentTeamView: View {
     var compact = false
     var selectedAgentID: String? = nil
     var selectAgent: ((String?) -> Void)? = nil
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var presence: AgentPresence { AgentPresence(session: session) }
     private var current: Bool { session.connected && session.team?.error == nil }
-    private var moving: Bool {
-        store.centerVisible && !reduceMotion && session.connected &&
-            (presence.animates(visible: true, reduceMotion: false) ||
-                (current && (session.team?.agents.contains { $0.status == .running || $0.status == .idle } == true)))
-    }
     var body: some View {
-        TimelineView(.animation(minimumInterval: 0.125, paused: !moving)) { clock in
-            let phase = moving ? sin(clock.date.timeIntervalSinceReferenceDate * 4) : 0
             VStack(alignment: .leading, spacing: 12) {
                 Text("Your team").font(WorkspaceType.text(20, strong: true)).accessibilityAddTraits(.isHeader)
+                if selectAgent != nil {
+                    Text("Select an agent to chat").font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
+                }
                 Button { selectAgent?(nil) } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(alignment: .firstTextBaseline) {
                             Text("Main agent").font(WorkspaceType.text(16, strong: true))
+                            Image(systemName: "bubble.left").accessibilityHidden(true)
                             Spacer(minLength: 4)
                             Text(presence.title).font(WorkspaceType.text(12)).foregroundStyle(Palette.muted)
                         }
-                        AgentIllustration(presence: presence, phase: phase, accent: store.sessionColor(session),
-                                          time: moving ? clock.date.timeIntervalSinceReferenceDate : nil, isLead: true)
+                        AnimatedAgentIllustration(presence: presence, visible: store.centerVisible && session.connected,
+                                                  accent: store.sessionColor(session), isLead: true)
                             .frame(width: compact ? 156 : 220, height: compact ? 118 : 166)
                             .frame(maxWidth: .infinity).accessibilityHidden(true)
                     }.contentShape(Rectangle())
-                }.buttonStyle(.plain).disabled(selectAgent == nil).help("Open main agent chat")
+                }.buttonStyle(AgentSelectionStyle(selected: selectedAgentID == nil, accent: store.sessionColor(session)))
+                    .disabled(selectAgent == nil).help("Open main agent chat")
                     .accessibilityLabel("Chat with main agent")
                 Divider()
                 if let team = session.team {
@@ -274,11 +308,11 @@ struct SubagentTeamView: View {
                                 LazyVStack(alignment: .leading, spacing: 16) {
                                     ForEach(team.agents) { agent in
                                         Button { selectAgent?(agent.id) } label: {
-                                            member(agent, phase: phase, time: moving ? clock.date.timeIntervalSinceReferenceDate : nil)
-                                                .padding(6).background(selectedAgentID == agent.id ? Palette.raised : .clear,
-                                                                       in: RoundedRectangle(cornerRadius: 8))
-                                        }.buttonStyle(.plain).disabled(selectAgent == nil).help("Open chat with \(agent.name)")
-                                            .accessibilityLabel("Chat with \(agent.name)")
+                                            member(agent)
+                                        }.buttonStyle(AgentSelectionStyle(selected: selectedAgentID == agent.id, accent: store.sessionColor(session)))
+                                            .disabled(selectAgent == nil || agent.status == .cancelled)
+                                            .help(agent.status == .cancelled ? "Stopped helpers cannot be reopened." : "Open chat with \(agent.name)")
+                                            .accessibilityLabel(agent.status == .cancelled ? "\(agent.name), stopped" : "Chat with \(agent.name)")
                                     }
                                     if team.truncated {
                                         Text("Showing the first 100 agents. Counts include the full team.")
@@ -298,19 +332,22 @@ struct SubagentTeamView: View {
                         .font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
                 }
             }.frame(maxWidth: .infinity, maxHeight: compact ? nil : .infinity, alignment: .topLeading)
-        }
     }
-    private func member(_ agent: SubagentRecord, phase: Double, time: Double?) -> some View {
-        let state: AgentPresence = !current ? .disconnected :
+    private func member(_ agent: SubagentRecord) -> some View {
+        let state: AgentPresence = agent.status == .cancelled ? .stopped : !current ? .disconnected :
             agent.status == .running ? .working : agent.status == .idle ? .resting :
             agent.status == .failed ? .error : agent.status == .completed ? .finished : .stopped
         let recent = session.activity.entries.last { $0.agentID == agent.id }
         return HStack(alignment: .top, spacing: 8) {
-            AgentIllustration(presence: state, phase: state == .working ? phase : 0, accent: store.sessionColor(session),
-                              time: state.animates(visible: true, reduceMotion: false) ? time : nil)
+            AnimatedAgentIllustration(presence: state, visible: store.centerVisible && current, accent: store.sessionColor(session))
                 .frame(width: 88, height: 68).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
-                Text(agent.name).font(WorkspaceType.text(13, strong: true)).lineLimit(2)
+                HStack {
+                    Text(agent.name).font(WorkspaceType.text(13, strong: true)).lineLimit(2)
+                    if agent.status != .cancelled {
+                        Image(systemName: "bubble.left").font(.system(size: 11)).accessibilityHidden(true)
+                    }
+                }
                 Text(!current ? "Last seen: \(agent.status.rawValue)" : agent.status == .idle ? "Ready for follow-up" :
                         agent.status == .cancelled ? "Stopped" : agent.status.rawValue.capitalized)
                     .font(WorkspaceType.text(11)).foregroundStyle(agent.status == .failed ? Palette.error : Palette.muted)
@@ -324,5 +361,32 @@ struct SubagentTeamView: View {
                 }
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct AgentSelectionStyle: ButtonStyle {
+    let selected: Bool
+    let accent: Color
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var hovering = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        let pressed = enabled && configuration.isPressed
+        let lifted = enabled && hovering && !pressed
+        configuration.label.padding(6).contentShape(RoundedRectangle(cornerRadius: 8))
+            .background {
+                RoundedRectangle(cornerRadius: 8).fill(enabled ? Palette.surface : .clear)
+                    .shadow(color: .black.opacity(enabled ? (colorScheme == .dark ? 0.3 : 0.13) : 0),
+                            radius: pressed ? 1 : lifted ? 5 : 3, x: 0, y: pressed ? 1 : lifted ? 4 : 2)
+            }
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .stroke(selected && enabled ? accent : Palette.line.opacity(enabled ? 0.65 : 0.25),
+                        lineWidth: selected && enabled ? 2 : 1))
+            .offset(y: reduceMotion ? 0 : pressed ? 1 : lifted ? -1 : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: pressed)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: lifted)
+            .onHover { hovering = $0 }
     }
 }

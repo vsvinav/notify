@@ -10,7 +10,12 @@ import Vision
         NSApp.setActivationPolicy(.accessory)
         NSApp.appearance = NSAppearance(named: .aqua)
         NSApp.finishLaunching()
+        if CommandLine.arguments.contains("--performance") {
+            try AgentPerformanceChecks.run()
+            return
+        }
         ResponseRenderingChecks.run()
+        SessionReorderingChecks.run()
         let plist = try PropertyListSerialization.propertyList(from: Data(contentsOf: URL(fileURLWithPath: "resources/Info.plist")), format: nil) as! [String: Any]
         precondition(plist["LSUIElement"] as? Bool != true, "Notify must be a normal Dock application, not a hidden menu-bar agent")
         let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent("notify-ui-" + UUID().uuidString)
@@ -716,14 +721,15 @@ import Vision
         workspaceText.recognitionLevel = .accurate
         try VNImageRequestHandler(cgImage: workspaceBitmap.cgImage!, options: [:]).perform([workspaceText])
         let workspaceLabels = (workspaceText.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
-        precondition(workspaceLabels.contains("Chat") && workspaceLabels.contains("Controls"),
-                     "The workspace must expose chat alongside direct agent controls")
+        precondition(workspaceLabels.contains("Chat") && !workspaceLabels.contains("Controls"),
+                     "Messaging must have one Chat destination, not a duplicate Controls tab")
+        precondition(workspaceLabels.contains("Hierarchy"), "The agent hierarchy must be discoverable in session navigation")
         func showActivity(in view: NSView) {
             guard let tabs = descendants(view).compactMap({ $0 as? NSSegmentedControl }).first(where: {
-                $0.segmentCount == 4 && $0.label(forSegment: 2) == "Controls"
+                $0.segmentCount == 4 && $0.label(forSegment: 2) == "Settings"
             }) else { preconditionFailure("Session navigation must expose recognizable native tabs") }
             tabs.selectedSegment = 2
-            precondition(tabs.sendAction(tabs.action, to: tabs.target), "Controls navigation must respond without hiding live activity")
+            precondition(tabs.sendAction(tabs.action, to: tabs.target), "Settings must retain session automation without hiding live activity")
             for _ in 0..<10 {
                 view.layoutSubtreeIfNeeded()
                 RunLoop.current.run(until: Date().addingTimeInterval(0.02))
@@ -807,6 +813,7 @@ import Vision
                 ("Copy message", "Keep this exact message.\nSecond line."),
                 ("Copy summary", String(repeating: "A complete summary sentence. ", count: 45).trimmingCharacters(in: .whitespaces))
             ]
+            var hierarchySelection: String? = "unchanged"
             func capture<V: View>(_ view: V, width: CGFloat, height: CGFloat, name: String,
                                   appearance: NSAppearance.Name = .aqua) throws {
                 if name.hasPrefix("settings") { visual.appearanceMode = appearance == .darkAqua ? .dark : .light }
@@ -1007,16 +1014,56 @@ import Vision
                                  "Rendered connection groups must remain findable. Found: \(text)")
                 }
                 if name == "control-center-responses.png" || name == "copy-actions.png" {
+                  if name == "control-center-responses.png" {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+                    precondition(text.contains("Tools & thinking") && text.contains("Thinking"),
+                                 "Chat must show distinct tool/thinking entries without first expanding the activity panel. Found: \(text)")
+                  }
                   let examples = name == "copy-actions.png" ? copyExamples :
                     [("Copy", "function closeMenu(trigger: HTMLElement) {\n  setOpen(false);\n  trigger.focus();\n}\n")]
                   for (label, expectedCopy) in examples {
                     let recognition = VNRecognizeTextRequest()
                     recognition.recognitionLevel = .accurate
                     try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
-                    guard let copy = recognition.results?.first(where: { $0.topCandidates(1).first?.string.hasSuffix(label) == true }) else {
+                    guard var copy = recognition.results?.first(where: { $0.topCandidates(1).first?.string.hasSuffix(label) == true }) else {
                         preconditionFailure("A visible \(label) action is required")
                     }
+                    if name == "agent-hierarchy.png" {
+                        window.makeKeyAndOrderFront(nil)
+                        NSApp.activate(ignoringOtherApps: true)
+                        pumpNativeEvents()
+                        func hierarchyClick(_ label: String) throws {
+                            let image = capture.bitmapImageRepForCachingDisplay(in: capture.bounds)!
+                            capture.cacheDisplay(in: capture.bounds, to: image)
+                            let recognition = VNRecognizeTextRequest()
+                            recognition.recognitionLevel = .accurate
+                            try VNImageRequestHandler(cgImage: image.cgImage!, options: [:]).perform([recognition])
+                            guard let item = recognition.results?.first(where: { $0.topCandidates(1).first?.string == label }) else {
+                                preconditionFailure("The hierarchy must display \(label)")
+                            }
+                            let point = capture.convert(NSPoint(x: item.boundingBox.midX * capture.bounds.width,
+                                y: (capture.isFlipped ? 1 - item.boundingBox.midY : item.boundingBox.midY) * capture.bounds.height), to: nil)
+                            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                                window.sendEvent(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                    context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!)
+                                pumpNativeEvents()
+                            }
+                            for _ in 0..<8 { RunLoop.current.run(until: Date().addingTimeInterval(0.025)) }
+                        }
+                        try hierarchyClick("Design lead")
+                        precondition(hierarchySelection == "design-lead", "Hierarchy nodes must select their exact agent, never the main or a sibling")
+                        try hierarchyClick("Stopped helper")
+                        precondition(hierarchySelection == "design-lead", "Stopped hierarchy nodes must not be interactive")
+                        try hierarchyClick("Hide 1 branch")
+                        try hierarchyClick("Show 1 branch")
+                        window.orderOut(nil)
+                    }
                     let pasteboard = NSPasteboard.general
+                    let originalText = pasteboard.string(forType: .string)
                     let original = (pasteboard.pasteboardItems ?? []).map { item in
                         let saved = NSPasteboardItem()
                         for type in item.types {
@@ -1034,6 +1081,14 @@ import Vision
                     }
                     precondition(NSApp.isActive && window.isKeyWindow,
                                  "Pointer interaction requires an active fixture window (app: \(NSApp.isActive), key: \(window.isKeyWindow))")
+                    capture.layoutSubtreeIfNeeded()
+                    let activeBitmap = capture.bitmapImageRepForCachingDisplay(in: capture.bounds)!
+                    capture.cacheDisplay(in: capture.bounds, to: activeBitmap)
+                    try VNImageRequestHandler(cgImage: activeBitmap.cgImage!, options: [:]).perform([recognition])
+                    guard let activeCopy = recognition.results?.first(where: { $0.topCandidates(1).first?.string.hasSuffix(label) == true }) else {
+                        preconditionFailure("The \(label) action must remain visible after activating the window")
+                    }
+                    copy = activeCopy
                     let location = capture.convert(NSPoint(x: copy.boundingBox.midX * capture.bounds.width,
                         y: (capture.isFlipped ? 1 - copy.boundingBox.midY : copy.boundingBox.midY) * capture.bounds.height), to: nil)
                     for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
@@ -1047,14 +1102,16 @@ import Vision
                     pasteboard.clearContents()
                     precondition(original.isEmpty || pasteboard.writeObjects(original), "The clipboard fixture must restore the previous contents")
                     if !wasVisible { window.orderOut(nil) }
-                    precondition(copiedCode == expectedCopy, "\(label) must preserve the entire supplied text exactly")
+                    precondition(copiedCode == expectedCopy, "\(label) must preserve the entire supplied text exactly (clipboard unchanged: \(copiedCode == originalText))")
                   }
                 }
                 if name == "control-center-responses.png" {
                     let recognition = VNRecognizeTextRequest()
                     recognition.recognitionLevel = .accurate
                     try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
-                    let worker = recognition.results!.first { $0.topCandidates(1).first?.string == "Code explorer" }!
+                    guard let worker = recognition.results?.first(where: {
+                        $0.topCandidates(1).first?.string.hasPrefix("Code explorer") == true
+                    }) else { preconditionFailure("The clickable Code explorer row must remain visible") }
                     window.makeKeyAndOrderFront(nil)
                     NSApp.activate(ignoringOtherApps: true)
                     pumpNativeEvents()
@@ -1109,6 +1166,21 @@ import Vision
             }.font(WorkspaceType.text(13)).foregroundStyle(Palette.ink).padding(20).background(Palette.surface)
             try capture(presenceLineup, width: 860, height: 235, name: "agent-presence-lineup.png")
             try capture(presenceLineup, width: 860, height: 235, name: "agent-presence-lineup-dark.png", appearance: .darkAqua)
+            var hierarchySession = visual.selected!
+            hierarchySession.requests = []
+            hierarchySession.team = try JSONDecoder().decode(SubagentTeam.self, from: Data("""
+            {"agents":[
+              {"id":"design-lead","name":"Design lead","task":"Review the interface","status":"running","parentKnown":true},
+              {"id":"nested-reviewer","name":"Nested reviewer","task":"Check keyboard access","status":"idle","parentKnown":true,"parentAgentID":"design-lead"},
+              {"id":"stopped-helper","name":"Stopped helper","task":"Retained briefly after cancellation","status":"cancelled","parentKnown":true}
+            ],"runningCount":1,"idleCount":1,"truncated":false}
+            """.utf8))
+            let hierarchyView = AgentHierarchyView(store: visual, session: hierarchySession, selectedAgentID: nil) {
+                hierarchySelection = $0
+            }.padding(20).background(Palette.surface)
+            try capture(hierarchyView, width: 1000, height: 800, name: "agent-hierarchy.png")
+            try capture(hierarchyView, width: 1000, height: 800, name: "agent-hierarchy-dark.png", appearance: .darkAqua)
+            try capture(hierarchyView, width: 780, height: 480, name: "agent-hierarchy-small.png")
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center.png")
             try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-small.png")
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center-dark.png", appearance: .darkAqua)

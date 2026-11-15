@@ -27,13 +27,14 @@ struct AgentChatView: View {
                 !ownIDs.contains($0.clientTurnID ?? "")
         }
     }
-    private var rows: [ChatRow] {
+    var rows: [ChatRow] {
         (events.map(ChatRow.activity) + commands.map(ChatRow.command)).map { (row: $0, date: $0.date) }.sorted {
             if $0.date == $1.date { return $0.row.id < $1.row.id }
             return $0.date < $1.date
         }.map(\.row)
     }
     var body: some View {
+        let rows = rows
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 if agentID != nil {
@@ -122,7 +123,7 @@ struct AgentChatView: View {
                 confirmAction = nil
             }
         } message: {
-            Text(agentID != nil ? "Cancel this helper's work. The main agent and other helpers will not be stopped. Existing changes are not undone." :
+            Text(agentID != nil ? "Cancel this helper's work. Its descendants may also stop; the main agent and unrelated helpers are not stopped. Existing changes are not undone." :
                 confirmAction == "stop" ? "Stop current work and clear queued main prompts. Existing changes are not undone; external processes may continue." :
                     "Interrupt the main turn and send your message. Queued prompts and background work are preserved.")
         }
@@ -145,7 +146,7 @@ struct AgentChatView: View {
 struct AgentActivityPanel: View {
     let session: SessionRecord
     let agentID: String?
-    @State private var expanded = false
+    @State private var expanded = true
     var reported: [ActivityEntry] {
         Array(session.activity.entries.filter {
             $0.agentID == agentID && ["tool", "reasoning", "status"].contains($0.kind)
@@ -159,16 +160,15 @@ struct AgentActivityPanel: View {
             agent.status == .cancelled ? "Stopped" : agent.status.rawValue.capitalized
     }
     var body: some View {
+        let entries = reported
         DisclosureGroup(isExpanded: $expanded) {
-            if reported.isEmpty {
+            if entries.isEmpty {
                 Text("No tool or thinking activity has been reported for this agent yet.")
                     .font(WorkspaceType.text(12)).foregroundStyle(Palette.muted)
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Up to 12 recent updates. Statuses are last reported, not proof of task success.")
-                            .font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
-                        ForEach(reported.reversed()) { entry in
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(entries.reversed()) { entry in
                             DisclosureGroup {
                                 ScrollView(.horizontal) {
                                     Text(entry.detail)
@@ -178,32 +178,39 @@ struct AgentActivityPanel: View {
                                 CopyTextButton(text: entry.detail, label: "Copy activity")
                             } label: {
                                 HStack(alignment: .firstTextBaseline) {
-                                    Text(entry.title).font(WorkspaceType.text(12, strong: true)).lineLimit(2)
+                                    Label(entry.kind == "reasoning" ? "Thinking" : entry.kind == "tool" ? "Tool" : "Status",
+                                          systemImage: entry.kind == "reasoning" ? "ellipsis.bubble" :
+                                            entry.kind == "tool" ? "wrench.and.screwdriver" : "info.circle")
+                                        .font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
+                                    Text(entry.title).font(WorkspaceType.text(12, strong: true)).lineLimit(1).help(entry.title)
                                     Spacer(minLength: 6)
                                     Text(entry.status.capitalized).font(WorkspaceType.text(11))
                                         .foregroundStyle(entry.status == "failed" ? Palette.error : Palette.muted)
                                 }
                             }
                         }
-                    }.padding(.vertical, 8)
-                }.frame(height: 160)
+                    }.padding(.vertical, 4)
+                }.frame(height: min(72, max(36, CGFloat(entries.count) * 28 + 8))).scrollIndicators(.visible)
             }
         } label: {
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
-                    Label("Reported activity", systemImage: "wrench.and.screwdriver")
+                    Label("Tools & thinking", systemImage: "wrench.and.screwdriver")
                         .font(WorkspaceType.text(12, strong: true))
+                        .help("Up to 12 agent-published updates. Reported statuses are not proof of task success.")
                     Spacer(minLength: 4)
                     Text(state).font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
                 }
-                Text(reported.last?.title ?? "Waiting for an activity update")
-                    .font(WorkspaceType.text(12)).foregroundStyle(Palette.muted).lineLimit(1)
+                if !expanded {
+                    Text(entries.last?.title ?? "Waiting for an activity update")
+                        .font(WorkspaceType.text(12)).foregroundStyle(Palette.muted).lineLimit(1)
+                }
             }
         }.padding(10).background(Palette.background, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
-private enum ChatRow: Identifiable, Equatable {
+enum ChatRow: Identifiable, Equatable {
     case activity(ActivityEntry), command(ControlReceipt)
     var id: String {
         switch self {
@@ -215,9 +222,8 @@ private enum ChatRow: Identifiable, Equatable {
         switch self {
         case .command(let receipt): return receipt.createdAt
         case .activity(let entry):
-            let parser = ISO8601DateFormatter()
-            parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            return parser.date(from: entry.timestamp) ?? ISO8601DateFormatter().date(from: entry.timestamp) ?? .distantPast
+            return (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(entry.timestamp)) ??
+                (try? Date.ISO8601FormatStyle().parse(entry.timestamp)) ?? .distantPast
         }
     }
     var copyText: String {

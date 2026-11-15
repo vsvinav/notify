@@ -10,12 +10,19 @@ func reorderedSessionIDs(_ ids: [String], moving source: String, over target: St
     return result
 }
 
+func sessionMoveTarget(_ id: String, in group: [String], offset: Int) -> String? {
+    guard offset == -1 || offset == 1, let index = group.firstIndex(of: id),
+          group.indices.contains(index + offset) else { return nil }
+    return group[index + offset]
+}
+
 struct WorkOverview: View {
     @ObservedObject var store: Store
     @State private var filter = "Live"
     @State private var search = ""
     @State private var order: [String] = []
     @State private var showDisconnected = false
+    @State private var dropTargetID: String?
     private var connected: [SessionRecord] { visible.filter { $0.connected && !$0.needsSetup } }
     private var disconnected: [SessionRecord] { visible.filter { !$0.connected || $0.needsSetup } }
     private var visible: [SessionRecord] {
@@ -143,25 +150,30 @@ struct WorkOverview: View {
     private func sessionRows(_ records: [SessionRecord]) -> some View {
         LazyVStack(spacing: 5) {
             ForEach(records) { session in
-                Button { store.select(session.id) } label: { WorkRow(store: store, session: session) }
+                Button { store.select(session.id) } label: {
+                    WorkRow(store: store, session: session, isDropTarget: dropTargetID == session.id)
+                }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(store.selectedID == session.id ? .isSelected : [])
+                    .accessibilityHint("Drag to reorder within this group, or use the Move up and Move down actions.")
                     .draggable(session.id) {
                         Text(session.name).font(WorkspaceType.text(14, strong: true))
                             .padding(12).background(Palette.raised).foregroundStyle(Palette.ink)
                     }
                     .dropDestination(for: String.self) { ids, _ in
+                        dropTargetID = nil
                         guard ids.count == 1, let source = ids.first else { return false }
                         return moveSession(source, over: session.id, within: records)
+                    } isTargeted: { targeted in
+                        if targeted { dropTargetID = session.id }
+                        else if dropTargetID == session.id { dropTargetID = nil }
                     }
-                    .accessibilityAction(named: "Move up") {
-                        if let index = records.firstIndex(where: { $0.id == session.id }), index > 0 {
-                            _ = moveSession(session.id, over: records[index - 1].id, within: records)
+                    .accessibilityActions {
+                        if let target = sessionMoveTarget(session.id, in: records.map(\.id), offset: -1) {
+                            Button("Move up") { _ = moveSession(session.id, over: target, within: records) }
                         }
-                    }
-                    .accessibilityAction(named: "Move down") {
-                        if let index = records.firstIndex(where: { $0.id == session.id }), index + 1 < records.count {
-                            _ = moveSession(session.id, over: records[index + 1].id, within: records)
+                        if let target = sessionMoveTarget(session.id, in: records.map(\.id), offset: 1) {
+                            Button("Move down") { _ = moveSession(session.id, over: target, within: records) }
                         }
                     }
             }
@@ -193,6 +205,7 @@ struct WorkOverview: View {
 private struct WorkRow: View {
     @ObservedObject var store: Store
     let session: SessionRecord
+    let isDropTarget: Bool
     @State private var hovering = false
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -221,12 +234,26 @@ private struct WorkRow: View {
                     }
                 }
                 Spacer(minLength: 0)
-                Image(systemName: hovering ? "line.3.horizontal" : store.selectedID == session.id ? "chevron.right" : AgentPresence(session: session).symbol)
-                    .font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.accent)
-                    .accessibilityLabel(AgentPresence(session: session).title)
+                VStack(spacing: 12) {
+                    Image(systemName: store.selectedID == session.id ? "chevron.right" : AgentPresence(session: session).symbol)
+                        .font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.accent)
+                        .accessibilityLabel(AgentPresence(session: session).title)
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(hovering || isDropTarget ? Palette.accent : Palette.muted)
+                        .help("Drag to reorder within this group")
+                        .accessibilityHidden(true)
+                }
         }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
             .foregroundStyle(Palette.ink)
-            .background(store.selectedID == session.id ? Palette.raised : .clear, in: RoundedRectangle(cornerRadius: 8))
+            .background(store.selectedID == session.id ? Palette.raised :
+                            hovering || isDropTarget ? Palette.raised.opacity(0.5) : .clear,
+                        in: RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(isDropTarget ? Palette.accent : .clear, lineWidth: 2)
+                    .allowsHitTesting(false).accessibilityHidden(true)
+            }
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
             .help("\(session.name)\n\(agentName(session.agent)) · \(session.cwd)\n\(session.workHeadline)\nDrag to reorder within this group.")
@@ -264,8 +291,8 @@ private struct WorkDetail: View {
                         Picker("Session view", selection: $tab) {
                             Text("Chat").tag("Chat")
                             Text(session.requests.isEmpty ? "Overview" : "Decision").tag("Decision")
-                            Text("Controls").tag("Controls")
                             Text("Settings").tag("Session")
+                            Text("Hierarchy").tag("Hierarchy")
                         }.pickerStyle(.segmented).labelsHidden()
                         if tab != "Decision", session.connected, !session.requests.isEmpty {
                             HStack {
@@ -279,6 +306,7 @@ private struct WorkDetail: View {
                         }
                         content
                     }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    if tab != "Hierarchy" {
                     Divider()
                     VStack(alignment: .leading, spacing: 16) {
                         SubagentTeamView(store: store, session: session, compact: tab != "Chat", selectedAgentID: chatAgentID) {
@@ -294,6 +322,7 @@ private struct WorkDetail: View {
                         }
                     }.frame(width: min(310, max(252, geometry.size.width * 0.36)),
                             height: geometry.size.height, alignment: .topLeading)
+                    }
                 }
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -301,14 +330,10 @@ private struct WorkDetail: View {
     @ViewBuilder private var content: some View {
             if tab == "Chat" {
                 AgentChatView(store: store, session: session, agentID: chatAgentID).id(chatAgentID)
-            } else if tab == "Controls" {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("Give your agent direction.").font(WorkspaceType.text(25, strong: true))
-                    Text("Queue the next step, redirect the current turn, or stop its work. Your terminal stays open.")
-                        .font(WorkspaceType.text(14)).foregroundStyle(Palette.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 8)
-                    SteeringEditor(store: store, session: session, compact: true).id(session.id)
+            } else if tab == "Hierarchy" {
+                AgentHierarchyView(store: store, session: session, selectedAgentID: chatAgentID) {
+                    chatAgentID = $0
+                    tab = "Chat"
                 }
             } else if tab == "Session" {
                 ScrollView {
@@ -357,9 +382,9 @@ private struct WorkDetail: View {
                     Text("Nothing waiting on you.").font(WorkspaceType.text(25, strong: true))
                     Text(session.workHeadline).font(WorkspaceType.text(15, strong: true)).textSelection(.enabled)
                     Text(session.baseState == "ready" ? "The agent is idle. This does not confirm that its task or tests succeeded." :
-                            "Live activity is beside you. Use Controls to give the agent direction.")
+                            "Live activity is beside you. Use Chat to give the agent direction.")
                         .font(.system(size: 14)).foregroundStyle(Palette.muted)
-                    Button("Send instruction") { tab = "Controls" }
+                    Button("Send instruction") { chatAgentID = nil; tab = "Chat" }
                     Spacer()
                 }
             }
