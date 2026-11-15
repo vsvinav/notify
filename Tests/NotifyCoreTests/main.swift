@@ -727,6 +727,40 @@ do {
     preconditionFailure("Disconnected sessions must not create helpers")
 } catch ProtocolError.invalid {}
 print("Native subagent management checks passed")
+var cleanupSession = SessionRecord(id: "idle-cleanup", agent: "copilot", cwd: "/fixture")
+var cleanup = SteeringWorkspace()
+check(cleanup.unavailableReason(session: cleanupSession, agentID: nil, action: "stop_idle_subagents") != nil,
+      "Bulk cleanup requires a separately advertised runtime capability")
+cleanupSession.canCleanupIdleSubagents = true
+cleanupSession.team = try JSONDecoder().decode(SubagentTeam.self,
+    from: Data(#"{"agents":[],"runningCount":0,"idleCount":0,"truncated":false}"#.utf8))
+cleanup.setDraft("Keep the unsent main message", sessionID: cleanupSession.id)
+let cleanupID = try cleanup.begin(session: cleanupSession, action: "stop_idle_subagents")
+check(cleanup.receipt(sessionID: cleanupSession.id, commandID: cleanupID)?.message == "" &&
+      cleanup.receipt(sessionID: cleanupSession.id, commandID: cleanupID)?.isManagement == true,
+      "Cleanup must carry no message and must not appear as main-agent chat")
+cleanup.update(sessionID: cleanupSession.id, commandID: cleanupID, status: "stopped", text: "Wrong main-stop acknowledgment")
+check(cleanup.receipt(sessionID: cleanupSession.id, commandID: cleanupID)?.status == "sending",
+      "Main-stop acknowledgments must not complete a cleanup")
+cleanup.update(sessionID: cleanupSession.id, commandID: cleanupID, status: "cleaned", text: "Stopped 2; skipped 1")
+check(cleanup.receipt(sessionID: cleanupSession.id, commandID: cleanupID)?.status == "cleaned" &&
+      cleanup.draft(sessionID: cleanupSession.id) == "Keep the unsent main message" && !cleanupSession.stopped,
+      "Cleanup must preserve the main agent and its draft")
+for target in ["helper"] {
+    do {
+        _ = try cleanup.begin(session: cleanupSession, action: "stop_idle_subagents", agentID: target)
+        preconditionFailure("Bulk cleanup must not accept an alternate target")
+    } catch ProtocolError.invalid {}
+}
+cleanupSession.connected = false
+check(cleanup.unavailableReason(session: cleanupSession, agentID: nil, action: "stop_idle_subagents") != nil,
+      "Disconnected sessions must never accept cleanup")
+var unsupportedCleanup = SessionRecord(id: "unsupported-cleanup", agent: "claude", cwd: "/fixture")
+unsupportedCleanup.canCleanupIdleSubagents = true
+unsupportedCleanup.team = cleanupSession.team
+check(cleanup.unavailableReason(session: unsupportedCleanup, agentID: nil, action: "stop_idle_subagents") != nil,
+      "Original Claude hooks cannot advertise a working cleanup control")
+print("Native idle-cleanup correlation checks passed")
 
 var managementCatalog = SessionRegistry()
 managementCatalog.register(id: "catalog-session", agent: "copilot", cwd: "/fixture")

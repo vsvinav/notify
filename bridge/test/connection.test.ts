@@ -1,5 +1,65 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createServer, type Socket } from "node:net";
+import { once } from "node:events";
+import { writeFile, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
+import { Bridge } from "../dist/connection.js";
+import { attachSubagents } from "../dist/subagents.js";
+
+test("transport disconnect resets idle observation and reconnect cannot reuse an old age", { timeout: 5000 }, async t => {
+  let now = 0, peer: Socket | undefined;
+  t.mock.method(performance, "now", () => now);
+  const config = resolve(`.connection-fixture-${randomUUID()}.json`);
+  const server = createServer(socket => {
+    peer = socket;
+    socket.once("data", () => socket.write(JSON.stringify({ type: "welcome", sessionID: "fixture" }) + "\n"));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  await writeFile(config, JSON.stringify({ port: address.port, token: "synthetic" }), { mode: 0o600 });
+  const bridge = new Bridge("copilot", process.cwd(), config, "fixture", false);
+  let listener: (event: any) => void = () => {};
+  let reads = 0;
+  const session = {
+    rpc: { tasks: {
+      list: async () => { reads++; return { tasks: [{
+        type: "agent", id: "child", toolCallId: "tool-child", status: "idle",
+        startedAt: "2020-01-01", agentType: "task", description: "fixture"
+      }] }; },
+      cancel: async () => { throw new Error("No real cancellation in this fixture"); }
+    } },
+    on: (callback: typeof listener) => { listener = callback; return () => {}; }
+  };
+  const tracker = attachSubagents(session as any, bridge);
+  const settle = async (condition: () => boolean) => {
+    for (let i = 0; i < 100 && !condition(); i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.ok(condition());
+  };
+  try {
+    await bridge.start();
+    await settle(() => reads > 0);
+    listener({ type: "subagent.started", data: { toolCallId: "tool-child" } });
+    await tracker.refresh();
+    assert.equal(tracker.cleanupAvailable, true);
+    now = 600001;
+    peer!.destroy();
+    await settle(() => !tracker.cleanupAvailable);
+    assert.equal((await tracker.stopIdleSubagents()).cancelled, 0);
+    now = 1200002;
+    const previousReads = reads;
+    await bridge.start();
+    await settle(() => reads > previousReads);
+    assert.equal((await tracker.stopIdleSubagents()).cancelled, 0, "Reconnect starts a fresh idle interval");
+  } finally {
+    tracker.stop(); bridge.stop(); peer?.destroy();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await rm(config, { force: true });
+  }
+});
 
 test("pending requests reject stale replies and resolve only once", async () => {
   const { PendingRequests } = await import("../src/pending.ts");

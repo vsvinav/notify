@@ -258,6 +258,18 @@ Click a subagent in **Your team** to select that helper. Its composer has its ow
 
 The larger main agent wears a hat. Helper chats use a mini portrait, the helper's name and a tinted **Subagent chat** header, with the selected helper highlighted in the team. **Stop main** and **Stop subagent** are filled red buttons and still require confirmation.
 
+### Stopping idle subagents
+
+Choose **Stop idle >10 min** in the Control Center sidebar. Review the notice, then choose **Stop idle subagents**. This is a manual cleanup across **all connected supported sessions**, not just the selected chat. It never runs on a schedule.
+
+Copilot must load the updated Notify extension. Idle observation starts when the extension connects; an old creation date does not prove that a helper has been idle. New activity resets that observation. Helpers must have been continuously observed idle for **more than ten minutes**. Missing timing or unsafe/unknown ancestry is skipped. Claude hooks cannot stop subagents, so Claude sessions are explicitly skipped.
+
+Before stopping each helper, Notify rechecks the runtime and protects main agents and descendants that are active or not eligible. The runtime does not offer an atomic “cancel only if still idle” operation, so activity can still change after that final check. Existing edits and project files are not deleted.
+
+Results appear separately for each session, including skipped, failed and uncertain outcomes. A large cleanup may exceed the acknowledgment timeout: **Unknown** does not mean nothing happened. Check the original session rather than immediately retrying; a late acknowledgment can still update the result. Busy sessions are skipped rather than interrupting an existing control.
+
+Long chat replies render their blocks as you scroll instead of laying out the entire reply at once. This reduces work on the UI thread shared with notifications; it does not require killing idle helpers.
+
 Working agents visibly type; idle agents occasionally blink or glance. An acknowledged stop has a still pose. Motion pauses when the window is hidden or Reduce Motion is enabled. An idle or finished response does not mean the whole task succeeded.
 
 Chat shows responses observed while Notify is connected and your messages sent from the app. It is not a complete historical transcript; internal helper prompts are omitted. **Tools & thinking** above the conversation opens with separate tool, thinking and status entries. Scroll through up to 12 recent updates; expand an individual entry for its available details and **Copy activity**. You can collapse the panel to give the conversation more room. No hidden reasoning is inferred.

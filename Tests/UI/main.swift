@@ -11,6 +11,14 @@ import Vision
         NSApp.setActivationPolicy(.accessory)
         NSApp.appearance = NSAppearance(named: .aqua)
         NSApp.finishLaunching()
+        if CommandLine.arguments.contains("--idle-cleanup") {
+            try IdleCleanupChecks.run()
+            return
+        }
+        if CommandLine.arguments.contains("--chat-performance") {
+            try AgentPerformanceChecks.runChat()
+            return
+        }
         if CommandLine.arguments.contains("--claude-parity") {
             try ClaudeNativeChecks.run()
             return
@@ -24,6 +32,7 @@ import Vision
             return
         }
         ResponseRenderingChecks.run()
+        try IdleCleanupChecks.run()
         SessionReorderingChecks.run()
         let plist = try PropertyListSerialization.propertyList(from: Data(contentsOf: URL(fileURLWithPath: "resources/Info.plist")), format: nil) as! [String: Any]
         precondition(plist["LSUIElement"] as? Bool != true, "Notify must be a normal Dock application, not a hidden menu-bar agent")
@@ -832,7 +841,7 @@ import Vision
                 try receive(["type": "metadata", "sessionID": id, "title": title])
                 try receive(["type": "capabilities", "sessionID": id, "activityFeed": true, "steering": true, "sessionAutoYes": true,
                              "subagentChat": true, "subagentStop": true,
-                             "subagentCreate": true, "subagentRemove": true, "subagentTypes": ["general-purpose", "explore"],
+                             "subagentCreate": true, "subagentRemove": true, "idleSubagentCleanup": true, "subagentTypes": ["general-purpose", "explore"],
                              "subagentModels": ["account-model"]])
                 try receive(["type": "state", "sessionID": id, "state": index > 5 ? "ready" : "working", "text": index > 5 ? "Agent idle" : "Reviewing the requested changes"])
                 try receive(["type": "activity", "sessionID": id, "activity": [
@@ -1646,6 +1655,8 @@ import Vision
             precondition(visual.setupConnectionCount(.copilot) > 0, "Only live bridge sessions count as connected")
             try capture(AgentSetupView(store: visual), width: 960, height: 620, name: "welcome-connected.png")
             visual.setupVisible = false
+            try capture(IdleSubagentCleanupView(store: visual), width: 590, height: 450, name: "idle-cleanup-light.png")
+            try capture(IdleSubagentCleanupView(store: visual), width: 590, height: 450, name: "idle-cleanup-dark.png", appearance: .darkAqua)
             let customOptions = (1...14).map { ["label": "Strategy \($0)", "description": "Review this migration approach"] }
             for (name, questions): (String, [[String: Any]]) in [
                 ("long", [["id": "choice", "text": "Migration approach", "multiple": false, "allowFreeform": true, "options": customOptions]]),

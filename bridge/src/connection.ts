@@ -14,6 +14,7 @@ export class Bridge {
   readonly pending = new PendingRequests();
   onReply: (value: unknown) => boolean | Promise<boolean> = value => this.pending.submit(value);
   onControl?: (value: unknown) => Promise<void>;
+  onConnectionChange?: (connected: boolean) => void;
   private socket?: Socket;
   private timer?: NodeJS.Timeout;
   private stopped = false;
@@ -23,7 +24,7 @@ export class Bridge {
   private sourceSessionID?: string;
   private warned = false;
   private capabilities = { steering: false, sessionAutoYes: false, subagentChat: false, subagentStop: false,
-    subagentCreate: false, subagentRemove: false, subagentTypes: [] as string[], subagentModels: [] as string[] };
+    subagentCreate: false, subagentRemove: false, idleSubagentCleanup: false, subagentTypes: [] as string[], subagentModels: [] as string[] };
   private receipts = new Map<string, { status: string; text: string }>();
   private activities = new Map<string, ActivityEntry>();
   private activityFeed = false;
@@ -66,6 +67,7 @@ export class Bridge {
               welcomed = true;
               socket.setTimeout(0);
               this.warned = false;
+              this.onConnectionChange?.(true);
               this.send({ type: "state", state: this.state, text: this.lastText });
               if (this.title !== undefined) this.send({ type: "metadata", title: this.title, sourceSessionID: this.sourceSessionID });
               this.send({ type: "capabilities", ...this.capabilities, activityFeed: this.activityFeed });
@@ -86,7 +88,10 @@ export class Bridge {
       });
       socket.on("error", error => this.warn(error.message));
       socket.on("close", () => {
-        if (this.socket === socket) this.socket = undefined;
+        if (this.socket === socket) {
+          this.socket = undefined;
+          this.onConnectionChange?.(false);
+        }
         this.warn("App disconnected");
         this.retry();
       });
@@ -113,9 +118,10 @@ export class Bridge {
     }
   }
   setCapabilities(value: { steering: boolean; sessionAutoYes: boolean; subagentChat?: boolean; subagentStop?: boolean;
-    subagentCreate?: boolean; subagentRemove?: boolean; subagentTypes?: string[]; subagentModels?: string[] }): void {
+    subagentCreate?: boolean; subagentRemove?: boolean; idleSubagentCleanup?: boolean; subagentTypes?: string[]; subagentModels?: string[] }): void {
     this.capabilities = { ...value, subagentChat: value.subagentChat === true, subagentStop: value.subagentStop === true,
       subagentCreate: value.subagentCreate === true, subagentRemove: value.subagentRemove === true,
+      idleSubagentCleanup: value.idleSubagentCleanup === true,
       subagentTypes: value.subagentTypes ?? [], subagentModels: value.subagentModels ?? [] };
     this.send({ type: "capabilities", ...this.capabilities, activityFeed: this.activityFeed });
   }
@@ -202,6 +208,7 @@ export class Bridge {
   }
   stop(): void {
     this.stopped = true;
+    this.onConnectionChange?.(false);
     clearTimeout(this.timer);
     this.pending.cancelAll();
     this.socket?.end();

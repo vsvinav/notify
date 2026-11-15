@@ -58,6 +58,8 @@ Agent tiles have subtle raised surfaces and hover/press feedback. **Hierarchy** 
 
 **Add a Copilot subagent:** choose **Add subagent** in the selected session header. Enter its name and instructions, choose a live agent type and model (or **Configured default**), then **Create subagent**. Creation uses your account's model credits and retains runtime permission rules. The same panel has a separate, confirmed **Remove from list** action for ended helpers; it does not stop agents or delete project files. Reload existing Copilot extensions to enable these controls. **Claude Code subagent creation, model selection and removal through Notify are unsupported**, not silently routed through Copilot.
 
+**Clean up idle helpers:** choose **Stop idle >10 min** in the Control Center sidebar, then confirm. This checks all connected supported Copilot sessions, not just the selected one. Only helpers continuously observed idle for more than ten minutes are eligible; unknown ages or unsafe ancestry are skipped. It does not stop main agents or delete work. Each session shows its own result. [Cleanup limits and setup](docs/guide.md#stopping-idle-subagents).
+
 The updated Copilot extension streams partial assistant replies instead of waiting for completion. Reload it explicitly in each existing terminal to receive this change. Messages still queued in the terminal appear when the runtime consumes them.
 
 **Already connected but controls are unavailable?** Reload the Notify extension in that Copilot terminal. Existing Claude terminals and unsupported helpers cannot be messaged through Notify; the app explains when a control is unavailable.

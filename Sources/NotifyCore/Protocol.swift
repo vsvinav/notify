@@ -123,6 +123,7 @@ public struct AgentPacket: Decodable {
     public let subagentStop: Bool?
     public let subagentCreate: Bool?
     public let subagentRemove: Bool?
+    public let idleSubagentCleanup: Bool?
     public let subagentTypes: [String]?
     public let subagentModels: [String]?
 }
@@ -139,6 +140,7 @@ public struct SessionRecord: Identifiable {
     public var canStopSubagents = false
     public var canCreateSubagents = false
     public var canRemoveSubagents = false
+    public var canCleanupIdleSubagents = false
     public var subagentTypes: [String] = []
     public var subagentModels: [String] = []
     public var stopped = false

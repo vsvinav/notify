@@ -23,6 +23,7 @@ struct WorkOverview: View {
     @State private var order: [String] = []
     @State private var showDisconnected = false
     @State private var dropTargetID: String?
+    @State private var showIdleCleanup = false
     private var connected: [SessionRecord] { visible.filter { $0.connected && !$0.needsSetup } }
     private var disconnected: [SessionRecord] { visible.filter { !$0.connected || $0.needsSetup } }
     private var visible: [SessionRecord] {
@@ -92,6 +93,10 @@ struct WorkOverview: View {
                 Button { store.showSetup() } label: {
                     Label("Connect agents", systemImage: "plus")
                 }.buttonStyle(.borderless).font(WorkspaceType.text(13, strong: true))
+                Button { showIdleCleanup = true } label: {
+                    Label("Stop idle >10 min", systemImage: "stop.circle")
+                }.buttonStyle(.borderless).font(WorkspaceType.text(13, strong: true))
+                    .help("Review cleanup across all connected sessions.")
             }.padding(18).frame(width: 232).background(Palette.sidebar)
             Divider()
             VStack(alignment: .leading, spacing: 18) {
@@ -120,6 +125,7 @@ struct WorkOverview: View {
                 }
             }.padding(22).frame(maxWidth: .infinity, maxHeight: .infinity).background(Palette.surface)
         }
+        .sheet(isPresented: $showIdleCleanup) { IdleSubagentCleanupView(store: store) }
         .onAppear {
             updateOrder()
             showDisconnected = connected.isEmpty || store.selected?.connected == false

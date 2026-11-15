@@ -32,7 +32,7 @@ public struct ControlReceipt: Identifiable, Equatable {
     public var agentName: String? = nil
     public var agentType: String? = nil
     public var model: String? = nil
-    public var isManagement: Bool { ["create_subagent", "remove_subagent"].contains(action) }
+    public var isManagement: Bool { ["create_subagent", "remove_subagent", "stop_idle_subagents"].contains(action) }
 }
 
 public struct SteeringWorkspace {
@@ -56,6 +56,12 @@ public struct SteeringWorkspace {
     }
     public func unavailableReason(session: SessionRecord, agentID: String?, action: String = "queue") -> String? {
         guard session.connected else { return "Reconnect this session to send messages." }
+        if action == "stop_idle_subagents" {
+            guard agentID == nil, session.agent == "copilot", session.canCleanupIdleSubagents else {
+                return "Idle cleanup is unavailable. Copilot needs the updated Notify extension; Claude hooks do not support stopping."
+            }
+            return session.team != nil && session.team?.error == nil ? nil : "Wait for a valid team snapshot before cleanup."
+        }
         if action == "create_subagent" {
             return agentID == nil && session.canCreateSubagents && !session.subagentTypes.isEmpty ? nil :
                 "This connection cannot create subagents. Reload its Notify extension to check for support."
@@ -93,16 +99,16 @@ public struct SteeringWorkspace {
             }
             if let model = creation.model, !session.subagentModels.contains(model) { throw ProtocolError.invalid }
         } else if creation != nil { throw ProtocolError.invalid }
-        let emptyMessage = ["stop", "remove_subagent"].contains(action)
+        let emptyMessage = ["stop", "remove_subagent", "stop_idle_subagents"].contains(action)
         let text = phoneText ?? creation?.prompt ?? (emptyMessage ? "" : draft(sessionID: session.id, agentID: agentID))
         guard unavailableReason(session: session, agentID: agentID, action: action) == nil,
-              ["queue", "interrupt", "stop", "create_subagent", "remove_subagent"].contains(action),
+              ["queue", "interrupt", "stop", "create_subagent", "remove_subagent", "stop_idle_subagents"].contains(action),
               !(history[session.id] ?? []).contains(where: { $0.status == "sending" }), text.utf16.count <= 16000,
               emptyMessage || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ProtocolError.invalid }
         // Keep unresolved deliveries so a delayed ACK never lands on a different message.
         var entries = history[session.id] ?? []
         while entries.count >= 100 || entries.reduce(0, { $0 + $1.message.utf8.count }) + text.utf8.count > 524288 {
-            guard let index = entries.firstIndex(where: { ["received", "stopped", "cancelled", "failed", "created", "removed"].contains($0.status) }) else {
+            guard let index = entries.firstIndex(where: { ["received", "stopped", "cancelled", "failed", "created", "removed", "cleaned"].contains($0.status) }) else {
                 throw ProtocolError.oversized
             }
             entries.remove(at: index)
@@ -120,11 +126,12 @@ public struct SteeringWorkspace {
     public mutating func update(sessionID: String, commandID: String, status: String, text: String) {
         guard let index = history[sessionID]?.firstIndex(where: { $0.id == commandID }),
               var receipt = history[sessionID]?[index],
-              ["queued", "received", "stopped", "cancelled", "failed", "unknown", "created", "removed"].contains(status) else { return }
-        if ["received", "stopped", "cancelled", "failed", "created", "removed"].contains(receipt.status) { return }
+              ["queued", "received", "stopped", "cancelled", "failed", "unknown", "created", "removed", "cleaned"].contains(status) else { return }
+        if ["received", "stopped", "cancelled", "failed", "created", "removed", "cleaned"].contains(receipt.status) { return }
         if receipt.isManagement {
-            guard ["failed", "unknown", receipt.action == "create_subagent" ? "created" : "removed"].contains(status) else { return }
-        } else if ["created", "removed"].contains(status) { return }
+            let completed = receipt.action == "create_subagent" ? "created" : receipt.action == "remove_subagent" ? "removed" : "cleaned"
+            guard ["failed", "unknown", completed].contains(status) else { return }
+        } else if ["created", "removed", "cleaned"].contains(status) { return }
         if receipt.action == "stop", ["queued", "received"].contains(status) { return }
         if receipt.action != "stop", status == "stopped" { return }
         receipt.status = status

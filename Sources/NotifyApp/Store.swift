@@ -20,6 +20,14 @@ enum AppearanceMode: String, CaseIterable {
     case system, light, dark
 }
 
+struct IdleCleanupAttempt: Identifiable {
+    let sessionID: String
+    let name: String
+    let commandID: String?
+    let detail: String?
+    var id: String { sessionID }
+}
+
 final class Store: ObservableObject {
     @Published private(set) var registry = SessionRegistry() {
         didSet { mobile.workspaceChanged() }
@@ -322,6 +330,21 @@ final class Store: ObservableObject {
         onAttentionChange?()
     }
     func closeSteering() { steeringSessionID = nil; onAttentionChange?() }
+    func stopIdleSubagents() -> [IdleCleanupAttempt] {
+        sessions.filter(\.connected).map { session in
+            if let reason = steeringWorkspace.unavailableReason(session: session, agentID: nil, action: "stop_idle_subagents") {
+                return IdleCleanupAttempt(sessionID: session.id, name: session.name, commandID: nil, detail: "Skipped: \(reason)")
+            }
+            if (steeringWorkspace.history[session.id] ?? []).contains(where: { $0.status == "sending" }) {
+                return IdleCleanupAttempt(sessionID: session.id, name: session.name, commandID: nil,
+                                          detail: "Skipped: another control is still being delivered.")
+            }
+            let commandID = steer(session.id, action: "stop_idle_subagents")
+            return IdleCleanupAttempt(sessionID: session.id, name: session.name, commandID: commandID,
+                                      detail: commandID == nil ? error ?? "Cleanup could not be dispatched." : nil)
+        }
+    }
+
     @discardableResult
     func steer(_ id: String, action: String, agentID: String? = nil, creation: SubagentCreation? = nil, phoneText: String? = nil) -> String? {
         guard let session = registry.sessions[id] else { error = "This session is no longer available."; return nil }
@@ -333,6 +356,8 @@ final class Store: ObservableObject {
                     try record(session: session, action: "Requested subagent creation: \(creation.name) (\(creation.agentType))", automatic: false)
                 } else if action == "remove_subagent", let agentID {
                     try record(session: session, action: "Requested removal of ended subagent: \(agentID)", automatic: false)
+                } else if action == "stop_idle_subagents" {
+                    try record(session: session, action: "Requested stop of subagents verified idle for more than 10 minutes", automatic: false)
                 }
                 var message: [String: Any] = ["type": "control", "commandID": commandID, "action": action,
                     "text": steeringWorkspace.receipt(sessionID: id, commandID: commandID)?.message ?? ""]
@@ -591,7 +616,8 @@ final class Store: ObservableObject {
             if registry.sessions[packet.sessionID]?.agent == "copilot" {
                 do {
                     try registry.managementCapabilities(packet.sessionID, create: packet.subagentCreate == true,
-                        remove: packet.subagentRemove == true, types: packet.subagentTypes ?? [], models: packet.subagentModels ?? [])
+                        remove: packet.subagentRemove == true, types: packet.subagentTypes ?? [], models: packet.subagentModels ?? [],
+                        idleCleanup: packet.idleSubagentCleanup == true)
                 } catch { localSessionErrors[packet.sessionID] = "Invalid subagent management capabilities; reload the extension." }
             }
             registry.activityCapability(packet.sessionID, enabled: packet.activityFeed == true)

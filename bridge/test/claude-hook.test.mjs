@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer, createConnection } from "node:net";
 import { mkdir, mkdtemp, writeFile, rm, stat, appendFile, readdir } from "node:fs/promises";
-import { resolve, join } from "node:path";
+import { resolve, join, dirname, basename } from "node:path";
 import { once } from "node:events";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 
 const hookScript = resolve(process.env.NOTIFY_CLAUDE_HOOK ?? "dist/claude-hook.js");
 async function until(read, message, timeout = 7000) {
@@ -20,7 +21,7 @@ async function until(read, message, timeout = 7000) {
 }
 
 async function fixture(t) {
-  const home = await mkdtemp(resolve(".ch-"));
+  const home = await mkdtemp(join(tmpdir(), "nch-"));
   const directory = join(home, "Library", "Application Support", "Notify");
   await mkdir(join(directory, "claude"), { recursive: true, mode: 0o700 });
   const frames = [], sockets = new Set(), children = new Set(), daemonPIDs = new Set();
@@ -45,11 +46,11 @@ async function fixture(t) {
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   await writeFile(join(directory, "connection.json"), JSON.stringify({ port: server.address().port, token: "synthetic-only" }), { mode: 0o600 });
   const session = "fixture-session";
-  const transcript = join(home, "transcript.jsonl");
+  const transcript = resolve(home, "transcript.jsonl");
   await writeFile(transcript, "");
   function start(args, input) {
     const child = spawn(process.execPath, [hookScript, ...args], {
-      env: { ...process.env, HOME: home }, stdio: ["pipe", "pipe", "pipe"]
+      env: { ...process.env, HOME: resolve(home) }, stdio: ["pipe", "pipe", "pipe"]
     });
     children.add(child);
     let stdout = "", stderr = "";
@@ -60,10 +61,10 @@ async function fixture(t) {
     return { child, done };
   }
   const event = (name, extra = {}) => ({
-    session_id: session, hook_event_name: name, cwd: home, transcript_path: transcript, ...extra
+    session_id: session, hook_event_name: name, cwd: resolve(home), transcript_path: transcript, ...extra
   });
   const hook = (name, extra) => start([], JSON.stringify(event(name, extra)));
-  const serve = (ownerPID = process.pid) => start(["--serve", session, home, String(ownerPID), transcript]);
+  const serve = (ownerPID = process.pid) => start(["--serve", session, resolve(home), String(ownerPID), transcript]);
   const wait = (predicate, message) => until(() => frames.find(predicate), message);
   const reply = (frame, value) => frame.socket.write(JSON.stringify({
     type: "reply", sessionID: frame.sessionID, requestID: frame.request.id, ...value
@@ -79,7 +80,15 @@ async function fixture(t) {
     await rm(home, { recursive: true, force: true });
   });
   const socketPath = join(directory, "claude", createHash("sha256").update(session).digest("hex").slice(0, 16) + ".sock");
-  return { home, directory, frames, hook, serve, wait, reply, transcript, daemonPIDs, event, socketPath };
+  const connectSocket = () => {
+    const cwd = process.cwd();
+    try {
+      // macOS TMPDIR itself can be long; resolve the test socket before restoring cwd.
+      process.chdir(dirname(socketPath));
+      return createConnection(basename(socketPath));
+    } finally { process.chdir(cwd); }
+  };
+  return { home: resolve(home), directory, frames, hook, serve, wait, reply, transcript, daemonPIDs, event, socketPath, connectSocket };
 }
 
 test("a hook loaded into an existing session attaches on its next event", { timeout: 12000 }, async t => {
@@ -173,7 +182,7 @@ test("transcript follower keeps split UTF-8 lines and reports only public main-t
 test("an approval is not resolved before hook stdout acknowledgement", { timeout: 12000 }, async t => {
   const f = await fixture(t); f.serve();
   await f.wait(x => x.type === "hello", "daemon did not register");
-  const socket = createConnection(f.socketPath);
+  const socket = f.connectSocket();
   t.after(() => socket.destroy());
   await once(socket, "connect");
   socket.write(JSON.stringify(f.event("PermissionRequest", { tool_name: "Read", tool_input: { file_path: "fixture" } })) + "\n");
@@ -208,7 +217,7 @@ test("an oversized or wrong-session hook frame cannot register an actionable per
     JSON.stringify(f.event("PermissionRequest", { session_id: "wrong", tool_name: "Read", tool_input: {} })) + "\n",
     "x".repeat(1_048_577)
   ]) {
-    const socket = createConnection(f.socketPath);
+    const socket = f.connectSocket();
     socket.on("error", () => {}); socket.resume();
     await once(socket, "connect");
     const closed = new Promise(resolve => socket.once("close", resolve));

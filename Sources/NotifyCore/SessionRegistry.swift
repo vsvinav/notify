@@ -135,10 +135,11 @@ public struct SessionRegistry {
         sessions[id]?.stopped = false
         sessions[id]?.workRevision = UUID()
     }
-    public mutating func managementCapabilities(_ id: String, create: Bool, remove: Bool, types: [String], models: [String] = []) throws {
+    public mutating func managementCapabilities(_ id: String, create: Bool, remove: Bool, types: [String], models: [String] = [], idleCleanup: Bool = false) throws {
         guard sessions[id]?.connected == true, ["copilot", "claude"].contains(sessions[id]?.agent ?? "") else { throw ProtocolError.stale }
         sessions[id]?.canCreateSubagents = false
         sessions[id]?.canRemoveSubagents = false
+        sessions[id]?.canCleanupIdleSubagents = false
         sessions[id]?.subagentTypes = []
         sessions[id]?.subagentModels = []
         guard types.count <= 100, Set(types).count == types.count,
@@ -148,6 +149,8 @@ public struct SessionRegistry {
         else { throw ProtocolError.invalid }
         sessions[id]?.canCreateSubagents = create
         sessions[id]?.canRemoveSubagents = remove
+        let cleanupSupported = idleCleanup && sessions[id]?.agent == "copilot"
+        sessions[id]?.canCleanupIdleSubagents = cleanupSupported
         sessions[id]?.subagentTypes = types
         sessions[id]?.subagentModels = models
     }

@@ -348,7 +348,7 @@ struct ActivityRow: View {
                 Text(entry.status == "running" ? "Writing a response…" : "No response text was shared.")
                     .font(WorkspaceType.text(13)).foregroundStyle(Palette.muted)
             } else {
-                VStack(alignment: .leading, spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
                         ResponseBlockView(block: block, isFirst: index == 0)
                             .padding(.top, blockSpacing(blocks, at: index))

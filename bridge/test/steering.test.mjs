@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { attachSubagents } from "../dist/subagents.js";
 
 async function harness(overrides = {}, team) {
   const { attachSteering } = await import("../dist/steering.js");
@@ -22,6 +23,135 @@ async function harness(overrides = {}, team) {
   await attachment.ready;
   return { bridge, session, calls, statuses, errors, attachment, emit: event => listener(event) };
 }
+
+const cleanupCommand = () => ({ commandID: randomUUID(), action: "stop_idle_subagents", text: "" });
+async function cleanupHarness(t) {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  const listeners = new Set(), cancellations = [];
+  const tasks = {
+    list: async () => ({ tasks: ["one", "two"].map(id => ({
+      id, toolCallId: `tool-${id}`, type: "agent", status: "idle", startedAt: "2020-01-01",
+      description: "helper", agentType: "task"
+    })) }),
+    cancel: async ({ id }) => { cancellations.push(id); return { cancelled: true }; }
+  };
+  const session = { rpc: { tasks }, on: callback => { listeners.add(callback); return () => listeners.delete(callback); } };
+  const tracker = attachSubagents(session, { team() {} });
+  const h = await harness(session, tracker);
+  const emit = event => { for (const listener of listeners) listener(event); };
+  for (const id of ["one", "two"]) emit({ type: "subagent.started", data: { toolCallId: `tool-${id}` } });
+  t.after(() => { h.attachment.stop(); tracker.stop(); });
+  return { ...h, tracker, tasks, cancellations, emit, time: value => { now = value; } };
+}
+
+test("cleanup advertises only observed support, uses dedup/busy receipts, and is never main chat", async t => {
+  const h = await cleanupHarness(t);
+  assert.equal(h.bridge.capabilities.idleSubagentCleanup, false);
+  await h.tracker.refresh();
+  assert.equal(h.bridge.capabilities.idleSubagentCleanup, true);
+  h.time(600001);
+  let finish;
+  h.tasks.cancel = ({ id }) => { h.cancellations.push(id); return new Promise(resolve => { finish = resolve; }); };
+  const command = cleanupCommand(), pending = h.bridge.onControl(command);
+  await new Promise(resolve => setImmediate(resolve));
+  await h.bridge.onControl(command);
+  assert.equal(h.statuses.at(-1).status, "sending");
+  await assert.rejects(h.bridge.onControl(cleanupCommand()), /still being delivered/);
+  finish({ cancelled: false });
+  await pending;
+  assert.equal(h.statuses.at(-1).status, "failed");
+  assert.match(h.statuses.at(-1).text, /Cancelled 0; skipped 1; failed 1; uncertain 0/);
+  await h.bridge.onControl(command);
+  assert.equal(h.cancellations.length, 1);
+  await assert.rejects(h.bridge.onControl({ ...command, action: "stop" }), /changed/);
+  h.tasks.cancel = async ({ id }) => { h.cancellations.push(id); return { cancelled: true }; };
+  const next = cleanupCommand();
+  await h.bridge.onControl(next);
+  assert.equal(h.statuses.at(-1).status, "cleaned");
+  h.emit({ type: "user.message", data: { clientTurnId: next.commandID } });
+  assert.equal(h.statuses.at(-1).status, "cleaned");
+  assert.deepEqual(h.calls, [], "No main send/abort");
+});
+
+test("cleanup strictly rejects targeting/text and unsupported providers never fall back to main", async () => {
+  const h = await harness();
+  assert.equal(h.bridge.capabilities.idleSubagentCleanup, false);
+  for (const fields of [{ text: " " }, { text: "stop" }, { agentID: "one" }, { agentName: "helper" },
+    { agentType: "task" }, { model: "model" }]) {
+    await assert.rejects(h.bridge.onControl({ ...cleanupCommand(), ...fields }), /invalid/i);
+  }
+  await h.bridge.onControl(cleanupCommand());
+  assert.equal(h.statuses.at(-1).status, "failed");
+  assert.deepEqual(h.calls, []);
+});
+
+test("partial cleanup keeps explicit counts and does not retry an uncertain cancellation", async t => {
+  const h = await cleanupHarness(t);
+  await h.tracker.refresh();
+  h.time(600001);
+  h.tasks.cancel = async ({ id }) => {
+    h.cancellations.push(id);
+    if (h.cancellations.length === 2) throw new Error("lost ACK");
+    return { cancelled: true };
+  };
+  const command = cleanupCommand();
+  await h.bridge.onControl(command);
+  assert.equal(h.statuses.at(-1).status, "unknown");
+  assert.match(h.statuses.at(-1).text, /Cancelled 1; skipped 0; failed 0; uncertain 1/);
+  await h.bridge.onControl(command);
+  assert.equal(h.cancellations.length, 2);
+});
+
+test("known failure after one cancellation reports partial failure, not cleaned", async t => {
+  const h = await cleanupHarness(t);
+  await h.tracker.refresh();
+  h.time(600001);
+  h.tasks.cancel = async ({ id }) => {
+    h.cancellations.push(id);
+    return { cancelled: h.cancellations.length === 1 };
+  };
+  await h.bridge.onControl(cleanupCommand());
+  assert.equal(h.statuses.at(-1).status, "failed");
+  assert.match(h.statuses.at(-1).text, /Cancelled 1; skipped 0; failed 1; uncertain 0/);
+});
+
+test("zero eligible helpers complete a cleanup without stopping the main or faking stopped state", async t => {
+  const h = await cleanupHarness(t);
+  await h.tracker.refresh();
+  await h.bridge.onControl(cleanupCommand());
+  assert.equal(h.statuses.at(-1).status, "cleaned");
+  assert.match(h.statuses.at(-1).text, /Cancelled 0; skipped 2; failed 0; uncertain 0/);
+  assert.deepEqual(h.cancellations, []);
+  assert.deepEqual(h.calls, []);
+});
+
+test("cleanup detach during live recheck prevents dispatch and revokes capability", async t => {
+  const h = await cleanupHarness(t);
+  await h.tracker.refresh();
+  h.time(600001);
+  const original = h.tasks.list;
+  let finish;
+  h.tasks.list = () => new Promise(resolve => { finish = resolve; });
+  const pending = h.bridge.onControl(cleanupCommand());
+  h.attachment.stop();
+  finish(await original());
+  await pending;
+  assert.equal(h.statuses.at(-1).status, "failed");
+  assert.equal(h.bridge.capabilities.idleSubagentCleanup, false);
+  assert.deepEqual(h.cancellations, []);
+});
+
+test("detach during an empty cleanup evaluation is a failure rather than a completed batch", async t => {
+  const h = await cleanupHarness(t);
+  let finish;
+  h.tasks.list = () => new Promise(resolve => { finish = resolve; });
+  const pending = h.bridge.onControl(cleanupCommand());
+  h.attachment.stop();
+  finish({ tasks: [] });
+  await pending;
+  assert.equal(h.statuses.at(-1).status, "failed");
+});
 
 test("queued steering is accepted once and received only after the matching runtime event", async () => {
   const h = await harness();
