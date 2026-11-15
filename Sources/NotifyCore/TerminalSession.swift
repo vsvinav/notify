@@ -45,6 +45,23 @@ public enum TerminalSession {
         }.value
     }
 
+    public static func resumeClaude(id: String, cwd: String,
+                                    executableURL: URL) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            try requireITerm()
+            guard UUID(uuidString: id) != nil else { throw TerminalSessionError.invalidSession }
+            var isDirectory: ObjCBool = false
+            guard cwd.hasPrefix("/"), !cwd.utf8.contains(0),
+                  FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory),
+                  isDirectory.boolValue else { throw TerminalSessionError.invalidDirectory }
+            guard executableURL.isFileURL, FileManager.default.isExecutableFile(atPath: executableURL.path) else {
+                throw TerminalSessionError.missingExecutable
+            }
+            let command = "cd \(shellQuote(cwd)) && \(shellQuote(executableURL.path)) --resume \(shellQuote(id)); exec /bin/zsh -l"
+            _ = try run("/usr/bin/osascript", ["-e", resumeScript, command])
+        }.value
+    }
+
     static func shellQuote(_ text: String) -> String {
         "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }

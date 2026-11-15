@@ -214,6 +214,28 @@ final class Store: ObservableObject {
             } catch { self.copilotSetupError = "Copilot extension setup did not finish: \(AgentSetup.failureDescription(error))" }
         }
     }
+    func installClaudeHooks() {
+        guard !setupBusy else { return }
+        setupBusy = true
+        setupError = nil
+        let snapshot = setupSnapshot
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.setupBusy = false }
+            guard let snapshot else {
+                self.setupError = "Check installed tools before adding hooks."
+                return
+            }
+            do {
+                try await Task.detached { try AgentSetup.installClaude(snapshot) }.value
+                self.setupInstalled = true
+                self.setupSnapshot = try await Task.detached {
+                    try AgentSetup.inspect(resources: Bundle.main.resourceURL,
+                                           path: snapshot.searchPath)
+                }.value
+            } catch { self.setupError = "Could not install Claude hooks: \(AgentSetup.failureDescription(error))" }
+        }
+    }
     func setColor(_ value: UInt32?, for session: SessionRecord) {
         do { try appearance.set(value, for: session, in: directory) }
         catch { self.error = "Session color could not be saved: \(error.localizedDescription)" }
@@ -231,33 +253,61 @@ final class Store: ObservableObject {
     }
     func openTerminal(_ session: SessionRecord, resume: Bool = false) {
         guard !terminalBusy.contains(session.id), !launching.contains(session.id) else { return }
-        guard session.agent == "copilot" else {
-            localSessionErrors[session.id] = "Exact terminal navigation is currently available for discovered Copilot sessions."
+        guard session.agent == "copilot" || session.agent == "claude" else {
+            localSessionErrors[session.id] = "Terminal navigation is not available for this agent type."
             return
         }
         terminalBusy.insert(session.id)
         localSessionErrors.removeValue(forKey: session.id)
         let rowID = session.id
         let sourceID = session.sourceSessionID ?? session.id
+        let agentType = session.agent
         terminalTasks[session.id] = Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.terminalBusy.remove(session.id); self.terminalTasks.removeValue(forKey: session.id) }
             do {
-                let live = try await Task.detached {
-                    try CopilotDiscovery.sessions(in: TerminalSession.copilotHome.appendingPathComponent("session-state"),
-                                                 livePIDs: CopilotDiscovery.runningPIDs())
-                }.value
-                if let owner = live.first(where: { $0.id == sourceID }) {
-                    try await TerminalSession.focus(pid: owner.pid)
-                } else if resume && session.isSaved {
-                    try await TerminalSession.resume(id: sourceID, cwd: session.cwd)
-                    self.launching.insert(session.id)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
-                        guard let self, self.launching.remove(rowID) != nil else { return }
-                        self.localSessionErrors[rowID] = "iTerm2 opened, but no live owner was detected yet. Check that terminal before launching again."
+                if agentType == "copilot" {
+                    let live = try await Task.detached {
+                        try CopilotDiscovery.sessions(in: TerminalSession.copilotHome.appendingPathComponent("session-state"),
+                                                     livePIDs: CopilotDiscovery.runningPIDs())
+                    }.value
+                    if let owner = live.first(where: { $0.id == sourceID }) {
+                        try await TerminalSession.focus(pid: owner.pid)
+                    } else if resume && session.isSaved {
+                        guard let snapshot = self.setupSnapshot, snapshot.copilot != nil else {
+                            self.localSessionErrors[session.id] = "Copilot CLI not found. Check setup before resuming."
+                            return
+                        }
+                        try await TerminalSession.resume(id: sourceID, cwd: session.cwd,
+                            executableURL: snapshot.copilot!)
+                        self.launching.insert(session.id)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+                            guard let self, self.launching.remove(rowID) != nil else { return }
+                            self.localSessionErrors[rowID] = "iTerm2 opened, but no live owner was detected yet."
+                        }
+                    } else {
+                        self.localSessionErrors[session.id] = "No live Copilot terminal found for this session."
                     }
-                } else {
-                    self.localSessionErrors[session.id] = "This chat has no identifiable live Copilot terminal. Refresh the saved session list before resuming."
+                } else { // claude
+                    let live = try await Task.detached {
+                        try ClaudeDiscovery.sessions(livePIDs: ClaudeDiscovery.runningPIDs())
+                    }.value
+                    if let owner = live.first(where: { $0.id == sourceID }) {
+                        try await TerminalSession.focus(pid: owner.pid)
+                    } else if resume && session.isSaved {
+                        guard let snapshot = self.setupSnapshot, let claude = snapshot.claude else {
+                            self.localSessionErrors[session.id] = "Claude CLI not found. Check setup before resuming."
+                            return
+                        }
+                        try await TerminalSession.resumeClaude(id: sourceID, cwd: session.cwd, executableURL: claude)
+                        self.launching.insert(session.id)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+                            guard let self, self.launching.remove(rowID) != nil else { return }
+                            self.localSessionErrors[rowID] = "iTerm2 opened, but no live Claude session connected yet."
+                        }
+                    } else {
+                        self.localSessionErrors[session.id] = "No live Claude terminal found for this session."
+                    }
                 }
             } catch { self.localSessionErrors[session.id] = error.localizedDescription }
         }
@@ -373,6 +423,54 @@ final class Store: ObservableObject {
             summarizingID = session.id
         } catch { self.error = "Could not start summary: \(error.localizedDescription)" }
     }
+    func summarizeClaude(session: SessionRecord) {
+        guard !descriptionRunner.isRunning else {
+            error = "A summary is already running. Wait for it to finish."
+            return
+        }
+        guard let script = setupSnapshot?.script else {
+            error = "Notify launcher not found. Open an installed build of Notify to summarize."
+            return
+        }
+        // The summarize-claude.ts script takes a transcript path.
+        // Find the transcript: ~/.claude/projects/<*>/<sourceSessionID>.jsonl
+        let sessionID = session.sourceSessionID ?? session.id
+        let home = ClaudeDiscovery.home
+        let projectsDir = home.appendingPathComponent("projects")
+        let manager = FileManager.default
+        var transcriptPath: String?
+        if let dirs = try? manager.contentsOfDirectory(at: projectsDir,
+            includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) {
+            for dir in dirs {
+                let candidate = dir.appendingPathComponent("\(sessionID).jsonl")
+                if manager.fileExists(atPath: candidate.path) {
+                    transcriptPath = candidate.path
+                    break
+                }
+            }
+        }
+        guard let transcriptPath else {
+            error = "Claude session transcript not found for \(sessionID.prefix(8)). The session may not have saved yet."
+            return
+        }
+        let claudeScript = script.deletingLastPathComponent().appendingPathComponent("summarize-claude.js")
+        summarizingID = session.id
+        do {
+            try descriptionRunner.run(sessionID: transcriptPath, script: claudeScript) { [weak self] result in
+                guard let self else { return }
+                self.summarizingID = nil
+                switch result {
+                case .success(let desc):
+                    var updated = self.descriptions
+                    updated[session.id] = desc
+                    self.descriptions = updated
+                    try? DescriptionCache.save(updated, in: self.directory)
+                case .failure(let err):
+                    self.error = "Summary failed: \(err.localizedDescription)"
+                }
+            }
+        } catch { self.error = "Could not start summary: \(error.localizedDescription)" }
+    }
     func stop() {
         mobile.stop()
         for id in automation.activeIDs { disableSessionAutoYes(id, reason: "app closing") }
@@ -416,6 +514,16 @@ final class Store: ObservableObject {
                 }
             } catch {
                 DispatchQueue.main.async { self?.error = "Copilot discovery failed: \(error.localizedDescription)" }
+            }
+            // Claude catalog
+            let claudeLivePIDs = (try? ClaudeDiscovery.runningPIDs()) ?? []
+            let claudeSaved = (try? ClaudeDiscovery.catalog(livePIDs: Set(claudeLivePIDs))) ?? []
+            let claudeRunning = (try? ClaudeDiscovery.sessions(livePIDs: Set(claudeLivePIDs))) ?? []
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.registry.catalogClaude(claudeSaved)
+                self.registry.discoverClaude(claudeRunning)
+                self.onAttentionChange?()
             }
         }
         discoveryTimer = timer
