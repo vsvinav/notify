@@ -111,6 +111,13 @@ export function attachSubagents(session: CopilotSession, bridge: Pick<Bridge, "t
       const item = cancelled.get(id);
       return !!item?.agent && item.expiresAt > Date.now();
     },
+    cancelled(id: string) {
+      if (!id || id.length > 128) return;
+      const existing = cancelled.get(id);
+      if (existing) return; // already tracked with an expiry
+      cancelled.set(id, { expiresAt: Date.now() + 300000 });
+      // agent row will be filled in on the next refresh pass
+    },
     removed(id: string) {
       removed.add(id);
       cancelled.delete(id);

@@ -9,7 +9,7 @@ const boundedText = (value: unknown, limit: number): value is string =>
 const management = (action: unknown) => action === "create_subagent" || action === "remove_subagent";
 
 export function attachSteering(session: CopilotSession, bridge: Bridge,
-  team?: Pick<ReturnType<typeof attachSubagents>, "refresh" | "removed" | "isRetainedCancelled">) {
+  team?: Pick<ReturnType<typeof attachSubagents>, "refresh" | "removed" | "isRetainedCancelled" | "cancelled">) {
   const receipts = new Map<string, Receipt>();
   let stopped = false;
   let busy = false;
@@ -157,6 +157,7 @@ export function attachSteering(session: CopilotSession, bridge: Bridge,
         if (stopped) { status(id, "failed", "Extension detached before dispatch."); return; }
         if (value.action === "stop") {
           const result = await session.rpc.tasks.cancel({ id: agentID });
+          if (result.cancelled) team?.cancelled(agentID!);
           status(id, result.cancelled ? "stopped" : "failed", result.cancelled
             ? "Subagent stop acknowledged. Other agents were not stopped." : "The runtime did not cancel this subagent.");
         } else {
