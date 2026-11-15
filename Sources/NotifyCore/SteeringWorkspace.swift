@@ -28,6 +28,7 @@ public struct ControlReceipt: Identifiable, Equatable {
     public var agentID: String? = nil
     public var createdAt = Date()
     public let workRevision: UUID
+    public var preservesDraft = false
     public var agentName: String? = nil
     public var agentType: String? = nil
     public var model: String? = nil
@@ -38,6 +39,7 @@ public struct SteeringWorkspace {
     public var drafts: [String: String] = [:]
     public private(set) var receipts: [String: ControlReceipt] = [:]
     public private(set) var history: [String: [ControlReceipt]] = [:]
+    public private(set) var truncatedHistory = Set<String>()
     private var childDrafts: [String: [String: String]] = [:]
     public init() {}
 
@@ -83,7 +85,8 @@ public struct SteeringWorkspace {
         }
         return nil
     }
-    public mutating func begin(session: SessionRecord, action: String, agentID: String? = nil, creation: SubagentCreation? = nil) throws -> String {
+    public mutating func begin(session: SessionRecord, action: String, agentID: String? = nil, creation: SubagentCreation? = nil, phoneText: String? = nil) throws -> String {
+        if phoneText != nil && (!["queue", "interrupt", "stop"].contains(action) || creation != nil) { throw ProtocolError.invalid }
         if action == "create_subagent" {
             guard let creation, creation.isValid, session.subagentTypes.contains(creation.agentType), agentID == nil else {
                 throw ProtocolError.invalid
@@ -91,7 +94,7 @@ public struct SteeringWorkspace {
             if let model = creation.model, !session.subagentModels.contains(model) { throw ProtocolError.invalid }
         } else if creation != nil { throw ProtocolError.invalid }
         let emptyMessage = ["stop", "remove_subagent"].contains(action)
-        let text = creation?.prompt ?? (emptyMessage ? "" : draft(sessionID: session.id, agentID: agentID))
+        let text = phoneText ?? creation?.prompt ?? (emptyMessage ? "" : draft(sessionID: session.id, agentID: agentID))
         guard unavailableReason(session: session, agentID: agentID, action: action) == nil,
               ["queue", "interrupt", "stop", "create_subagent", "remove_subagent"].contains(action),
               !(history[session.id] ?? []).contains(where: { $0.status == "sending" }), text.utf16.count <= 16000,
@@ -103,10 +106,11 @@ public struct SteeringWorkspace {
                 throw ProtocolError.oversized
             }
             entries.remove(at: index)
+            truncatedHistory.insert(session.id)
         }
         let id = UUID().uuidString
         let receipt = ControlReceipt(id: id, action: action, message: text, status: "sending", detail: "Delivering to Copilot...",
-                                     agentID: agentID, workRevision: session.workRevision,
+                                     agentID: agentID, workRevision: session.workRevision, preservesDraft: phoneText != nil,
                                      agentName: creation?.name, agentType: creation?.agentType, model: creation?.model)
         entries.append(receipt)
         history[session.id] = entries
@@ -121,11 +125,13 @@ public struct SteeringWorkspace {
         if receipt.isManagement {
             guard ["failed", "unknown", receipt.action == "create_subagent" ? "created" : "removed"].contains(status) else { return }
         } else if ["created", "removed"].contains(status) { return }
+        if receipt.action == "stop", ["queued", "received"].contains(status) { return }
+        if receipt.action != "stop", status == "stopped" { return }
         receipt.status = status
         receipt.detail = String(text.prefix(2000))
         history[sessionID]?[index] = receipt
         if receipts[sessionID]?.id == commandID { receipts[sessionID] = receipt }
-        if ["queued", "received"].contains(status), draft(sessionID: sessionID, agentID: receipt.agentID) == receipt.message {
+        if !receipt.preservesDraft, ["queued", "received"].contains(status), draft(sessionID: sessionID, agentID: receipt.agentID) == receipt.message {
             setDraft("", sessionID: sessionID, agentID: receipt.agentID)
         }
     }

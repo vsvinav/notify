@@ -114,6 +114,7 @@ public struct AgentPacket: Decodable {
     public let steering: Bool?
     public let sessionAutoYes: Bool?
     public let commandID: String?
+    public let agentID: String?
     public let status: String?
     public let activity: ActivityEntry?
     public let activityFeed: Bool?

@@ -54,7 +54,7 @@ iTerm2 must be installed at `/Applications/iTerm.app`; this local build launches
 
 ## Install the download
 
-1. Download **Notify-0.2.0-beta.2-macos-arm64.zip** and **SHA256SUMS.txt** from the [macOS beta release](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.2). With both files in the same folder, run `shasum -a 256 -c SHA256SUMS.txt` there to check the download.
+1. Download **Notify-0.2.0-beta.3-macos-arm64.zip** and **SHA256SUMS.txt** from the [macOS beta release](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.3). With both files in the same folder, run `shasum -a 256 -c SHA256SUMS.txt` there to check the download.
 2. Unzip the archive. In Finder, open your home folder and create **Applications** there if needed. Move **Notify.app** into that folder. When updating, quit Notify first and replace only the app; leave agent terminals running.
 3. Open Notify, choose **Connect agents**, and follow the setup instructions. Install **Node.js 22.18+** and sign in through your Copilot or Claude CLI beforehand. Node and the CLIs are not bundled.
 
@@ -302,7 +302,15 @@ The Mac lists paired phones separately from currently connected browsers and ena
 
 Allow notifications from a direct tap in the installed phone app. iPhone requires iOS 16.4+ and a Home Screen web app for Web Push. Background alerts use Apple/Google/Mozilla push infrastructure and contain only a generic prompt, never agent request content. **Send test alert** requests a generic alert for subscribed devices; a provider accepting it does not prove delivery.
 
-Phone replies use the same exact choices, custom-answer restrictions and permission scopes as the Mac. They require a fresh live request and matching agent acknowledgment. Disconnects, sleep, revocation, changed requests and uncertain replies fail explicitly; replies are not automatically replayed. There is no remote shell, conversation sync or hosted Notify relay.
+Phone replies use the same exact choices, custom-answer restrictions and permission scopes as the Mac. They require a fresh live request and matching agent acknowledgment. Disconnects, sleep, revocation, changed requests and uncertain replies fail explicitly; replies are not automatically replayed. There is no remote shell or hosted Notify relay.
+
+The phone's **Sessions** view shows live session status and on-demand recent conversations. Select the main agent or an exact helper in **Chat with**, or choose its tile in **Hierarchy**. Tools and reported thinking stay separate from chat. Phone drafts do not overwrite Mac drafts; reloading the phone page clears its unsent drafts.
+
+**Send**, main-agent **Interrupt**, and confirmed **Stop** use the connection's supported controls. Stopping a helper can also stop its descendants. Unsupported or ended targets remain read-only, never redirected to another agent. Sending instructions can spend model credits. Queued means accepted into the queue, not completed; uncertainty is explicit and no instruction is automatically retried.
+
+The chart shows running helpers plus one expandable **+N idle subagents** tile. Ended helpers are grouped separately. **Fit** and **100%** support wide/deep teams; missing parent relationships are labeled rather than inferred. Recent activity and team snapshots are bounded, with visible notices when incomplete. Subagent creation/removal and automation controls remain Mac-only.
+
+After updating Notify on the Mac, close and reopen the installed phone web app on the same network. Pairing remains if the HTTPS address is unchanged. Existing older Mac apps can still serve approvals but cannot supply the new workspace.
 
 **Physical iPhone/Android certificate setup and lock-screen delivery remain unverified.** Browser and local HTTPS checks do not replace a real-device test. Local hostname/network configuration and certificate trust must work on your devices; outside the LAN, an alert may arrive but request details and replies are unavailable.
 

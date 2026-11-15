@@ -255,6 +255,8 @@ do {
             try teams.team("parent", snapshot: invalid)
             preconditionFailure("Invalid task snapshots must be rejected")
         } catch ProtocolError.invalid {}
+        check(teams.sessions["parent"]?.team?.error != nil && teams.sessions["parent"]?.team?.agents.isEmpty == true,
+              "Invalid team snapshots must retire stale child targets until a fresh valid team arrives")
     }
     let partial = try team([worker], running: 150, truncated: true)
     check(partial.isValid, "Capped detail must retain the runtime's complete running count")
@@ -589,6 +591,81 @@ do {
     preconditionFailure("Old extensions must not accept child messages")
 } catch ProtocolError.invalid {}
 print("Native per-agent chat correlation checks passed")
+
+var phoneChat = SteeringWorkspace()
+controlled.canChatWithSubagents = true
+phoneChat.setDraft("identical", sessionID: controlled.id)
+phoneChat.setDraft("identical", sessionID: controlled.id, agentID: "worker")
+let phoneMain = try phoneChat.begin(session: controlled, action: "queue", phoneText: "identical")
+phoneChat.update(sessionID: controlled.id, commandID: phoneMain, status: "queued", text: "Queued")
+let phoneChild = try phoneChat.begin(session: controlled, action: "queue", agentID: "worker", phoneText: "identical")
+phoneChat.update(sessionID: controlled.id, commandID: phoneChild, status: "received", text: "Received")
+check(phoneChat.draft(sessionID: controlled.id) == "identical" &&
+      phoneChat.draft(sessionID: controlled.id, agentID: "worker") == "identical", "Phone ACKs preserve even identical native drafts")
+let phoneStop = try phoneChat.begin(session: controlled, action: "stop", phoneText: "")
+phoneChat.update(sessionID: controlled.id, commandID: phoneStop, status: "received", text: "Wrong action ACK")
+check(phoneChat.receipt(sessionID: controlled.id, commandID: phoneStop)?.status == "sending", "Stop requires a genuine stopped ACK")
+
+var phoneWorkspace = MobileWorkspace()
+let phoneTicket = phoneWorkspace.ticket(for: controlled)
+check(phoneWorkspace.ticket(for: controlled) == phoneTicket, "Unchanged workspace retains its generation")
+controlled.workRevision = UUID()
+check(phoneWorkspace.ticket(for: controlled) != phoneTicket, "New runtime work invalidates old phone tickets")
+let capabilityTicket = phoneWorkspace.ticket(for: controlled)
+controlled.canStopSubagents = false
+check(phoneWorkspace.ticket(for: controlled) != capabilityTicket, "Capability changes invalidate pending phone controls")
+let beforeSleep = phoneWorkspace.ticket(for: controlled)
+phoneWorkspace.invalidate()
+check(phoneWorkspace.ticket(for: controlled) != beforeSleep, "Sleep and mobile restarts invalidate phone generations")
+controlled.canStopSubagents = true
+let phoneStopRequest = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+    "id": UUID().uuidString, "sessionID": controlled.id, "ticket": phoneWorkspace.ticket(for: controlled),
+    "action": "stop", "agentID": "worker", "text": ""
+]))
+try phoneWorkspace.reserve(phoneStopRequest, session: controlled)
+do {
+    try phoneWorkspace.reserve(phoneStopRequest, session: controlled)
+    preconditionFailure("Duplicate private phone controls must never dispatch twice")
+} catch ProtocolError.stale {}
+var stoppedPhoneSession = controlled
+stoppedPhoneSession.team = try JSONDecoder().decode(SubagentTeam.self, from: Data("""
+{"agents":[{"id":"worker","name":"Reviewer","task":"Review changes","status":"cancelled"}],"runningCount":0,"idleCount":0,"truncated":false}
+""".utf8))
+check(!phoneWorkspace.accepts(phoneStopRequest, session: stoppedPhoneSession), "Ended targets reject new phone controls")
+check(phoneWorkspace.isCurrent(phoneStopRequest, session: stoppedPhoneSession), "A stop's own ended-team event must not invalidate its exact pending ACK")
+var largePhoneSession = controlled
+for i in 0..<12 {
+    let encodedEntry = try JSONSerialization.data(withJSONObject: [
+        "id": "phone-large-\(i)", "kind": "assistant", "title": "Exact record", "detail": String(repeating: "\u{0001}", count: 40000),
+        "status": "complete", "timestamp": "2026-11-15T00:00:00Z"
+    ])
+    try largePhoneSession.activity.receive(JSONDecoder().decode(ActivityEntry.self, from: encodedEntry))
+}
+let boundedPhoneDetail = try phoneWorkspace.detail(session: largePhoneSession, controls: [])
+let boundedObject = try JSONSerialization.jsonObject(with: boundedPhoneDetail) as! [String: Any]
+check(boundedPhoneDetail.count <= 1_048_576 && boundedObject["truncated"] as? Bool == true, "Encoded phone details drop whole old records below the pipe limit")
+check((boundedObject["activity"] as! [[String: Any]]).allSatisfy { ($0["detail"] as? String)?.count == 40000 }, "Transport must never trim exact transcript field contents")
+var boundedPhoneHistory = SteeringWorkspace()
+for _ in 0..<101 {
+    let id = try boundedPhoneHistory.begin(session: controlled, action: "queue", phoneText: "Synthetic message")
+    boundedPhoneHistory.update(sessionID: controlled.id, commandID: id, status: "received", text: "Received")
+}
+check(boundedPhoneHistory.truncatedHistory.contains(controlled.id), "Evicted old native controls must be explicitly marked truncated on the phone")
+for _ in 0..<255 {
+    let request = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+        "id": UUID().uuidString, "sessionID": controlled.id, "ticket": phoneWorkspace.ticket(for: controlled), "action": "queue", "text": "bounded"
+    ]))
+    try phoneWorkspace.reserve(request, session: controlled)
+}
+let saturatedPhoneRequest = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+    "id": UUID().uuidString, "sessionID": controlled.id, "ticket": phoneWorkspace.ticket(for: controlled), "action": "queue", "text": "bounded"
+]))
+do {
+    try phoneWorkspace.reserve(saturatedPhoneRequest, session: controlled)
+    preconditionFailure("Native phone safety cache must reject new work rather than evict uncertain current-generation IDs")
+} catch ProtocolError.oversized {}
+controlled.workRevision = UUID()
+check(!phoneWorkspace.accepts(saturatedPhoneRequest, session: controlled), "Old generations remain rejected after bounded safety history is retired")
 
 var management = SteeringWorkspace()
 let creation = SubagentCreation(name: "Reviewer", agentType: "general-purpose", prompt: "Review edge cases")

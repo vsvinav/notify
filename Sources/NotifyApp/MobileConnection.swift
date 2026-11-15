@@ -73,6 +73,7 @@ private struct MobileEvent: Decodable {
     let name: String?
     let code: String?
     let message: String?
+    let sessionIDs: [String]?
 }
 
 final class MobileConnection: ObservableObject {
@@ -84,6 +85,8 @@ final class MobileConnection: ObservableObject {
     @Published private(set) var error: String?
     var snapshot: (() -> [MobileItem])?
     var onReply: ((MobileReply) -> Void)?
+    var onControl: ((MobileControl) -> Void)?
+    var workspaceSnapshot: (([String]) throws -> [Data])?
     var onUnavailable: (() -> Void)?
     private let directory: URL
     private let resources: URL?
@@ -96,6 +99,9 @@ final class MobileConnection: ObservableObject {
     private var sleeping = false
     private var observers: [NSObjectProtocol] = []
     private var tickets: [String: (request: AgentRequest, token: String)] = [:]
+    private var watchedSessions: [String] = []
+    private var workspacePending = false
+    private var lastWorkspace: [Data] = []
 
     init(directory: URL, defaults: UserDefaults, resources: URL? = Bundle.main.resourceURL) {
         self.directory = directory
@@ -155,7 +161,7 @@ final class MobileConnection: ObservableObject {
                 guard let self, !self.sleeping else { return }
                 if Date().timeIntervalSince(self.lastEvent) > 25 {
                     self.fail("The phone companion stopped responding. Turn phone connections off and on to retry.")
-                } else { self.publish() }
+                } else { self.publish(heartbeat: true) }
             }
             let center = NSWorkspace.shared.notificationCenter
             observers = [
@@ -187,6 +193,8 @@ final class MobileConnection: ObservableObject {
         input = nil
         if child?.isRunning == true { child?.terminate() }
         tickets.removeAll()
+        watchedSessions = []
+        lastWorkspace = []
         status = nil
         pairings.removeAll()
         starting = false
@@ -223,7 +231,7 @@ final class MobileConnection: ObservableObject {
         send(result)
     }
 
-    func publish() {
+    func publish(heartbeat: Bool = false) {
         guard process?.isRunning == true, status != nil, !sleeping else { return }
         guard let snapshot else { fail("Phone request information is unavailable."); return }
         let items = snapshot()
@@ -236,6 +244,33 @@ final class MobileConnection: ObservableObject {
         }
         do { write(try JSONEncoder().encode(Snapshot(requests: items, total: items.count))) }
         catch { fail("Could not encode phone requests: \(error.localizedDescription)") }
+        if heartbeat { publishWorkspace(heartbeat: true) }
+        else { workspaceChanged() }
+    }
+
+    func workspaceChanged() {
+        guard !workspacePending, process?.isRunning == true, !sleeping else { return }
+        workspacePending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self else { return }
+            self.workspacePending = false
+            self.publishWorkspace()
+        }
+    }
+    private func publishWorkspace(heartbeat: Bool = false) {
+        guard process?.isRunning == true, status != nil, !sleeping, let workspaceSnapshot else { return }
+        do {
+            let messages = try workspaceSnapshot(watchedSessions)
+            for message in messages where heartbeat || !lastWorkspace.contains(message) { write(message) }
+            lastWorkspace = messages
+        } catch { fail("Could not encode phone workspace: \(error.localizedDescription)") }
+    }
+    func completeControl(_ id: String, commandID: String? = nil, status: String, detail: String, error: String? = nil) {
+        var result: [String: Any] = ["type": "control_result", "id": id, "ok": error == nil,
+                                     "status": status, "detail": detail]
+        if let commandID { result["commandID"] = commandID }
+        if let error { result["error"] = error }
+        send(result)
     }
 
     private func send(_ message: [String: Any]) {
@@ -324,6 +359,16 @@ final class MobileConnection: ObservableObject {
                 pairings.append(MobilePairing(id: id, name: name, code: code))
             case "reply":
                 onReply?(try JSONDecoder().decode(MobileReply.self, from: data))
+            case "workspace_watch":
+                guard let ids = event.sessionIDs, ids.count <= 8, Set(ids).count == ids.count,
+                      ids.allSatisfy({ !$0.isEmpty && $0.count <= 128 }) else { throw ProtocolError.invalid }
+                watchedSessions = ids
+                lastWorkspace = []
+                workspaceChanged()
+            case "control":
+                let control = try JSONDecoder().decode(MobileControl.self, from: data)
+                guard control.isValid, !sleeping else { throw ProtocolError.invalid }
+                onControl?(control)
             case "error":
                 error = event.message ?? "The phone companion reported an error."
                 starting = false
