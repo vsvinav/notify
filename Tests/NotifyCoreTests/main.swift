@@ -740,3 +740,36 @@ do {
 check(managementCatalog.sessions["catalog-session"]?.canCreateSubagents == false &&
       managementCatalog.sessions["catalog-session"]?.subagentModels.isEmpty == true,
       "Malformed catalogs must revoke stale creation choices rather than retain unsafe old capabilities")
+
+// ClaudeDiscovery smoke tests
+let claudeHome = FileManager.default.temporaryDirectory.appendingPathComponent("claude-test-\(UUID())")
+try FileManager.default.createDirectory(at: claudeHome, withIntermediateDirectories: true)
+defer { try? FileManager.default.removeItem(at: claudeHome) }
+
+// runningPIDs returns a set (may be empty in CI)
+let claudePIDs = try ClaudeDiscovery.runningPIDs()
+assert(claudePIDs.allSatisfy { $0 > 0 }, "All Claude PIDs must be positive")
+
+// sessions returns empty for empty dir
+let noSessions = try ClaudeDiscovery.sessions(livePIDs: [9999999], home: claudeHome)
+assert(noSessions.isEmpty, "sessions should be empty for empty home")
+
+// catalog returns empty for empty dir
+let noCatalog = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+assert(noCatalog.isEmpty, "catalog should be empty for empty home")
+
+// catalog reads title from summary entry
+let projDir = claudeHome.appendingPathComponent("projects/abc123")
+try FileManager.default.createDirectory(at: projDir, withIntermediateDirectories: true)
+let uuid = UUID().uuidString.lowercased()
+let jsonlURL = projDir.appendingPathComponent("\(uuid).jsonl")
+let lines = [
+  #"{"cwd":"/tmp/myproject"}"#,
+  #"{"type":"summary","customTitle":"My Test Project","aiTitle":"Fallback Title"}"#
+].joined(separator: "\n")
+try lines.write(to: jsonlURL, atomically: true, encoding: .utf8)
+let cat = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+assert(cat.count == 1, "Should find 1 saved session")
+assert(cat[0].title == "My Test Project", "Should use customTitle")
+assert(cat[0].cwd == "/tmp/myproject", "Should read cwd")
+print("ClaudeDiscovery: OK")
