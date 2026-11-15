@@ -289,6 +289,35 @@ do {
         ["id": "old-unknown", "name": "Old unknown", "task": "", "status": "completed"]
     ], running: 1, idle: 1)
     let activeHierarchy = SubagentHierarchy(agents: mixed.agents, hidingInactive: true)
+    let compactIdle = SubagentHierarchy(agents: mixed.agents, hidingInactive: true, hidingIdle: true)
+    check(compactIdle.roots.isEmpty && compactIdle.unlinked.map(\.id) == ["active-child"] &&
+          compactIdle.idle.map(\.id) == ["ready"] && compactIdle.hidden.count == 5,
+          "Idle helpers group separately from ended helpers without hiding running descendants")
+    let mostlyIdle = try team((0..<20).map { index -> [String: Any] in
+        ["id": "helper-\(index)", "name": "Helper \(index)", "task": "",
+         "status": index == 0 ? "running" : "idle", "parentKnown": true]
+    }, running: 1, idle: 19)
+    let idleCollapsed = SubagentHierarchy(agents: mostlyIdle.agents, hidingInactive: true, hidingIdle: true)
+    check(idleCollapsed.roots.map(\.id) == ["helper-0"] && idleCollapsed.idle.count == 19 &&
+          idleCollapsed.children.isEmpty && idleCollapsed.unlinked.isEmpty && idleCollapsed.hidden.isEmpty,
+          "One running and nineteen idle helpers need only main, running helper and one idle group")
+    check(SubagentHierarchy(agents: mostlyIdle.agents, hidingInactive: true).roots.count == 20,
+          "Expanding idle helpers restores every real root")
+    let idleParent = try team([
+        ["id": "parent", "name": "Parent", "task": "", "status": "idle", "parentKnown": true],
+        ["id": "child", "name": "Child", "task": "", "status": "running", "parentKnown": true, "parentAgentID": "parent"]
+    ], running: 1, idle: 1)
+    check(SubagentHierarchy(agents: idleParent.agents, hidingIdle: true).unlinked.map(\.id) == ["child"] &&
+          SubagentHierarchy(agents: idleParent.agents).children["parent"]?.map(\.id) == ["child"],
+          "Collapsing an idle parent never hides its running child or invents a main-agent connection")
+    let resumedIdle = try team([
+        ["id": "parent", "name": "Parent", "task": "", "status": "running", "parentKnown": true],
+        ["id": "child", "name": "Child", "task": "", "status": "running", "parentKnown": true, "parentAgentID": "parent"]
+    ], running: 2, idle: 0)
+    let resumedHierarchy = SubagentHierarchy(agents: resumedIdle.agents, hidingIdle: true)
+    check(resumedHierarchy.idle.isEmpty && resumedHierarchy.roots.map(\.id) == ["parent"] &&
+          resumedHierarchy.children["parent"]?.map(\.id) == ["child"],
+          "Resumed helpers automatically leave the idle group and regain their actual edges")
     check(activeHierarchy.roots.map(\.id) == ["ready"], "Idle helpers remain available in the active org chart")
     check(activeHierarchy.unlinked.map(\.id) == ["active-child"] && activeHierarchy.children.isEmpty,
           "A child of an inactive parent stays visible without a false connection to main")
@@ -560,3 +589,77 @@ do {
     preconditionFailure("Old extensions must not accept child messages")
 } catch ProtocolError.invalid {}
 print("Native per-agent chat correlation checks passed")
+
+var management = SteeringWorkspace()
+let creation = SubagentCreation(name: "Reviewer", agentType: "general-purpose", prompt: "Review edge cases")
+do {
+    _ = try management.begin(session: controlled, action: "create_subagent", creation: creation)
+    preconditionFailure("An old extension must not allow subagent creation")
+} catch ProtocolError.invalid {}
+controlled.canCreateSubagents = true
+controlled.canRemoveSubagents = true
+controlled.subagentTypes = ["general-purpose"]
+management.setDraft("Keep main draft", sessionID: controlled.id)
+let created = try management.begin(session: controlled, action: "create_subagent", creation: creation)
+check(management.receipt(sessionID: controlled.id, commandID: created)?.message == creation.prompt,
+      "Creation must use its own instructions without overwriting main chat")
+do {
+    _ = try management.begin(session: controlled, action: "create_subagent", creation: creation)
+    preconditionFailure("Double-clicking create must not dispatch twice while awaiting acknowledgment")
+} catch ProtocolError.invalid {}
+management.update(sessionID: controlled.id, commandID: created, status: "received", text: "Wrong kind of ACK")
+check(management.receipt(sessionID: controlled.id, commandID: created)?.status == "sending",
+      "A generic chat ACK cannot claim an agent was created")
+management.update(sessionID: controlled.id, commandID: created, status: "created", text: "Created")
+check(management.receipt(sessionID: controlled.id, commandID: created)?.status == "created" &&
+      management.draft(sessionID: controlled.id) == "Keep main draft",
+      "Creation needs its own ACK and must preserve the main draft")
+controlled.subagentModels = ["account-model"]
+let selectedModel = try management.begin(session: controlled, action: "create_subagent",
+    creation: SubagentCreation(name: "Model helper", agentType: "general-purpose", prompt: "Review", model: "account-model"))
+check(management.receipt(sessionID: controlled.id, commandID: selectedModel)?.model == "account-model",
+      "Explicit model selection must survive native command correlation")
+management.update(sessionID: controlled.id, commandID: selectedModel, status: "created", text: "Created")
+for invalid in [
+    SubagentCreation(name: " ", agentType: "general-purpose", prompt: "Review"),
+    SubagentCreation(name: "Reviewer", agentType: "missing", prompt: "Review"),
+    SubagentCreation(name: "Reviewer", agentType: "general-purpose", prompt: " "),
+    SubagentCreation(name: String(repeating: "x", count: 161), agentType: "general-purpose", prompt: "Review"),
+    SubagentCreation(name: "Reviewer", agentType: "general-purpose", prompt: "Review", model: "unadvertised-model")
+] {
+    do {
+        _ = try management.begin(session: controlled, action: "create_subagent", creation: invalid)
+        preconditionFailure("Invalid creation fields must be rejected")
+    } catch ProtocolError.invalid {}
+}
+do {
+    _ = try management.begin(session: controlled, action: "remove_subagent", agentID: "worker")
+    preconditionFailure("An idle helper must be stopped, not removed")
+} catch ProtocolError.invalid {}
+controlled.team = try JSONDecoder().decode(SubagentTeam.self, from: Data("""
+{"agents":[{"id":"worker","name":"Reviewer","task":"Review changes","status":"cancelled"}],"runningCount":0,"idleCount":0,"truncated":false}
+""".utf8))
+let removed = try management.begin(session: controlled, action: "remove_subagent", agentID: "worker")
+management.update(sessionID: controlled.id, commandID: removed, status: "removed", text: "Removed")
+check(management.receipt(sessionID: controlled.id, commandID: removed)?.status == "removed" &&
+      management.receipt(sessionID: controlled.id, commandID: removed)?.agentID == "worker",
+      "Removal ACKs must name the exact ended helper and remain separate from Stop")
+controlled.connected = false
+do {
+    _ = try management.begin(session: controlled, action: "create_subagent", creation: creation)
+    preconditionFailure("Disconnected sessions must not create helpers")
+} catch ProtocolError.invalid {}
+print("Native subagent management checks passed")
+
+var managementCatalog = SessionRegistry()
+managementCatalog.register(id: "catalog-session", agent: "copilot", cwd: "/fixture")
+try managementCatalog.managementCapabilities("catalog-session", create: true, remove: true,
+    types: ["general-purpose"], models: ["account-model"])
+do {
+    try managementCatalog.managementCapabilities("catalog-session", create: true, remove: true,
+        types: ["general-purpose"], models: ["duplicate", "duplicate"])
+    preconditionFailure("A malformed live model catalog must be rejected")
+} catch ProtocolError.invalid {}
+check(managementCatalog.sessions["catalog-session"]?.canCreateSubagents == false &&
+      managementCatalog.sessions["catalog-session"]?.subagentModels.isEmpty == true,
+      "Malformed catalogs must revoke stale creation choices rather than retain unsafe old capabilities")

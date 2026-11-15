@@ -17,6 +17,7 @@ export function attachSubagents(session: CopilotSession, bridge: Pick<Bridge, "t
   let latest: SubagentTeam | undefined;
   const parents = new Map<string, string | null>();
   const cancelled = new Map<string, { expiresAt: number; agent?: SubagentTeam["agents"][number] }>();
+  const removed = new Set<string>();
   const rank = (status: string) => status === "running" ? 0 : status === "idle" ? 1 : status === "cancelled" ? 2 : 3;
   function publish() {
     clearTimeout(expiryTimer);
@@ -51,7 +52,7 @@ export function attachSubagents(session: CopilotSession, bridge: Pick<Bridge, "t
         try {
           const { tasks } = await session.rpc.tasks.list();
           if (stopped) break;
-          const agents = tasks.filter(task => task.type === "agent");
+          const agents = tasks.filter(task => task.type === "agent").filter(task => !removed.has(task.id));
           const runningCount = agents.filter(task => task.status === "running").length;
           const idleCount = agents.filter(task => task.status === "idle").length;
           agents.sort((a, b) => {
@@ -106,9 +107,24 @@ export function attachSubagents(session: CopilotSession, bridge: Pick<Bridge, "t
   });
   return {
     refresh,
+    isRetainedCancelled(id: string) {
+      const item = cancelled.get(id);
+      return !!item?.agent && item.expiresAt > Date.now();
+    },
+    removed(id: string) {
+      removed.add(id);
+      cancelled.delete(id);
+      if (latest) {
+        const row = latest.agents.find(agent => agent.id === id);
+        latest = { ...latest, agents: latest.agents.filter(agent => agent.id !== id),
+          runningCount: latest.runningCount - Number(row?.status === "running"),
+          idleCount: latest.idleCount - Number(row?.status === "idle") };
+      }
+      publish();
+    },
     stop() {
       stopped = true; clearTimeout(timer); clearTimeout(watchdog); clearTimeout(expiryTimer);
-      unsubscribe(); parents.clear(); cancelled.clear(); latest = undefined;
+      unsubscribe(); parents.clear(); cancelled.clear(); removed.clear(); latest = undefined;
     }
   };
 }

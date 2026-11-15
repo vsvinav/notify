@@ -178,6 +178,36 @@ import Vision
             precondition(controlsSent.count == 3 && controlsSent[1]["agentID"] as? String == "worker" &&
                          controlsSent[1]["text"] as? String == "Only the helper" && controlsSent[2]["agentID"] as? String == "worker",
                          "Native messages and stops must preserve the exact child destination over the real socket")
+            automated.steeringWorkspace.setDraft("Keep main conversation draft", sessionID: id)
+            let createdID = automated.steer(id, action: "create_subagent",
+                creation: SubagentCreation(name: "Review helper", agentType: "general-purpose", prompt: "Check edge cases", model: "fixture-model"))!
+            precondition(automated.steer(id, action: "create_subagent",
+                creation: SubagentCreation(name: "Duplicate", agentType: "general-purpose", prompt: "Do not send")) == nil,
+                "A second Create while delivery is pending must not reach the socket")
+            automated.error = nil
+            waitForAutomation { automated.steeringWorkspace.receipt(sessionID: id, commandID: createdID)?.status == "created" &&
+                automated.registry.sessions[id]?.team?.agents.contains(where: { $0.id == "created-helper" }) == true }
+            precondition(automated.steeringWorkspace.draft(sessionID: id) == "Keep main conversation draft")
+            let mainRows = AgentChatView(store: automated, session: automated.registry.sessions[id]!, agentID: nil).rows
+            precondition(!mainRows.contains {
+                if case .command(let receipt) = $0 { return receipt.isManagement }
+                return false
+            }, "Subagent creation instructions must not masquerade as a message sent to the main agent")
+            let removedID = automated.steer(id, action: "remove_subagent", agentID: "created-helper")!
+            waitForAutomation { automated.steeringWorkspace.receipt(sessionID: id, commandID: removedID)?.status == "removed" &&
+                automated.registry.sessions[id]?.team?.agents.contains(where: { $0.id == "created-helper" }) == false }
+            let managementPackets = try String(contentsOf: automated.directory.appendingPathComponent("controls.jsonl"), encoding: .utf8)
+                .split(separator: "\n").map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }
+            precondition(managementPackets.count == 5 && managementPackets[3]["action"] as? String == "create_subagent" &&
+                managementPackets[3]["agentName"] as? String == "Review helper" &&
+                managementPackets[3]["agentType"] as? String == "general-purpose" &&
+                managementPackets[3]["model"] as? String == "fixture-model" &&
+                managementPackets[3]["text"] as? String == "Check edge cases" && managementPackets[3]["agentID"] == nil &&
+                managementPackets[4]["action"] as? String == "remove_subagent" &&
+                managementPackets[4]["agentID"] as? String == "created-helper",
+                "Creation and removal must preserve their exact fields and targets on the native wire")
+            precondition(automated.audit.contains { $0.action.contains("Requested subagent creation") } &&
+                automated.audit.contains { $0.action.contains("Requested removal") }, "Management must be audited before dispatch")
             automated.setSessionDangerousAutoYes(id, enabled: true)
             try sendEvent(["type": "error", "sessionID": id, "text": "Synthetic delivery failure"])
             precondition(automated.automation.activeIDs.isEmpty, "Agent errors must disable dangerous mode")
@@ -185,6 +215,13 @@ import Vision
             let history = automated.directory.appendingPathComponent("history.json")
             try FileManager.default.removeItem(at: history)
             try FileManager.default.createDirectory(at: history, withIntermediateDirectories: false)
+            precondition(automated.steer(id, action: "create_subagent",
+                creation: SubagentCreation(name: "Blocked", agentType: "general-purpose", prompt: "No dispatch")) == nil,
+                "A failed creation audit must prevent dispatch")
+            precondition(automated.steeringWorkspace.history[id]?.last?.status == "failed")
+            let afterAuditFailure = try String(contentsOf: automated.directory.appendingPathComponent("controls.jsonl"), encoding: .utf8)
+                .split(separator: "\n").count
+            precondition(afterAuditFailure == 5, "Audit failure must not create a runtime helper")
             automated.setSessionDangerousAutoYes(id, enabled: false)
             precondition(automated.automation.activeIDs.isEmpty && automated.error != nil, "Off must work even when its audit cannot be saved")
             automated.setSessionDangerousAutoYes(id, enabled: true)
@@ -756,7 +793,9 @@ import Vision
                 try receive(["type": "hello", "sessionID": id, "agent": index == 1 ? "claude" : "copilot", "cwd": "/Projects/\(projects[index])"])
                 try receive(["type": "metadata", "sessionID": id, "title": title])
                 try receive(["type": "capabilities", "sessionID": id, "activityFeed": true, "steering": true, "sessionAutoYes": true,
-                             "subagentChat": true, "subagentStop": true])
+                             "subagentChat": true, "subagentStop": true,
+                             "subagentCreate": true, "subagentRemove": true, "subagentTypes": ["general-purpose", "explore"],
+                             "subagentModels": ["account-model"]])
                 try receive(["type": "state", "sessionID": id, "state": index > 5 ? "ready" : "working", "text": index > 5 ? "Agent idle" : "Reviewing the requested changes"])
                 try receive(["type": "activity", "sessionID": id, "activity": [
                     "id": "tool-\(index)", "kind": "tool", "title": index == 0 ? "Read auth/refresh.ts" : "Inspect project files",
@@ -1013,6 +1052,55 @@ import Vision
                     precondition(text.contains("Connected") && text.contains("Not connected"),
                                  "Rendered connection groups must remain findable. Found: \(text)")
                 }
+                if name.hasPrefix("subagent-management") {
+                    func managementText() throws -> [VNRecognizedTextObservation] {
+                        let image = capture.bitmapImageRepForCachingDisplay(in: capture.bounds)!
+                        capture.cacheDisplay(in: capture.bounds, to: image)
+                        let recognition = VNRecognizeTextRequest()
+                        recognition.recognitionLevel = .accurate
+                        try VNImageRequestHandler(cgImage: image.cgImage!, options: [:]).perform([recognition])
+                        return recognition.results ?? []
+                    }
+                    let rendered = try managementText().compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+                    precondition(rendered.contains("Add subagent") && rendered.contains("Create subagent") &&
+                        rendered.contains("model credits") && rendered.contains("Ended helpers") && rendered.contains("Remove from list"),
+                        "Management must visibly separate paid creation from removing ended helpers: \(rendered)")
+                    if name == "subagent-management.png" {
+                        window.makeKeyAndOrderFront(nil)
+                        NSApp.activate(ignoringOtherApps: true)
+                        pumpNativeEvents()
+                        func clickManagement(_ label: String) throws {
+                            let item = try managementText().first { $0.topCandidates(1).first?.string.contains(label) == true }!
+                            let point = capture.convert(NSPoint(x: item.boundingBox.midX * capture.bounds.width,
+                                y: (capture.isFlipped ? 1 - item.boundingBox.midY : item.boundingBox.midY) * capture.bounds.height), to: nil)
+                            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                                NSApp.postEvent(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                    context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!, atStart: false)
+                            }
+                            pumpNativeEvents()
+                        }
+                        let before = visual.steeringWorkspace.history["visual-0"]?.count ?? 0
+                        try clickManagement("Create subagent")
+                        precondition((visual.steeringWorkspace.history["visual-0"]?.count ?? 0) == before,
+                                     "Empty creation fields must disable Create")
+                        for (placeholder, value) in [("Subagent name", "UI reviewer"), ("Instructions for this subagent", "Review the UI fixture")] {
+                            try clickManagement(placeholder)
+                            guard let editor = window.firstResponder as? NSTextInputClient else {
+                                preconditionFailure("Management fields must accept native text input")
+                            }
+                            editor.insertText(value, replacementRange: NSRange(location: NSNotFound, length: 0))
+                            pumpNativeEvents()
+                        }
+                        try clickManagement("Create subagent")
+                        let receipt = visual.steeringWorkspace.history["visual-0"]?.last
+                        precondition(receipt?.action == "create_subagent" && receipt?.agentName == "UI reviewer" &&
+                            receipt?.message == "Review the UI fixture" && receipt?.agentType == "general-purpose",
+                            "The actual Create button must submit the entered fields, not the main chat draft")
+                        visual.error = nil
+                        window.orderOut(nil)
+                    }
+                }
                 if name.hasPrefix("agent-hierarchy") {
                     let scroll = descendants(capture).compactMap { $0 as? NSScrollView }.first!
                     precondition(scroll.documentView!.frame.width <= scroll.contentSize.width + 1 &&
@@ -1027,9 +1115,14 @@ import Vision
                                      "A large team's inactive block and failure count must stay separate and visible")
                     }
                     precondition(text.contains("Fit") && text.contains("100%"), "Large charts must have fit and readable-size controls")
-                    if !name.contains("large") && !name.contains("deep") {
-                        precondition(text.contains("Design lead") && text.contains("Nested reviewer") && text.contains("1 hidden inactive agent"),
-                                     "The org chart must show active children and a separate inactive block: \(name)")
+                    if name.contains("idle") {
+                        precondition(text.contains("Main agent") && text.contains("Working helper") &&
+                                     text.contains("19 idle subagents") && !text.contains("Resting"),
+                                     "One running and nineteen idle helpers must show only main, working helper and idle-group tiles")
+                    } else if !name.contains("large") && !name.contains("deep") {
+                        precondition(text.contains("Design lead") && !text.contains("Nested reviewer") &&
+                                     text.contains("1 idle subagent") && text.contains("1 hidden inactive agent"),
+                                     "The chart must group idle helpers separately from completed/stopped helpers: \(name)")
                         precondition(!text.contains("Stopped helper"), "Inactive agents must start folded")
                         func bounds(_ label: String) -> CGRect {
                             (recognition.results ?? []).first { $0.topCandidates(1).first?.string == label }!.boundingBox
@@ -1037,10 +1130,10 @@ import Vision
                         let lead = bounds("Design lead"), peer = bounds("Code explorer")
                         precondition(abs(lead.midY - peer.midY) < 0.035 && abs(lead.midX - peer.midX) > 0.1,
                                      "Sibling agents must sit side by side in an org chart, not in a list")
-                        precondition(bounds("Main agent").midY > lead.midY && bounds("Nested reviewer").midY < lead.midY,
+                        precondition(bounds("Main agent").midY > lead.midY,
                                      "Children must be laid out below their actual parent")
                     }
-                    if name == "agent-hierarchy.png" || name == "agent-hierarchy-small.png" {
+                    if name == "agent-hierarchy.png" || name == "agent-hierarchy-small.png" || name == "agent-hierarchy-idle.png" {
                         window.makeKeyAndOrderFront(nil)
                         NSApp.activate(ignoringOtherApps: true)
                         pumpNativeEvents()
@@ -1066,7 +1159,28 @@ import Vision
                             }
                             for _ in 0..<8 { RunLoop.current.run(until: Date().addingTimeInterval(0.025)) }
                         }
-                        if name == "agent-hierarchy-small.png" {
+                        if name == "agent-hierarchy-idle.png" {
+                            try hierarchyClick("19 idle subagents")
+                            try hierarchyClick("100%")
+                            precondition(scroll.documentView!.frame.width > scroll.contentSize.width,
+                                         "Expanded idle agents must be available at readable size by scrolling")
+                            scroll.contentView.scroll(to: NSPoint(x: scroll.documentView!.frame.width - scroll.contentSize.width, y: 0))
+                            scroll.reflectScrolledClipView(scroll.contentView)
+                            pumpNativeEvents()
+                            try hierarchyClick("Resting 19")
+                            precondition(hierarchySelection == "idle-19", "Expanded idle helpers must open their exact chat")
+                            try hierarchyClick("Hide idle")
+                            let collapsedIdle = try hierarchyText()
+                            precondition(!collapsedIdle.contains {
+                                $0.topCandidates(1).first?.string.contains("Resting") == true
+                            }, "Collapsing the idle group must hide its individual helpers")
+                            try hierarchyClick("Fit")
+                            let fittedIdle = try hierarchyText()
+                            precondition(fittedIdle.contains {
+                                $0.topCandidates(1).first?.string.contains("19 idle subagents") == true
+                            }, "The idle group must return after collapsing")
+                        } else if name == "agent-hierarchy-small.png" {
+                            try hierarchyClick("1 idle subagent")
                             try hierarchyClick("100%")
                             precondition(scroll.documentView!.frame.height > scroll.contentSize.height,
                                          "Actual-size zoom must allow scrolling rather than clip a larger chart")
@@ -1076,6 +1190,12 @@ import Vision
                         } else {
                         try hierarchyClick("Design lead")
                         precondition(hierarchySelection == "design-lead", "Hierarchy nodes must select their exact agent")
+                        try hierarchyClick("1 idle subagent")
+                        let expandedText = try hierarchyText()
+                        let expandedLead = expandedText.first { $0.topCandidates(1).first?.string == "Design lead" }!
+                        let expandedChild = expandedText.first { $0.topCandidates(1).first?.string == "Nested reviewer" }!
+                        precondition(expandedChild.boundingBox.midY < expandedLead.boundingBox.midY,
+                                     "Expanded idle descendants must appear below their actual parent")
                         try hierarchyClick("Nested reviewer")
                         precondition(hierarchySelection == "nested-reviewer", "Nested clicks must not select their parent")
                         try hierarchyClick("Hide 1 branch")
@@ -1235,6 +1355,31 @@ import Vision
             try capture(hierarchyView, width: 1000, height: 800, name: "agent-hierarchy-dark.png", appearance: .darkAqua)
             try capture(hierarchyView, width: 780, height: 480, name: "agent-hierarchy-small.png")
             try capture(hierarchyView, width: 780, height: 480, name: "agent-hierarchy-small-dark.png", appearance: .darkAqua)
+            let managementTeam = visual.registry.sessions["visual-0"]!.team!
+            let managementWorkspace = visual.steeringWorkspace
+            try receive(["type": "team", "sessionID": "visual-0", "team": [
+                "agents": [["id": "ended-reviewer", "name": "Ended reviewer", "task": "Finished review", "status": "completed"]],
+                "runningCount": 0, "idleCount": 0, "truncated": false
+            ]])
+            try capture(SubagentManagementView(store: visual, sessionID: "visual-0"), width: 540, height: 620,
+                        name: "subagent-management.png")
+            visual.steeringWorkspace = managementWorkspace
+            try capture(SubagentManagementView(store: visual, sessionID: "visual-0"), width: 540, height: 620,
+                        name: "subagent-management-dark.png", appearance: .darkAqua)
+            try receive(["type": "team", "sessionID": "visual-0", "team":
+                JSONSerialization.jsonObject(with: JSONEncoder().encode(managementTeam))])
+            var idleHierarchy = hierarchySession
+            idleHierarchy.team = try JSONDecoder().decode(SubagentTeam.self, from: JSONSerialization.data(withJSONObject: [
+                "agents": (0..<20).map { index -> [String: Any] in
+                    ["id": "idle-\(index)", "name": index == 0 ? "Working helper" : "Resting \(index)",
+                     "task": "Review the current task", "status": index == 0 ? "running" : "idle", "parentKnown": true]
+                }, "runningCount": 1, "idleCount": 19, "truncated": false
+            ]))
+            let idleHierarchyView = AgentHierarchyView(store: visual, session: idleHierarchy, selectAgent: {
+                hierarchySelection = $0
+            }).padding(20).background(Palette.surface)
+            try capture(idleHierarchyView, width: 1000, height: 800, name: "agent-hierarchy-idle.png")
+            try capture(idleHierarchyView, width: 780, height: 480, name: "agent-hierarchy-idle-dark.png", appearance: .darkAqua)
             var largeHierarchy = hierarchySession
             let largeAgents: [[String: Any]] = (0..<30).map { index in
                 ["id": "wide-\(index)", "name": "Helper \(index)", "task": "A longer task description that must fit the available width",
@@ -1545,7 +1690,8 @@ import Vision
         store.steeringSessionID = nil
         appDelegate.openCenter()
         for _ in 0..<8 { pumpNativeEvents(); RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
-        precondition(center.isKeyWindow, "The Control Center focus regression must use the real focused window")
+        precondition(center.isKeyWindow,
+                     "The Control Center focus regression must use the real focused window; active=\(NSApp.isActive), key=\(NSApp.keyWindow?.windowNumber ?? -1), expected=\(center.windowNumber), modal=\(NSApp.modalWindow != nil)")
         store.onAttentionChange?()
         func sendReturn(_ kind: UInt32, key: UInt32 = UInt32(kVK_Return), handled: Bool = true) {
             var event: EventRef?

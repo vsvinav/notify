@@ -12,9 +12,9 @@ const session = await joinSession({
 });
 const bridge = new Bridge("copilot", process.cwd(), undefined, session.sessionId, false);
 const attachment = attachCopilot(session, bridge);
-const steering = attachSteering(session, bridge);
 const activity = new ActivityFeed(entry => bridge.activity(entry));
 const team = attachSubagents(session, bridge);
+const steering = attachSteering(session, bridge, team);
 const unsubscribeActivity = session.on(event => activity.receive(event));
 bridge.enableActivity();
 await bridge.start();

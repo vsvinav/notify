@@ -54,11 +54,22 @@ iTerm2 must be installed at `/Applications/iTerm.app`; this local build launches
 
 ## Install the download
 
-1. Download **Notify-0.2.0-beta.1-macos-arm64.zip** and **SHA256SUMS.txt** from the [macOS beta release](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.1). With both files in the same folder, run `shasum -a 256 -c SHA256SUMS.txt` there to check the download.
+1. Download **Notify-0.2.0-beta.2-macos-arm64.zip** and **SHA256SUMS.txt** from the [macOS beta release](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.2). With both files in the same folder, run `shasum -a 256 -c SHA256SUMS.txt` there to check the download.
 2. Unzip the archive. In Finder, open your home folder and create **Applications** there if needed. Move **Notify.app** into that folder. When updating, quit Notify first and replace only the app; leave agent terminals running.
 3. Open Notify, choose **Connect agents**, and follow the setup instructions. Install **Node.js 22.18+** and sign in through your Copilot or Claude CLI beforehand. Node and the CLIs are not bundled.
 
-The beta is **ad-hoc signed, not Developer ID signed or notarized**. If macOS blocks it, first verify that you downloaded the expected release and its checksum. After attempting to open it, look in **System Settings > Privacy & Security** for **Open Anyway**, if offered, and confirm only for this app. Do not disable Gatekeeper globally. Organization-managed Macs may prohibit this build; a notarized distribution is not available yet.
+The beta is **ad-hoc signed, not Developer ID signed or notarized**. A successful checksum verifies the downloaded bytes; it does **not** remove Apple's first-launch warning or mean Apple has checked the app.
+
+If the warning says **"Apple could not verify Notify is free of malware"** and offers only **Move to Trash** or **Done**:
+
+1. Click **Done**. The approval button is not in that dialog.
+2. Open **System Settings > Privacy & Security** and scroll down to the security section.
+3. Find the message about Notify being blocked and click **Open Anyway**.
+4. Authenticate if macOS asks, then confirm **Open** in the next prompt, only if you trust this download.
+
+This creates an exception for this app, not a global Gatekeeper disable. See [Apple's illustrated instructions](https://support.apple.com/en-us/102445). If **Open Anyway** is missing or disabled on an organization-managed Mac, do not bypass its policy; ask its administrator. If the warning instead says the app **will damage your computer**, **contains malware**, or **is damaged**, stop rather than applying these instructions.
+
+A notarized release requires Developer ID credentials through Apple's paid Developer Program and is not available yet. Repackaging the app, renaming the ZIP, or checking its checksum cannot substitute for notarization.
 
 The app contains its local phone companion but no account credentials, session history, paired-phone keys or developer settings. Each Mac connects to its own local agent sessions. Reconnect agents and pair phones separately on the new Mac.
 
@@ -224,7 +235,9 @@ Working agents visibly type; idle agents occasionally blink or glance. An acknow
 
 Chat shows responses observed while Notify is connected and your messages sent from the app. It is not a complete historical transcript; internal helper prompts are omitted. **Tools & thinking** above the conversation opens with separate tool, thinking and status entries. Scroll through up to 12 recent updates; expand an individual entry for its available details and **Copy activity**. You can collapse the panel to give the conversation more room. No hidden reasoning is inferred.
 
-**Hierarchy** shows observed parent-child relationships as a top-down org chart: parents above their children, siblings side by side. Only running and idle/available helpers appear in the chart. **Fit** scales the whole chart into the viewport; use the zoom buttons or **100%** and scroll to inspect larger teams at readable size. Completed, failed and stopped helpers stay in a separate **+N hidden inactive agents** block, with failures called out separately. Expand that block to inspect its history. Active children of inactive parents stay visible separately with the actual parent's name; they are never silently attached to the main agent.
+**Hierarchy** shows observed parent-child relationships as a top-down org chart: parents above their children, siblings side by side. Running helpers appear individually; idle helpers start grouped in one clickable **+N idle subagents** tile. With one main agent, one running helper and nineteen idle helpers, only three tiles appear. Click the idle tile to reveal those helpers with their actual relationships; **Hide idle** groups them again. A helper that resumes running automatically leaves the idle group. **Fit** scales the chart into the viewport; use zoom or **100%** and scroll to inspect expanded teams at readable size.
+
+Completed, failed and stopped helpers stay in a separate **+N hidden inactive agents** block, with failures called out separately. Active children of hidden parents remain visible separately with the actual parent's name, not a false main-agent connection. The idle group is a status summary, not an invented parent.
 
 Select a raised agent tile to open its exact chat, or fold an individual branch. Stopped helpers stay flat with X eyes and cannot be selected; an updated Notify extension retains them for five minutes. Reload existing extensions to receive new lifecycle data. Spawn events that were not observed, missing parents and inconsistent relationships are shown separately without invented connections.
 
@@ -239,6 +252,23 @@ Choose **Steer an Agent** from Notify's menu-bar menu, or **Send instruction** f
 Queue acceptance and a matching runtime **Received** event are separate receipts. Agent activity is shown separately rather than pretending an unrelated response answers your message. Drafts stay with their session. An unknown delivery is never retried automatically: check the terminal before resending.
 
 These controls require the updated Notify extension in an original Copilot terminal. Existing loaded extensions must be reloaded in that terminal to acquire the new capabilities; ask Copilot to reload its extensions. Notify does not restart the terminal to do this. SDK launchers and Claude remote steering are not supported, and unavailable controls are disabled.
+
+### Create and remove Copilot helpers
+
+Choose **Add subagent** in the connected Copilot session's header. Enter a name and instructions, choose an agent type and model, then click **Create subagent**. Agent types and selectable models come from that runtime's live catalogs, not a hard-coded list or another provider's subscription. **Configured default** leaves the runtime's model choice unchanged. If no model choices are reported, the panel says so; it never silently substitutes another model for an explicit choice.
+
+Creation uses model credits and the session's existing permission rules. Notify records **Created** only after the runtime acknowledges creation. Your main chat draft is unchanged, and the new instructions are not sent as a main-agent chat message. If delivery becomes **Unknown**, inspect the session before retrying: a helper may already exist.
+
+The same panel lists **Ended helpers** with a separate, confirmed **Remove from list** button. This removes that helper's runtime tracking only; no files are deleted and no running agents are stopped. An idle or running helper must be stopped separately from its chat before removal. If the helper has already disappeared from runtime tracking, removal can fail rather than claim success.
+
+Reload each existing Copilot terminal's Notify extension after updating. **Claude Code subagent creation, model selection and removal through Notify are unsupported.** Even the current public Claude SDK offers no direct live-subagent creation/removal API; Notify does not disguise a prompt to the main Claude agent as direct creation, or use Copilot's model catalog for Claude.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/subagent-management-dark.png">
+  <img src="images/subagent-management.png" alt="Add subagent form with agent type, model, instructions, credit warning and separate removal of ended helpers" width="540">
+</picture>
+
+*Native app capture with a fictional session and helper.*
 
 ### Broader session Auto-yes
 

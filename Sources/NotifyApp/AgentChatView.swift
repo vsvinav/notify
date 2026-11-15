@@ -14,7 +14,7 @@ struct AgentChatView: View {
     private var draft: String { store.steeringWorkspace.draft(sessionID: session.id, agentID: agentID) }
     private var unavailable: String? { store.steeringWorkspace.unavailableReason(session: session, agentID: agentID) }
     private var commands: [ControlReceipt] {
-        (store.steeringWorkspace.history[session.id] ?? []).filter { $0.agentID == agentID }
+        (store.steeringWorkspace.history[session.id] ?? []).filter { $0.agentID == agentID && !$0.isManagement }
     }
     private var sending: Bool { (store.steeringWorkspace.history[session.id] ?? []).contains { $0.status == "sending" } }
     private var valid: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.utf16.count <= 16000 }
@@ -140,6 +140,138 @@ struct AgentChatView: View {
             CopyTextButton(text: text, label: "Copy message")
         }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
             .background(Palette.background, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct SubagentManagementView: View {
+    @ObservedObject var store: Store
+    let sessionID: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var instructions = ""
+    @State private var agentType = ""
+    @State private var model = ""
+    @State private var removing: SubagentRecord?
+    @State private var submittedID: String?
+
+    private var session: SessionRecord? { store.registry.sessions[sessionID] }
+    private var sending: Bool { (store.steeringWorkspace.history[sessionID] ?? []).contains { $0.status == "sending" } }
+    private var creation: SubagentCreation {
+        SubagentCreation(name: name, agentType: agentType, prompt: instructions, model: model.isEmpty ? nil : model)
+    }
+    private var modelAvailable: Bool { model.isEmpty || session?.subagentModels.contains(model) == true }
+    private var ended: [SubagentRecord] {
+        session?.team?.agents.filter { [.completed, .failed, .cancelled].contains($0.status) } ?? []
+    }
+    private var receipts: [ControlReceipt] {
+        Array((store.steeringWorkspace.history[sessionID] ?? []).filter(\.isManagement).suffix(3))
+    }
+    private var unavailable: String? {
+        guard let session else { return "This session is no longer available." }
+        return store.steeringWorkspace.unavailableReason(session: session, agentID: nil, action: "create_subagent")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add subagent").font(WorkspaceType.text(25, strong: true))
+            Text(session?.name ?? "Unavailable session").font(WorkspaceType.text(13)).foregroundStyle(Palette.muted)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let unavailable {
+                        Text(unavailable).font(WorkspaceType.text(13)).foregroundStyle(Palette.amber)
+                    }
+                    TextField("Subagent name", text: $name).textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("Subagent name")
+                    Picker("Agent type", selection: $agentType) {
+                        Text("Choose a type").tag("")
+                        ForEach(session?.subagentTypes ?? [], id: \.self) { Text($0).tag($0) }
+                    }
+                    Picker("Model", selection: $model) {
+                        Text("Configured default").tag("")
+                        ForEach(session?.subagentModels ?? [], id: \.self) { Text($0).tag($0) }
+                    }
+                    if session?.subagentModels.isEmpty != false {
+                        Text("No live model choices reported. Only the configured default is available.")
+                            .font(WorkspaceType.text(12)).foregroundStyle(Palette.muted)
+                    } else if !modelAvailable {
+                        Text("The selected model is no longer available. Choose a current model before creating.")
+                            .font(WorkspaceType.text(12)).foregroundStyle(Palette.error)
+                    }
+                    TextField("Instructions for this subagent", text: $instructions, axis: .vertical)
+                        .lineLimit(3...5).textFieldStyle(.plain).padding(10)
+                        .background(Palette.background, in: RoundedRectangle(cornerRadius: 8))
+                        .accessibilityLabel("Subagent instructions")
+                    Text("Starts a helper in this session and uses model credits. The selected model or configured default and existing permission rules apply.")
+                        .font(WorkspaceType.text(12)).foregroundStyle(Palette.amber)
+                    if name.utf16.count > 160 || instructions.utf16.count > 16000 {
+                        Text("Use a name up to 160 characters and instructions up to 16,000.")
+                            .font(WorkspaceType.text(12)).foregroundStyle(Palette.error)
+                    }
+                    Button("Create subagent") {
+                        submittedID = store.steer(sessionID, action: "create_subagent", creation: creation)
+                    }.buttonStyle(ReplyButtonStyle(primary: true))
+                        .disabled(unavailable != nil || sending || !creation.isValid || !modelAvailable ||
+                                  session?.subagentTypes.contains(agentType) != true)
+                    ForEach(receipts) { receipt in
+                        Text("\(receipt.status.capitalized): \(receipt.detail)")
+                            .font(WorkspaceType.text(12)).textSelection(.enabled)
+                            .foregroundStyle(["failed", "unknown"].contains(receipt.status) ? Palette.error : Palette.muted)
+                    }
+                    Divider()
+                    Text("Ended helpers").font(WorkspaceType.text(15, strong: true))
+                    Text("Remove from list does not stop agents, undo work or delete project files. Stop running or idle helpers from their chat first.")
+                        .font(WorkspaceType.text(12)).foregroundStyle(Palette.muted)
+                    if ended.isEmpty {
+                        Text("No ended helpers to remove.").font(WorkspaceType.text(13)).foregroundStyle(Palette.muted)
+                    }
+                    ForEach(ended) { agent in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(agent.name).font(WorkspaceType.text(13, strong: true)).lineLimit(2)
+                                Text(agent.status == .cancelled ? "Stopped" : agent.status.rawValue.capitalized)
+                                    .font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
+                            }
+                            Spacer()
+                            Button("Remove from list") { removing = agent }
+                                .disabled(sending || session.map {
+                                    store.steeringWorkspace.unavailableReason(session: $0, agentID: agent.id, action: "remove_subagent") != nil
+                                } != false)
+                        }
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }.frame(maxHeight: 440)
+            HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.cancelAction) }
+        }.font(WorkspaceType.text(13)).foregroundStyle(Palette.ink).padding(24).frame(width: 540)
+            .background(Palette.surface)
+            .onAppear { chooseType() }
+            .onChange(of: session?.subagentTypes) { _, _ in chooseType() }
+            .onChange(of: receipts) { _, _ in
+                guard let submittedID, let receipt = store.steeringWorkspace.receipt(sessionID: sessionID, commandID: submittedID),
+                      receipt.status == "created" else { return }
+                if name == receipt.agentName && instructions == receipt.message && agentType == receipt.agentType &&
+                    creation.model == receipt.model {
+                    name = ""
+                    instructions = ""
+                }
+                self.submittedID = nil
+            }
+            .alert("Remove \(removing?.name ?? "helper") from the list?",
+                   isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
+                Button("Cancel", role: .cancel) { removing = nil }
+                Button("Remove", role: .destructive) {
+                    if let removing { store.steer(sessionID, action: "remove_subagent", agentID: removing.id) }
+                    removing = nil
+                }
+            } message: {
+                Text("Remove this ended helper from runtime tracking. No project files or work are deleted. Running agents are not stopped.")
+            }
+    }
+
+    private func chooseType() {
+        let types = session?.subagentTypes ?? []
+        if !types.contains(agentType) {
+            agentType = types.contains("general-purpose") ? "general-purpose" : types.first ?? ""
+        }
     }
 }
 

@@ -21,9 +21,9 @@ A lightweight native Mac app for Copilot and Claude Code. See which session need
 open ~/Applications/Notify.app
 ```
 
-**Download:** get **Notify-0.2.0-beta.1-macos-arm64.zip** from the [macOS beta release](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.1). Requires an **Apple Silicon Mac, macOS 14+, Node.js 22.18+**, and an installed, signed-in Copilot or Claude Code CLI. Unzip it and move **Notify.app** into **Applications in your home folder**, then open it and choose **Connect agents**. No source checkout or Apple build tools are needed.
+**Download:** get **Notify-0.2.0-beta.2-macos-arm64.zip** from the [macOS beta release](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.2). Requires an **Apple Silicon Mac, macOS 14+, Node.js 22.18+**, and an installed, signed-in Copilot or Claude Code CLI. Unzip it and move **Notify.app** into **Applications in your home folder**, then open it and choose **Connect agents**. No source checkout or Apple build tools are needed. **INSTALL.txt** inside the ZIP includes first-launch instructions.
 
-This test build is ad-hoc signed, **not Developer ID signed or notarized**. macOS may block its first launch; see [download installation and Gatekeeper guidance](docs/guide.md#install-the-download). It does not include your accounts, settings, paired phones or sessions; connect agents separately on the other Mac.
+This test build is ad-hoc signed, **not Developer ID signed or notarized**. If Apple's warning offers only **Move to Trash** or **Done**, click **Done**, then find Notify's **Open Anyway** button in **System Settings > Privacy & Security**. See [full Gatekeeper guidance](docs/guide.md#install-the-download). A checksum does not bypass this warning. The download does not include your accounts, settings, paired phones or sessions; connect agents separately on the other Mac.
 
 **Build from source instead:** you'll also need Apple's command-line tools. If missing, run `xcode-select --install` first.
 
@@ -52,7 +52,9 @@ Select a connected Copilot session's **Chat** tab, type a message and choose **S
 
 Helper chats have their own portrait, name and tinted **Subagent chat** header. **Tools & thinking** opens with distinct recent activity entries; expand an entry for its details. All messaging controls live in **Chat**, while Auto-yes remains in **Settings**. There is no separate, duplicate Controls tab.
 
-Agent tiles have subtle raised surfaces and hover/press feedback. **Hierarchy** is a top-down org chart with parent-child connectors and active/available agents only. **Fit** shows the whole chart; zoom or choose **100%** and scroll to inspect it. A separate **+N hidden inactive agents** block reveals completed, failed and stopped helpers. Active children of inactive parents remain visible separately, with their actual parent named rather than a made-up connection. Select a tile to open its chat or fold an individual branch. Stopped helpers have X eyes and cannot be selected; an updated extension retains them for five minutes.
+Agent tiles have subtle raised surfaces and hover/press feedback. **Hierarchy** shows running helpers and one clickable **+N idle subagents** tile. One main agent, one running helper and nineteen idle helpers means **three tiles** by default. Expand the idle tile to restore those helpers and their reported relationships; **Hide idle** collapses them again. **Fit**, zoom and **100%** keep larger charts navigable. Completed, failed and stopped helpers remain in a separate inactive block. Hidden parents are named rather than replaced by made-up connections.
+
+**Add a Copilot subagent:** choose **Add subagent** in the selected session header. Enter its name and instructions, choose a live agent type and model (or **Configured default**), then **Create subagent**. Creation uses your account's model credits and retains runtime permission rules. The same panel has a separate, confirmed **Remove from list** action for ended helpers; it does not stop agents or delete project files. Reload existing Copilot extensions to enable these controls. **Claude Code subagent creation, model selection and removal through Notify are unsupported**, not silently routed through Copilot.
 
 The updated Copilot extension streams partial assistant replies instead of waiting for completion. Reload it explicitly in each existing terminal to receive this change. Messages still queued in the terminal appear when the runtime consumes them.
 
@@ -92,7 +94,7 @@ Try a sample request without starting an agent or spending model credits:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/visual-hierarchy-dark.png">
-  <img src="docs/images/visual-hierarchy.png" alt="Top-down active-agent org chart with parent-child connections, zoom controls and a separate hidden-inactive block">
+  <img src="docs/images/visual-hierarchy.png" alt="Three-tile org chart with main agent, running helper and an expandable group of nineteen idle subagents">
 </picture>
 
 <p align="center"><sub>Captured from the native app with example sessions. These are rendered app screens, not mockups.</sub></p>

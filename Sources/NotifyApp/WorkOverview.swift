@@ -265,6 +265,7 @@ private struct WorkDetail: View {
     let session: SessionRecord
     @State private var tab: String
     @State private var chatAgentID: String?
+    @State private var showSubagentManagement = false
     init(store: Store, session: SessionRecord) {
         self.store = store
         self.session = session
@@ -278,8 +279,17 @@ private struct WorkDetail: View {
                     Text(session.name).font(WorkspaceType.text(34, strong: true)).lineLimit(2).textSelection(.enabled)
                     Text("\(agentName(session.agent)) · \(session.projectLabel)")
                         .font(WorkspaceType.text(13)).foregroundStyle(Palette.muted)
+                    if session.agent == "claude" {
+                        Text("Subagent creation, model selection and removal unavailable")
+                            .font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
+                    }
                 }
                 Spacer(minLength: 12)
+                if session.agent == "copilot" {
+                    Button { showSubagentManagement = true } label: {
+                        Label("Add subagent", systemImage: "plus")
+                    }.padding(.top, 10).help("Create a helper or remove ended helpers from this session.")
+                }
                 TerminalSessionButton(store: store, session: session).padding(.top, 10)
             }
             if store.automation.dangerous.contains(session.id) {
@@ -306,6 +316,9 @@ private struct WorkDetail: View {
                         }
                         content
                     }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .sheet(isPresented: $showSubagentManagement) {
+                            SubagentManagementView(store: store, sessionID: session.id)
+                        }
                     if tab != "Hierarchy" {
                     Divider()
                     VStack(alignment: .leading, spacing: 16) {

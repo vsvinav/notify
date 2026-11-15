@@ -47,11 +47,13 @@ public struct SubagentHierarchy {
     public private(set) var children: [String: [SubagentRecord]] = [:]
 
     public private(set) var hidden: [SubagentRecord] = []
+    public private(set) var idle: [SubagentRecord] = []
 
-    public init(agents: [SubagentRecord], hidingInactive: Bool = false) {
+    public init(agents: [SubagentRecord], hidingInactive: Bool = false, hidingIdle: Bool = false) {
         let records = Dictionary(agents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         hidden = hidingInactive ? agents.filter { $0.status != .running && $0.status != .idle } : []
-        let hiddenIDs = Set(hidden.map(\.id))
+        idle = agents.filter { $0.status == .idle }
+        let hiddenIDs = Set((hidden + (hidingIdle ? idle : [])).map(\.id))
         func cyclic(_ agent: SubagentRecord) -> Bool {
             var visited = Set([agent.id])
             var current = agent

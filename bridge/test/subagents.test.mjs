@@ -153,3 +153,36 @@ test("cancelled helpers remain for five minutes without polling or resurrecting 
     assert.deepEqual(snapshots.at(-1).agents.map(item => item.id), ["live"], "Refresh must not restart the retention clock");
   } finally { tracker.stop(); }
 });
+
+test("acknowledged removal clears retained cancelled rows immediately and fences stale reads", async () => {
+  let finish;
+  const { tracker, snapshots } = fixture(async () => ({ tasks: [agent("removed", "cancelled"), agent("sibling")] }));
+  try {
+    await tracker.refresh();
+    assert.equal(tracker.isRetainedCancelled("removed"), true);
+    tracker.removed("removed");
+    assert.equal(tracker.isRetainedCancelled("removed"), false);
+    assert.deepEqual(snapshots.at(-1).agents.map(row => row.id), ["sibling"]);
+    await tracker.refresh();
+    assert.deepEqual(snapshots.at(-1).agents.map(row => row.id), ["sibling"]);
+  } finally { tracker.stop(); }
+  const stale = fixture(() => new Promise(resolve => { finish = resolve; }));
+  try {
+    const pending = stale.tracker.refresh();
+    stale.tracker.removed("removed");
+    finish({ tasks: [agent("removed", "completed"), agent("sibling")] });
+    await pending;
+    assert.deepEqual(stale.snapshots.at(-1).agents.map(row => row.id), ["sibling"]);
+  } finally { stale.tracker.stop(); }
+});
+
+test("removal ACK corrects counts when the last published row predates task completion", async () => {
+  const { tracker, snapshots } = fixture(async () => ({ tasks: [agent("recently-ended"), agent("sibling", "idle")] }));
+  try {
+    await tracker.refresh();
+    tracker.removed("recently-ended");
+    assert.equal(snapshots.at(-1).runningCount, 0);
+    assert.equal(snapshots.at(-1).idleCount, 1);
+    assert.deepEqual(snapshots.at(-1).agents.map(row => row.id), ["sibling"]);
+  } finally { tracker.stop(); }
+});

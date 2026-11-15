@@ -10,16 +10,17 @@ struct AgentHierarchyView: View {
     @State private var chartSize = CGSize.zero
     @State private var zoom: CGFloat?
     @State private var showInactive = false
+    @State private var showIdle = false
 
     private var animate: Bool { store.centerVisible && !reduceMotion }
 
     var body: some View {
-        let hierarchy = SubagentHierarchy(agents: session.team?.agents ?? [], hidingInactive: true)
+        let hierarchy = SubagentHierarchy(agents: session.team?.agents ?? [], hidingInactive: true, hidingIdle: !showIdle)
         let accent = store.sessionColor(session)
         let current = session.connected && session.team?.error == nil
         VStack(alignment: .leading, spacing: 8) {
             Text("Agent hierarchy").font(WorkspaceType.text(25, strong: true))
-            Text("Active agents only. Select an agent to chat; zoom in to inspect larger teams.")
+            Text("Running agents at a glance. Expand idle subagents to see the rest of your team.")
                 .font(WorkspaceType.text(13)).foregroundStyle(Palette.muted)
             if let team = session.team {
                 Text(team.error ?? (current ? "\(team.runningCount) running · \(team.idleCount) ready for follow-up" :
@@ -41,6 +42,14 @@ struct AgentHierarchyView: View {
                     HStack(spacing: 8) {
                         Text("\(Int((scale * 100).rounded()))%").monospacedDigit().foregroundStyle(Palette.muted)
                         Spacer()
+                        if showIdle && !hierarchy.idle.isEmpty {
+                            Button("Hide idle") {
+                                withAnimation(animate ? .easeOut(duration: 0.2) : nil) {
+                                    showIdle = false
+                                    zoom = nil
+                                }
+                            }.help("Collapse idle subagents back into one tile.")
+                        }
                         Button { zoom = max(0.05, scale / 1.25) } label: { Image(systemName: "minus.magnifyingglass") }
                             .accessibilityLabel("Zoom out")
                         Button { zoom = min(2, scale * 1.25) } label: { Image(systemName: "plus.magnifyingglass") }
@@ -76,17 +85,34 @@ struct AgentHierarchyView: View {
                 }.buttonStyle(AgentSelectionStyle(selected: selectedAgentID == nil, accent: accent))
                     .accessibilityLabel("Chat with main agent")
                     .anchorPreference(key: HierarchyAnchors.self, value: .bounds) { ["root": $0] }
-                if !hierarchy.roots.isEmpty {
+                if !hierarchy.roots.isEmpty || (!showIdle && !hierarchy.idle.isEmpty) {
                     HStack(alignment: .top, spacing: 24) {
                         ForEach(hierarchy.roots) { agent in
                             branch(agent, hierarchy: hierarchy, current: current, accent: accent)
+                        }
+                        if !showIdle && !hierarchy.idle.isEmpty {
+                            Button {
+                                withAnimation(animate ? .easeOut(duration: 0.2) : nil) { showIdle = true }
+                            } label: {
+                                VStack(spacing: 4) {
+                                    Image(systemName: "person.3")
+                                        .font(.system(size: 28)).foregroundStyle(accent).frame(height: 48)
+                                    Text("+\(hierarchy.idle.count) idle subagent\(hierarchy.idle.count == 1 ? "" : "s")")
+                                        .font(WorkspaceType.text(14, strong: true))
+                                        .lineLimit(2, reservesSpace: true).multilineTextAlignment(.center)
+                                    Label("Expand", systemImage: "chevron.down")
+                                        .font(WorkspaceType.text(12)).foregroundStyle(Palette.muted)
+                                }.padding(8).frame(width: 148).contentShape(Rectangle())
+                            }.buttonStyle(AgentSelectionStyle(selected: false, accent: accent))
+                                .help("Grouped by status. Expand to see each helper and its reported parent relationship.")
+                                .anchorPreference(key: HierarchyAnchors.self, value: .bounds) { ["idle-group": $0] }
                         }
                     }
                 }
             }
             if !hierarchy.unlinked.isEmpty {
                 VStack(spacing: 12) {
-                    Text("Parent inactive, not reported or outside this view")
+                    Text("Parent hidden, not reported or outside this view")
                         .font(WorkspaceType.text(13, strong: true)).foregroundStyle(Palette.muted)
                     HStack(alignment: .top, spacing: 24) {
                         ForEach(hierarchy.unlinked) { agent in
@@ -106,10 +132,13 @@ struct AgentHierarchyView: View {
             .backgroundPreferenceValue(HierarchyAnchors.self) { anchors in
                 GeometryReader { positions in
                     Path { path in
-                        let edges = hierarchy.roots.map { ("root", "agent:\($0.id)") } +
+                        var edges = hierarchy.roots.map { ("root", "agent:\($0.id)") } +
                             hierarchy.children.flatMap { parent, children in
                                 children.map { ("agent:\(parent)", "agent:\($0.id)") }
                             }
+                        if !hierarchy.idle.isEmpty && hierarchy.idle.allSatisfy({ $0.parentKnown == true && $0.parentAgentID == nil }) {
+                            edges.append(("root", "idle-group"))
+                        }
                         for (parent, child) in edges {
                             guard let a = anchors[parent], let b = anchors[child] else { continue }
                             let start = positions[a], end = positions[b]

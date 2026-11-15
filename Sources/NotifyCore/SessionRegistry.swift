@@ -87,6 +87,22 @@ public struct SessionRegistry {
         sessions[id]?.stopped = false
         sessions[id]?.workRevision = UUID()
     }
+    public mutating func managementCapabilities(_ id: String, create: Bool, remove: Bool, types: [String], models: [String] = []) throws {
+        guard sessions[id]?.connected == true, sessions[id]?.agent == "copilot" else { throw ProtocolError.stale }
+        sessions[id]?.canCreateSubagents = false
+        sessions[id]?.canRemoveSubagents = false
+        sessions[id]?.subagentTypes = []
+        sessions[id]?.subagentModels = []
+        guard types.count <= 100, Set(types).count == types.count,
+              types.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.utf16.count <= 128 }),
+              !create || !types.isEmpty, models.count <= 200, Set(models).count == models.count,
+              models.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.utf16.count <= 200 })
+        else { throw ProtocolError.invalid }
+        sessions[id]?.canCreateSubagents = create
+        sessions[id]?.canRemoveSubagents = remove
+        sessions[id]?.subagentTypes = types
+        sessions[id]?.subagentModels = models
+    }
     public mutating func acknowledgeStop(_ id: String, workRevision: UUID) {
         guard sessions[id]?.connected == true, sessions[id]?.workRevision == workRevision else { return }
         sessions[id]?.stopped = true

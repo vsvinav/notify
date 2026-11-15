@@ -22,7 +22,8 @@ export class Bridge {
   private title?: string;
   private sourceSessionID?: string;
   private warned = false;
-  private capabilities = { steering: false, sessionAutoYes: false, subagentChat: false, subagentStop: false };
+  private capabilities = { steering: false, sessionAutoYes: false, subagentChat: false, subagentStop: false,
+    subagentCreate: false, subagentRemove: false, subagentTypes: [] as string[], subagentModels: [] as string[] };
   private receipts = new Map<string, { status: string; text: string }>();
   private activities = new Map<string, ActivityEntry>();
   private activityFeed = false;
@@ -111,8 +112,11 @@ export class Bridge {
       } else this.error(text);
     }
   }
-  setCapabilities(value: { steering: boolean; sessionAutoYes: boolean; subagentChat?: boolean; subagentStop?: boolean }): void {
-    this.capabilities = { ...value, subagentChat: value.subagentChat === true, subagentStop: value.subagentStop === true };
+  setCapabilities(value: { steering: boolean; sessionAutoYes: boolean; subagentChat?: boolean; subagentStop?: boolean;
+    subagentCreate?: boolean; subagentRemove?: boolean; subagentTypes?: string[]; subagentModels?: string[] }): void {
+    this.capabilities = { ...value, subagentChat: value.subagentChat === true, subagentStop: value.subagentStop === true,
+      subagentCreate: value.subagentCreate === true, subagentRemove: value.subagentRemove === true,
+      subagentTypes: value.subagentTypes ?? [], subagentModels: value.subagentModels ?? [] };
     this.send({ type: "capabilities", ...this.capabilities, activityFeed: this.activityFeed });
   }
   enableActivity(): void { this.activityFeed = true; this.setCapabilities(this.capabilities); }

@@ -248,15 +248,26 @@ final class Store: ObservableObject {
         onAttentionChange?()
     }
     func closeSteering() { steeringSessionID = nil; onAttentionChange?() }
-    func steer(_ id: String, action: String, agentID: String? = nil) {
-        guard let session = registry.sessions[id] else { error = "This session is no longer available."; return }
+    @discardableResult
+    func steer(_ id: String, action: String, agentID: String? = nil, creation: SubagentCreation? = nil) -> String? {
+        guard let session = registry.sessions[id] else { error = "This session is no longer available."; return nil }
         do {
             if action == "stop", agentID == nil { disableSessionAutoYes(id, reason: "Stop requested") }
-            let commandID = try steeringWorkspace.begin(session: session, action: action, agentID: agentID)
+            let commandID = try steeringWorkspace.begin(session: session, action: action, agentID: agentID, creation: creation)
             do {
+                if let creation {
+                    try record(session: session, action: "Requested subagent creation: \(creation.name) (\(creation.agentType))", automatic: false)
+                } else if action == "remove_subagent", let agentID {
+                    try record(session: session, action: "Requested removal of ended subagent: \(agentID)", automatic: false)
+                }
                 var message: [String: Any] = ["type": "control", "commandID": commandID, "action": action,
                     "text": steeringWorkspace.receipt(sessionID: id, commandID: commandID)?.message ?? ""]
                 if let agentID { message["agentID"] = agentID }
+                if let creation {
+                    message["agentName"] = creation.name
+                    message["agentType"] = creation.agentType
+                    if let model = creation.model { message["model"] = model }
+                }
                 try server.send(sessionID: id, message: message)
             } catch {
                 steeringWorkspace.update(sessionID: id, commandID: commandID, status: "failed", text: "Could not dispatch: \(error.localizedDescription)")
@@ -265,12 +276,14 @@ final class Store: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
                 guard let self, self.steeringWorkspace.receipt(sessionID: id, commandID: commandID)?.status == "sending" else { return }
                 self.steeringWorkspace.update(sessionID: id, commandID: commandID, status: "unknown",
-                    text: "No acknowledgment yet. Check the session before resending; the message may have arrived.")
+                    text: "No acknowledgment yet. Check the session before retrying; the action may already have happened.")
                 self.disableSessionAutoYes(id, reason: "steering acknowledgment timed out")
             }
+            return commandID
         } catch {
             disableSessionAutoYes(id, reason: "steering dispatch failed")
             self.error = "Could not send control: \(error.localizedDescription)"
+            return nil
         }
     }
     func setSessionAutoYes(_ id: String, enabled: Bool) {
@@ -482,6 +495,12 @@ final class Store: ObservableObject {
         case "capabilities":
             registry.capabilities(packet.sessionID, steering: packet.steering == true, autoYes: packet.sessionAutoYes == true,
                                   subagentChat: packet.subagentChat == true, subagentStop: packet.subagentStop == true)
+            if registry.sessions[packet.sessionID]?.agent == "copilot" {
+                do {
+                    try registry.managementCapabilities(packet.sessionID, create: packet.subagentCreate == true,
+                        remove: packet.subagentRemove == true, types: packet.subagentTypes ?? [], models: packet.subagentModels ?? [])
+                } catch { localSessionErrors[packet.sessionID] = "Invalid subagent management capabilities; reload the extension." }
+            }
             registry.activityCapability(packet.sessionID, enabled: packet.activityFeed == true)
             if packet.sessionAutoYes != true { disableSessionAutoYes(packet.sessionID, reason: "capability unavailable") }
         case "activity":

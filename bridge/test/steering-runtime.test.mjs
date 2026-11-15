@@ -114,9 +114,9 @@ test("production joined terminal streams partial activity before completion and 
     await session.rpc.extensions.reload();
     diagnostics.push(await session.rpc.extensions.list());
     await waitFor(() => packets.some(p => p.type === "capabilities" && p.steering));
-    function control(action, text = "", agentID) {
-      const commandID = randomUUID();
-      peer.write(JSON.stringify({ type: "control", sessionID: session.sessionId, commandID, action, text, agentID }) + "\n");
+    function control(action, text = "", agentID, fields = {}) {
+      const commandID = fields.commandID ?? randomUUID();
+      peer.write(JSON.stringify({ type: "control", sessionID: session.sessionId, commandID, action, text, agentID, ...fields }) + "\n");
       return commandID;
     }
     const first = control("queue", "Use the existing helper");
@@ -173,6 +173,79 @@ test("production joined terminal streams partial activity before completion and 
     const childMessage = control("queue", "Synthetic follow-up", child.agentId);
     await waitFor(() => packets.some(p => p.commandID === childMessage && p.status === "received"));
     assert.ok(packets.some(p => p.type === "capabilities" && p.subagentChat && p.subagentStop));
+    const activeRemove = control("remove_subagent", "", child.agentId);
+    await waitFor(() => packets.some(p => p.commandID === activeRemove && p.status === "failed"));
+    assert.ok(["idle", "running"].includes((await session.rpc.tasks.list()).tasks.find(task => task.id === child.agentId)?.status));
+    await waitFor(() => packets.some(p => p.type === "capabilities" && p.subagentCreate && p.subagentRemove));
+    const catalog = await session.rpc.agent.list({ includeBuiltInAgents: true });
+    const modelCatalog = await session.rpc.model.list({ skipCache: true });
+    await waitFor(() => packets.filter(p => p.type === "capabilities").at(-1)?.subagentModels?.length > 0);
+    const capability = packets.filter(p => p.type === "capabilities").at(-1);
+    assert.deepEqual(capability.subagentTypes, catalog.agents.map(agent => agent.id));
+    assert.deepEqual(capability.subagentModels, modelCatalog.list.map(model => model.id));
+    const taskType = catalog.agents.find(agent => agent.id === "task.agent.yaml");
+    assert.ok(taskType, `Live runtime catalog must supply a task agent: ${JSON.stringify(capability)}`);
+    const createFields = { commandID: randomUUID(), agentName: "wire-created", agentType: taskType.id };
+    const created = control("create_subagent", "SYNTHETIC_MANAGEMENT_CHILD", undefined, createFields);
+    control("create_subagent", "SYNTHETIC_MANAGEMENT_CHILD", undefined, createFields);
+    await waitFor(() => packets.some(p => p.commandID === created && p.status === "created"));
+    assert.match(packets.find(p => p.commandID === created && p.status === "created").text, /wire-created/);
+    const createdTasks = (await session.rpc.tasks.list()).tasks.filter(task => task.displayName === "wire-created");
+    assert.equal(createdTasks.length, 1, "Duplicate native-wire commands must create exactly one helper");
+    const createdID = createdTasks[0].id;
+    await waitFor(() => packets.some(p => p.type === "team" && p.team.agents.some(agent =>
+      agent.id === createdID && agent.status === "idle")));
+    assert.equal(packets.filter(p => p.type === "team").at(-1).team.agents.find(agent => agent.id === createdID).model, "localmodel",
+      "Management creation must inherit this isolated session's local provider model");
+    const beforeReplay = packets.filter(p => p.commandID === created && p.status === "created").length;
+    control("create_subagent", "SYNTHETIC_MANAGEMENT_CHILD", undefined, createFields);
+    await waitFor(() => packets.filter(p => p.commandID === created && p.status === "created").length > beforeReplay);
+    assert.equal((await session.rpc.tasks.list()).tasks.filter(task => task.displayName === "wire-created").length, 1);
+    control("create_subagent", "SYNTHETIC_MANAGEMENT_CHILD", undefined, { ...createFields, agentName: "changed" });
+    await waitFor(() => packets.some(p => p.commandID === created && p.status === "failed"));
+    const endCreated = control("stop", "", createdID);
+    await waitFor(() => packets.some(p => p.commandID === endCreated && p.status === "stopped"));
+    await waitFor(() => packets.some(p => p.type === "team" && p.team.agents.some(agent =>
+      agent.id === createdID && agent.status === "cancelled")));
+    const removeFields = { commandID: randomUUID() };
+    const removed = control("remove_subagent", "", createdID, removeFields);
+    await waitFor(() => packets.some(p => p.commandID === removed && p.status === "removed"));
+    assert.equal((await session.rpc.tasks.list()).tasks.some(task => task.id === createdID), false, "Real runtime removal must be verified");
+    await waitFor(() => !packets.filter(p => p.type === "team").at(-1).team.agents.some(agent => agent.id === createdID));
+    const replayedRemove = packets.filter(p => p.commandID === removed && p.status === "removed").length;
+    control("remove_subagent", "", createdID, removeFields);
+    await waitFor(() => packets.filter(p => p.commandID === removed && p.status === "removed").length > replayedRemove);
+    assert.ok(["idle", "running"].includes((await session.rpc.tasks.list()).tasks.find(task => task.id === child.agentId)?.status),
+      "Creating and removing another helper must leave the unrelated child active");
+    const selectedFields = { commandID: randomUUID(), agentName: "wire-selected-model", agentType: taskType.id, model: capability.subagentModels[0] };
+    const selected = control("create_subagent", "SYNTHETIC_SELECTED_MODEL", undefined, selectedFields);
+    await waitFor(() => packets.some(p => p.commandID === selected && p.status === "created"));
+    control("create_subagent", "SYNTHETIC_SELECTED_MODEL", undefined, selectedFields);
+    const selectedTasks = (await session.rpc.tasks.list()).tasks.filter(task => task.displayName === selectedFields.agentName);
+    assert.equal(selectedTasks.length, 1);
+    const selectedID = selectedTasks[0].id;
+    await waitFor(() => packets.some(p => p.type === "team" && p.team.agents.some(agent =>
+      agent.id === selectedID && agent.model === selectedFields.model && agent.status === "idle")));
+    control("create_subagent", "SYNTHETIC_SELECTED_MODEL", undefined, { ...selectedFields, model: "changed" });
+    await waitFor(() => packets.some(p => p.commandID === selected && p.status === "failed"));
+    const unavailableModel = control("create_subagent", "NO_INFERENCE", undefined,
+      { agentName: "unavailable-model", agentType: taskType.id, model: "not-in-session-catalog" });
+    await waitFor(() => packets.some(p => p.commandID === unavailableModel && p.status === "failed"));
+    assert.equal((await session.rpc.tasks.list()).tasks.some(task => task.displayName === "unavailable-model"), false);
+    const endSelected = control("stop", "", selectedID);
+    await waitFor(() => packets.some(p => p.commandID === endSelected && p.status === "stopped"));
+    const removeSelected = control("remove_subagent", "", selectedID);
+    await waitFor(() => packets.some(p => p.commandID === removeSelected && p.status === "removed"));
+    assert.equal((await session.rpc.tasks.list()).tasks.some(task => task.id === selectedID), false);
+    const helloCount = packets.filter(p => p.type === "hello").length;
+    const capabilityCount = packets.filter(p => p.type === "capabilities").length;
+    peer.destroy();
+    await waitFor(() => packets.filter(p => p.type === "hello").length > helloCount);
+    await waitFor(() => packets.filter(p => p.type === "capabilities").length > capabilityCount);
+    assert.equal(packets.filter(p => p.type === "capabilities").at(-1).subagentCreate, true);
+    assert.deepEqual(packets.filter(p => p.type === "capabilities").at(-1).subagentTypes, capability.subagentTypes);
+    assert.deepEqual(packets.filter(p => p.type === "capabilities").at(-1).subagentModels, capability.subagentModels);
+    t.diagnostic(`Verified live types ${JSON.stringify(capability.subagentTypes)}, session models ${JSON.stringify(capability.subagentModels)}, default/selected-model native-wire creation, duplicate receipts, ended removal, active rejection, and reconnect.`);
     const stopChild = control("stop", "", child.agentId);
     await waitFor(() => packets.some(p => p.commandID === stopChild && p.status === "stopped"));
     assert.equal((await session.rpc.metadata.snapshot()).sessionId, session.sessionId, "Child controls preserve the original main owner");
