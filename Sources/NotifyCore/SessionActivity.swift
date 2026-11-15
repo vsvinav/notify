@@ -46,6 +46,70 @@ public struct SubagentHierarchy {
     public private(set) var unlinked: [SubagentRecord] = []
     public private(set) var children: [String: [SubagentRecord]] = [:]
 
+    public struct Row: Identifiable {
+        public enum Kind {
+            case agent(SubagentRecord)
+            case inactive(count: Int, failed: Int)
+            case unlinked
+        }
+        public let id: String
+        public let parentID: String?
+        public let depth: Int
+        public let kind: Kind
+    }
+
+    public func outline(expandedInactive: Set<String> = [], collapsed: Set<String> = []) -> [Row] {
+        var summaries: [String: (active: Bool, count: Int, failed: Int)] = [:]
+        func summarize(_ agent: SubagentRecord) {
+            var result = (active: agent.status == .running || agent.status == .idle,
+                          count: 1, failed: agent.status == .failed ? 1 : 0)
+            for child in children[agent.id] ?? [] {
+                summarize(child)
+                if let summary = summaries[child.id] {
+                    result.active = result.active || summary.active
+                    result.count += summary.count
+                    result.failed += summary.failed
+                }
+            }
+            summaries[agent.id] = result
+        }
+        (roots + unlinked).forEach(summarize)
+        var rows: [Row] = []
+        func appendAgent(_ agent: SubagentRecord, parentID: String?, depth: Int, includeInactive: Bool) {
+            let id = "agent:\(agent.id)"
+            rows.append(Row(id: id, parentID: parentID, depth: depth, kind: .agent(agent)))
+            if !collapsed.contains(agent.id) {
+                appendGroup(children[agent.id] ?? [], groupID: id, parentID: id,
+                            depth: depth + 1, includeInactive: includeInactive)
+            }
+        }
+        func appendGroup(_ agents: [SubagentRecord], groupID: String, parentID: String?,
+                         depth: Int, includeInactive: Bool = false) {
+            let inactive = agents.filter { summaries[$0.id]?.active == false }
+            for agent in agents where summaries[agent.id]?.active == true {
+                appendAgent(agent, parentID: parentID, depth: depth, includeInactive: includeInactive)
+            }
+            guard !inactive.isEmpty else { return }
+            let id = "inactive:\(groupID)"
+            if !includeInactive {
+                let count = inactive.reduce(0) { $0 + (summaries[$1.id]?.count ?? 0) }
+                let failed = inactive.reduce(0) { $0 + (summaries[$1.id]?.failed ?? 0) }
+                rows.append(Row(id: id, parentID: parentID, depth: depth, kind: .inactive(count: count, failed: failed)))
+            }
+            if includeInactive || expandedInactive.contains(id) {
+                for agent in inactive {
+                    appendAgent(agent, parentID: parentID, depth: depth, includeInactive: true)
+                }
+            }
+        }
+        appendGroup(roots, groupID: "root", parentID: "root", depth: 1)
+        if !unlinked.isEmpty {
+            rows.append(Row(id: "unlinked", parentID: nil, depth: 0, kind: .unlinked))
+            appendGroup(unlinked, groupID: "unlinked", parentID: nil, depth: 0)
+        }
+        return rows
+    }
+
     public init(agents: [SubagentRecord]) {
         let records = Dictionary(agents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         func cyclic(_ agent: SubagentRecord) -> Bool {

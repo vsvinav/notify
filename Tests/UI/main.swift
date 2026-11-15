@@ -866,6 +866,15 @@ import Vision
                                  "Typing a custom answer must replace a single selected option in the actual reply draft")
                     precondition(!visual.sending.contains(item.request.id), "Opening or typing a custom answer must not send it")
                 }
+                if name.contains("agent-hierarchy-large") || name.contains("agent-hierarchy-deep") {
+                    let scroll = descendants(capture).compactMap { $0 as? NSScrollView }.first!
+                    scroll.contentView.scroll(to: NSPoint(x: 0, y: scroll.documentView!.frame.maxY - scroll.contentSize.height))
+                    scroll.reflectScrolledClipView(scroll.contentView)
+                    for _ in 0..<12 {
+                        capture.layoutSubtreeIfNeeded()
+                        RunLoop.current.run(until: Date().addingTimeInterval(0.025))
+                    }
+                }
                 let bitmap = capture.bitmapImageRepForCachingDisplay(in: capture.bounds)!
                 capture.cacheDisplay(in: capture.bounds, to: bitmap)
                 if appearance == .darkAqua {
@@ -1013,6 +1022,74 @@ import Vision
                     precondition(text.contains("Connected") && text.contains("Not connected"),
                                  "Rendered connection groups must remain findable. Found: \(text)")
                 }
+                if name.hasPrefix("agent-hierarchy") {
+                    let scroll = descendants(capture).compactMap { $0 as? NSScrollView }.first!
+                    precondition(scroll.documentView!.frame.width <= scroll.contentSize.width + 1,
+                                 "Hierarchy content must fit the viewport without horizontal panning: \(name)")
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+                    if name.contains("large") {
+                        precondition(text.contains("27 inactive") && text.contains("2 failed"),
+                                     "A large team's folded history and failure count must remain reachable by vertical scrolling")
+                    }
+                    if name.contains("deep") {
+                        precondition(text.contains("Nested helper 19") && text.contains("Parent: Nested helper 18"),
+                                     "Deep branches must retain readable names and explicit parents without horizontal scrolling")
+                    }
+                    if !name.contains("large") && !name.contains("deep") {
+                        precondition(text.contains("Design lead") && text.contains("Nested reviewer") && text.contains("1 inactive"),
+                                     "The compact hierarchy must show active children and inactive counts even at minimum height: \(name)")
+                        precondition(!text.contains("Stopped helper"), "Inactive agents must start folded")
+                    }
+                    if name == "agent-hierarchy.png" {
+                        window.makeKeyAndOrderFront(nil)
+                        NSApp.activate(ignoringOtherApps: true)
+                        pumpNativeEvents()
+                        func hierarchyText() throws -> [VNRecognizedTextObservation] {
+                            let image = capture.bitmapImageRepForCachingDisplay(in: capture.bounds)!
+                            capture.cacheDisplay(in: capture.bounds, to: image)
+                            let recognition = VNRecognizeTextRequest()
+                            recognition.recognitionLevel = .accurate
+                            try VNImageRequestHandler(cgImage: image.cgImage!, options: [:]).perform([recognition])
+                            return recognition.results ?? []
+                        }
+                        func hierarchyClick(_ label: String) throws {
+                            guard let item = try hierarchyText().first(where: { $0.topCandidates(1).first?.string.contains(label) == true }) else {
+                                preconditionFailure("The hierarchy must display \(label)")
+                            }
+                            let point = capture.convert(NSPoint(x: item.boundingBox.midX * capture.bounds.width,
+                                y: (capture.isFlipped ? 1 - item.boundingBox.midY : item.boundingBox.midY) * capture.bounds.height), to: nil)
+                            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                                window.sendEvent(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                    context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!)
+                                pumpNativeEvents()
+                            }
+                            for _ in 0..<8 { RunLoop.current.run(until: Date().addingTimeInterval(0.025)) }
+                        }
+                        try hierarchyClick("Design lead")
+                        precondition(hierarchySelection == "design-lead", "Hierarchy nodes must select their exact agent")
+                        try hierarchyClick("Nested reviewer")
+                        precondition(hierarchySelection == "nested-reviewer", "Nested clicks must not select their parent")
+                        try hierarchyClick("Hide 1 branch")
+                        let folded = try hierarchyText()
+                        precondition(!folded.contains { $0.topCandidates(1).first?.string.contains("Nested reviewer") == true },
+                                     "Folding a branch must actually hide its descendants")
+                        try hierarchyClick("Show 1 branch")
+                        try hierarchyClick("1 inactive")
+                        try hierarchyClick("Stopped helper")
+                        precondition(hierarchySelection == "nested-reviewer", "Stopped hierarchy nodes must not be interactive")
+                        try hierarchyClick("Hide 1 inactive")
+                        let hidden = try hierarchyText()
+                        precondition(!hidden.contains { $0.topCandidates(1).first?.string.contains("Stopped helper") == true },
+                                     "Inactive expansion must be reversible")
+                        try hierarchyClick("Main agent")
+                        precondition(hierarchySelection == nil, "The main tile must still select the main chat")
+                        window.orderOut(nil)
+                    }
+                }
                 if name == "control-center-responses.png" || name == "copy-actions.png" {
                   if name == "control-center-responses.png" {
                     let recognition = VNRecognizeTextRequest()
@@ -1030,37 +1107,6 @@ import Vision
                     try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
                     guard var copy = recognition.results?.first(where: { $0.topCandidates(1).first?.string.hasSuffix(label) == true }) else {
                         preconditionFailure("A visible \(label) action is required")
-                    }
-                    if name == "agent-hierarchy.png" {
-                        window.makeKeyAndOrderFront(nil)
-                        NSApp.activate(ignoringOtherApps: true)
-                        pumpNativeEvents()
-                        func hierarchyClick(_ label: String) throws {
-                            let image = capture.bitmapImageRepForCachingDisplay(in: capture.bounds)!
-                            capture.cacheDisplay(in: capture.bounds, to: image)
-                            let recognition = VNRecognizeTextRequest()
-                            recognition.recognitionLevel = .accurate
-                            try VNImageRequestHandler(cgImage: image.cgImage!, options: [:]).perform([recognition])
-                            guard let item = recognition.results?.first(where: { $0.topCandidates(1).first?.string == label }) else {
-                                preconditionFailure("The hierarchy must display \(label)")
-                            }
-                            let point = capture.convert(NSPoint(x: item.boundingBox.midX * capture.bounds.width,
-                                y: (capture.isFlipped ? 1 - item.boundingBox.midY : item.boundingBox.midY) * capture.bounds.height), to: nil)
-                            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-                                window.sendEvent(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
-                                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-                                    context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!)
-                                pumpNativeEvents()
-                            }
-                            for _ in 0..<8 { RunLoop.current.run(until: Date().addingTimeInterval(0.025)) }
-                        }
-                        try hierarchyClick("Design lead")
-                        precondition(hierarchySelection == "design-lead", "Hierarchy nodes must select their exact agent, never the main or a sibling")
-                        try hierarchyClick("Stopped helper")
-                        precondition(hierarchySelection == "design-lead", "Stopped hierarchy nodes must not be interactive")
-                        try hierarchyClick("Hide 1 branch")
-                        try hierarchyClick("Show 1 branch")
-                        window.orderOut(nil)
                     }
                     let pasteboard = NSPasteboard.general
                     let originalText = pasteboard.string(forType: .string)
@@ -1181,6 +1227,30 @@ import Vision
             try capture(hierarchyView, width: 1000, height: 800, name: "agent-hierarchy.png")
             try capture(hierarchyView, width: 1000, height: 800, name: "agent-hierarchy-dark.png", appearance: .darkAqua)
             try capture(hierarchyView, width: 780, height: 480, name: "agent-hierarchy-small.png")
+            try capture(hierarchyView, width: 780, height: 480, name: "agent-hierarchy-small-dark.png", appearance: .darkAqua)
+            var largeHierarchy = hierarchySession
+            let largeAgents: [[String: Any]] = (0..<30).map { index in
+                ["id": "wide-\(index)", "name": "Helper \(index)", "task": "A longer task description that must fit the available width",
+                 "status": index < 3 ? "running" : index >= 28 ? "failed" : "completed", "parentKnown": true]
+            }
+            largeHierarchy.team = try JSONDecoder().decode(SubagentTeam.self, from: JSONSerialization.data(withJSONObject: [
+                "agents": largeAgents, "runningCount": 3, "idleCount": 0, "truncated": false
+            ]))
+            let largeHierarchyView = AgentHierarchyView(store: visual, session: largeHierarchy, selectAgent: { _ in })
+                .padding(20).background(Palette.surface)
+            try capture(largeHierarchyView, width: 640, height: 480, name: "agent-hierarchy-large.png")
+            try capture(largeHierarchyView, width: 640, height: 480, name: "agent-hierarchy-large-dark.png", appearance: .darkAqua)
+            let deepAgents: [[String: Any]] = (0..<20).map { index in
+                var agent: [String: Any] = ["id": "deep-\(index)", "name": "Nested helper \(index)",
+                    "task": "Preserve readable content and exact ancestry at every depth", "status": "running", "parentKnown": true]
+                if index > 0 { agent["parentAgentID"] = "deep-\(index - 1)" }
+                return agent
+            }
+            largeHierarchy.team = try JSONDecoder().decode(SubagentTeam.self, from: JSONSerialization.data(withJSONObject: [
+                "agents": deepAgents, "runningCount": 20, "idleCount": 0, "truncated": false
+            ]))
+            try capture(AgentHierarchyView(store: visual, session: largeHierarchy, selectAgent: { _ in })
+                .padding(20).background(Palette.surface), width: 640, height: 480, name: "agent-hierarchy-deep.png")
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center.png")
             try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-small.png")
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center-dark.png", appearance: .darkAqua)
@@ -1466,7 +1536,9 @@ import Vision
         precondition(NSApp.dockTile.badgeLabel == String(previousWaiting + 1), "Dock badge must count pending manual decisions")
         store.replyWorkspace.next(requestIDs: ["dock-test"])
         store.steeringSessionID = nil
-        NSApp.keyWindow?.makeFirstResponder(nil)
+        appDelegate.openCenter()
+        for _ in 0..<8 { pumpNativeEvents(); RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+        precondition(center.isKeyWindow, "The Control Center focus regression must use the real focused window")
         store.onAttentionChange?()
         func sendReturn(_ kind: UInt32, key: UInt32 = UInt32(kVK_Return), handled: Bool = true) {
             var event: EventRef?
@@ -1507,6 +1579,30 @@ import Vision
         assertReturnReleased("Return must be released after key-up when the request is already sending")
         store.sending.remove("dock-test")
         store.onAttentionChange?()
+        for key in [UInt32(kVK_Return), UInt32(kVK_ANSI_KeypadEnter)] {
+            appDelegate.openCenter()
+            for _ in 0..<8 { pumpNativeEvents(); RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+            let search = descendants(center.contentView!).compactMap { $0 as? NSTextField }.first {
+                $0.placeholderString == "Search sessions"
+            }!
+            precondition(center.makeFirstResponder(search), "The real Control Center search must accept focus")
+            for _ in 0..<8 { pumpNativeEvents(); RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+            assertReturnReleased("A focused Control Center search must retain ordinary typing keys")
+            center.makeFirstResponder(nil)
+            for _ in 0..<8 { pumpNativeEvents(); RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+            store.requestErrors.removeValue(forKey: "dock-test")
+            sendReturn(UInt32(kEventHotKeyPressed), key: UInt32(kVK_DownArrow))
+            sendReturn(UInt32(kEventHotKeyReleased), key: UInt32(kVK_DownArrow))
+            sendReturn(UInt32(kEventHotKeyPressed), key: UInt32(kVK_UpArrow))
+            sendReturn(UInt32(kEventHotKeyReleased), key: UInt32(kVK_UpArrow))
+            sendReturn(UInt32(kEventHotKeyPressed), key: key)
+            sendReturn(UInt32(kEventHotKeyReleased), key: key)
+            precondition(store.requestErrors["dock-test"] != nil,
+                         "Return and keypad Enter must rearm after editing while the Control Center remains focused")
+            store.requestErrors.removeValue(forKey: "dock-test")
+            center.close()
+            pumpNativeEvents()
+        }
         let replyPanel = NSApp.windows.compactMap { $0 as? ReplyPanel }.first { $0 !== window }!
         let confirmation = NSAlert()
         confirmation.messageText = "Synthetic dangerous-mode confirmation"

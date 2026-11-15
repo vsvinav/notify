@@ -196,7 +196,9 @@ Working agents visibly type; idle agents occasionally blink or glance. An acknow
 
 Chat shows responses observed while Notify is connected and your messages sent from the app. It is not a complete historical transcript; internal helper prompts are omitted. **Tools & thinking** above the conversation opens with separate tool, thinking and status entries. Scroll through up to 12 recent updates; expand an individual entry for its available details and **Copy activity**. You can collapse the panel to give the conversation more room. No hidden reasoning is inferred.
 
-**Hierarchy** shows observed parent-child relationships with collapsible branches. Select a raised agent tile to open its exact chat. Stopped helpers stay flat with X eyes and cannot be selected; an updated Notify extension retains them for five minutes. Reload existing extensions to receive new lifecycle data. Spawn events that were not observed, missing parents and inconsistent relationships are shown separately without invented connections.
+**Hierarchy** shows observed parent-child relationships in a compact tree that fits the window width. Scroll vertically for larger teams. Completed, failed and stopped branches start folded into **+N inactive** groups under their parent; expand a group to see its history. Counts include hidden descendants, with failures called out separately. Idle agents remain visible, as do inactive parents with active descendants. Deep branches show explicit parent names rather than shrinking the text.
+
+Select a raised agent tile to open its exact chat, or fold an individual branch. Stopped helpers stay flat with X eyes and cannot be selected; an updated Notify extension retains them for five minutes. Reload existing extensions to receive new lifecycle data. Spawn events that were not observed, missing parents and inconsistent relationships are shown separately without invented connections.
 
 **Copy response**, **Copy message**, **Copy chat** and code-block **Copy** copy their full available text. Scrolling up pauses **Follow chat**; **Latest** returns to the newest message.
 

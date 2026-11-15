@@ -50,7 +50,7 @@ Select a connected Copilot session's **Chat** tab, type a message and choose **S
 
 Helper chats have their own portrait, name and tinted **Subagent chat** header. **Tools & thinking** opens with distinct recent activity entries; expand an entry for its details. All messaging controls live in **Chat**, while Auto-yes remains in **Settings**. There is no separate, duplicate Controls tab.
 
-Agent tiles have subtle raised surfaces and hover/press feedback. Open **Hierarchy** to follow reported parent-child relationships, fold branches, and select an agent's chat. Stopped helpers have X eyes and cannot be selected; an updated extension retains them for five minutes. Relationships not observed by the extension are explicitly labeled unknown rather than guessed.
+Agent tiles have subtle raised surfaces and hover/press feedback. **Hierarchy** fits the window width, with vertical scrolling for larger teams. Expand **+N inactive** to reveal completed, failed or stopped branches; idle agents and parents with active descendants stay visible. Select a tile to open its chat or fold an individual branch. Stopped helpers have X eyes and cannot be selected; an updated extension retains them for five minutes. Relationships not observed by the extension are explicitly labeled unknown rather than guessed.
 
 **Already connected but controls are unavailable?** Reload the Notify extension in that Copilot terminal. Existing Claude terminals and unsupported helpers cannot be messaged through Notify; the app explains when a control is unavailable.
 
@@ -82,6 +82,13 @@ Try a sample request without starting an agent or spending model credits:
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/visual-controls-dark.png">
   <img src="docs/images/visual-controls.png" alt="Notify visual team workspace with a persistent red Dangerous Auto-yes warning and a Turn off button">
+</picture>
+
+### Follow each agent's team
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/visual-hierarchy-dark.png">
+  <img src="docs/images/visual-hierarchy.png" alt="Compact agent hierarchy with parent-child connections and an expandable inactive-agent group">
 </picture>
 
 <p align="center"><sub>Captured from the native app with example sessions. These are rendered app screens, not mockups.</sub></p>
