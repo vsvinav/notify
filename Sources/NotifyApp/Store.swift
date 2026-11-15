@@ -516,14 +516,16 @@ final class Store: ObservableObject {
                 DispatchQueue.main.async { self?.error = "Copilot discovery failed: \(error.localizedDescription)" }
             }
             // Claude catalog
-            let claudeLivePIDs = (try? ClaudeDiscovery.runningPIDs()) ?? []
-            let claudeSaved = (try? ClaudeDiscovery.catalog(livePIDs: Set(claudeLivePIDs))) ?? []
-            let claudeRunning = (try? ClaudeDiscovery.sessions(livePIDs: Set(claudeLivePIDs))) ?? []
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.registry.catalogClaude(claudeSaved)
-                self.registry.discoverClaude(claudeRunning)
-                self.onAttentionChange?()
+            DispatchQueue.global(qos: .background).async { [weak self] in
+                let claudeLivePIDs = (try? ClaudeDiscovery.runningPIDs()) ?? []
+                let claudeSaved = (try? ClaudeDiscovery.catalog(livePIDs: Set(claudeLivePIDs))) ?? []
+                let claudeRunning = (try? ClaudeDiscovery.sessions(livePIDs: Set(claudeLivePIDs))) ?? []
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.registry.catalogClaude(claudeSaved)
+                    self.registry.discoverClaude(claudeRunning)
+                    self.onAttentionChange?()
+                }
             }
         }
         discoveryTimer = timer
