@@ -102,11 +102,18 @@ Try a sample request without starting an agent or spending model credits:
 
 ## Use your phone
 
-In main **Settings > Phone connections**, enable **Allow phone connections** and choose **Pair a phone**. Scan the QR displayed on your own Mac, verify and trust its local certificate, then install Notify to your phone's Home Screen.
+**Android: there is no APK or Play Store download.** Install Notify as a web app from Chrome:
 
-Open that installed app, enter the Mac's pairing code, compare the confirmation codes, and confirm the phone on the Mac. Enable alerts from the phone app.
+1. On the Mac, open **Settings > Phone connections**, enable **Allow phone connections**, and click **Pair a phone**.
+2. Put the phone on the same Wi-Fi. Scan the Mac's QR or open its exact **`http://…:8080/` setup address** in Chrome.
+3. Download `Notify-Local-CA.cer`. Verify its full SHA-256 fingerprint against the Mac using a trusted certificate viewer **before trusting it**. Then install it through Android Settings' **Install a CA certificate** action. [Detailed Android steps](https://github.com/vsvinav/notify-mobile#install-on-android).
+4. Open the Mac's **Connection address**, which uses **`https://…:8443/`**. It must load without certificate warnings. In Chrome's **⋮** menu choose **Install app**, or **Add to Home screen > Install**.
+5. Open the new Notify icon, enter the Mac's eight-digit pairing code, compare the six-digit confirmation on both devices, and click **Confirm phone** on the Mac.
+6. Tap **Enable alerts** on the phone and allow notifications. Use **Send test alert** on the Mac.
 
-**[iPhone and Android installation guide →](https://github.com/vsvinav/notify-mobile#quickstart)**
+**“Site can't be reached”?** Stop at setup: certificate installation cannot fix network reachability. Confirm the companion is enabled, use the exact protocol/port shown on the Mac, and check for guest-network isolation or a VPN blocking local connections. [Connection troubleshooting](https://github.com/vsvinav/notify-mobile#if-the-phone-says-site-cant-be-reached).
+
+**[iPhone installation](https://github.com/vsvinav/notify-mobile#install-on-iphone)** · **[Full phone setup guide](https://github.com/vsvinav/notify-mobile#quickstart)**
 
 Your Mac must be awake and reachable on the same network for request details and replies. Generic alerts use platform push services. Physical-phone certificate setup and lock-screen delivery still need real-device verification; there is no App Store release or hosted Notify relay.
 
