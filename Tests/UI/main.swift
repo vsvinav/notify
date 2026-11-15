@@ -1520,6 +1520,18 @@ import Vision
         precondition((replyPanel.firstResponder as? NSTextView)?.isEditable == true && store.requestErrors["keyboard-question"] == nil,
                      "Choosing Other with Return must focus the real answer input")
         assertReturnReleased("Editing Other must restore ordinary keyboard input")
+        let answerEditor = replyPanel.firstResponder as! NSTextView
+        answerEditor.insertText("A custom keyboard answer", replacementRange: NSRange(location: NSNotFound, length: 0))
+        pumpNativeEvents()
+        let submitAnswer = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: replyPanel.windowNumber,
+            context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: UInt16(kVK_Return))!
+        NSApp.sendEvent(submitAnswer)
+        for _ in 0..<8 { pumpNativeEvents(); RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+        precondition(store.requestErrors["keyboard-question"] != nil,
+                     "Typing an answer then Return must dispatch that question, not insert a newline or do nothing")
+        precondition(store.replyWorkspace.drafts["keyboard-question"]?.answers(for: store.activeFloatingRequest!.request)["choice"] == ["A custom keyboard answer"],
+                     "Return must preserve the exact typed answer")
         let nextKeyboardRequest = try JSONSerialization.data(withJSONObject: [
             "type": "request", "sessionID": session.id,
             "request": ["id": "keyboard-next", "kind": "permission", "title": "Next decision",

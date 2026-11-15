@@ -488,6 +488,9 @@ struct RequestEditor: View {
                     .padding(.vertical, 9)
                     .accessibilityLabel(question.text)
                     .focused($answerFocused, equals: question.id)
+                    .onSubmit {
+                        store.reply(session: session.id, request: request, decision: "answer", answers: answers)
+                    }
                     .overlay(alignment: .bottom) { Rectangle().fill(keyboardChoice == .input(question.id) ? Palette.accent : secondary.opacity(0.65)).frame(height: 1) }
                     .id(ReplyChoice.input(question.id))
             }
