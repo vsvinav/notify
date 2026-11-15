@@ -1,6 +1,31 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ActivityFeed } from "../dist/activity.js";
+import { CopilotAgent } from "../dist/agents.js";
+import { Bridge } from "../dist/connection.js";
+
+test("SDK launcher responses use the same structured feed as attached terminals", { timeout: 2000 }, async () => {
+  const handlers = new Set();
+  const session = {
+    sessionId: "fixture",
+    on(handler) { handlers.add(handler); return () => handlers.delete(handler); },
+    rpc: { tasks: { list: async () => ({ tasks: [] }) } },
+    disconnect: async () => {}
+  };
+  const bridge = new Bridge("copilot", "/project");
+  let publish;
+  const received = new Promise(resolve => { publish = resolve; });
+  bridge.activity = entry => publish(entry);
+  const agent = new CopilotAgent(bridge, "/unused");
+  agent.client = { start: async () => {}, createSession: async () => session, stop: async () => [] };
+  try {
+    await agent.start();
+    for (const handler of handlers) handler(event("assistant.message", { messageId: "response", content: "```js\nconst answer = 42;\n```" }));
+    const reply = await received;
+    assert.equal(reply.kind, "assistant");
+    assert.equal(reply.detail, "```js\nconst answer = 42;\n```");
+  } finally { await agent.stop(); bridge.stop(); }
+});
 
 const event = (type, data, agentId) => ({ type, data, agentId, id: "event", timestamp: "2026-11-13T20:00:00Z" });
 test("activity correlates tool completion, exposes supplied text and excludes opaque metadata", () => {

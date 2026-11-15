@@ -21,6 +21,15 @@ test("failed Claude process invalidates pending approvals without a late SDK wri
               this.stdout.write(JSON.stringify({ type: "control_response", response: {
                 subtype: "success", request_id: packet.request_id, response: {}
               } }) + "\n");
+              for (const [id, parent, text] of [
+                ["main-reply", null, "## Result\n\n```swift\nlet ready = true\n```"],
+                ["child-reply", "child-tool", "Child response"]
+              ]) {
+                this.stdout.write(JSON.stringify({
+                  type: "assistant", uuid: id, session_id: "fixture", parent_tool_use_id: parent,
+                  message: { role: "assistant", content: [{ type: "text", text }] }
+                }) + "\n");
+              }
               setImmediate(() => this.stdout.write(JSON.stringify({
                 type: "control_request", request_id: "sdk-request",
                 request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "example" }, tool_use_id: "tool" }
@@ -34,6 +43,8 @@ test("failed Claude process invalidates pending approvals without a late SDK wri
   }
   const child = new FakeProcess();
   const bridge = new Bridge("claude", process.cwd());
+  const activity: { id: string; detail: string; agentID?: string }[] = [];
+  bridge.activity = entry => { activity.push(entry); };
   const agent = new ClaudeAgent(bridge, "unused", undefined, undefined, args =>
     query({ ...args, options: { ...args.options, spawnClaudeCodeProcess: () => child } }));
   const sending = agent.send("test").catch(error => error);
@@ -41,6 +52,10 @@ test("failed Claude process invalidates pending approvals without a late SDK wri
     await new Promise(resolve => setTimeout(resolve, 5));
   }
   assert.equal(bridge.pending.requests.length, 1);
+  assert.equal(activity.length, 2, "Claude responses must reach the structured response feed");
+  assert.equal(activity[0].detail, "## Result\n\n```swift\nlet ready = true\n```");
+  assert.equal(activity[0].agentID, undefined);
+  assert.equal(activity[1].agentID, "child-tool", "Child responses must not be presented as the main agent");
   const id = bridge.pending.requests[0].id;
   child.exitCode = 1;
   child.stdout.end();

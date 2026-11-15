@@ -93,15 +93,28 @@ struct AgentPresenceView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
                 TimelineView(.animation(minimumInterval: 0.125, paused: !moving)) { clock in
-                    illustration(phase: moving ? sin(clock.date.timeIntervalSinceReferenceDate * 4) : 0)
+                    AgentIllustration(presence: presence, phase: moving ? sin(clock.date.timeIntervalSinceReferenceDate * 4) : 0)
                 }.frame(width: 116, height: 88).accessibilityHidden(true)
             }
         }.accessibilityElement(children: .combine)
     }
 
-    private func illustration(phase: Double) -> some View {
+}
+
+struct AgentIllustration: View {
+    let presence: AgentPresence
+    var phase: Double = 0
+    var accent: Color = Palette.accent
+    var portrait = false
+
+    var body: some View {
         Canvas { context, size in
-            context.scaleBy(x: size.width / 180, y: size.height / 136)
+            if portrait {
+                context.scaleBy(x: size.width / 58, y: size.height / 58)
+                context.translateBy(x: -32, y: -17)
+            } else {
+                context.scaleBy(x: size.width / 180, y: size.height / 136)
+            }
             func line(_ points: [CGPoint], color: Color = Palette.ink, width: CGFloat = 2) {
                 var path = Path()
                 path.addLines(points)
@@ -136,11 +149,11 @@ struct AgentPresenceView: View {
             stroke(coat)
             line([CGPoint(x: 54, y: 65), CGPoint(x: 61, y: 69), CGPoint(x: 68, y: 65),
                   CGPoint(x: 68, y: 73), CGPoint(x: 61, y: 69), CGPoint(x: 54, y: 73), CGPoint(x: 54, y: 65)],
-                 color: Palette.accent)
+                 color: accent)
             line([CGPoint(x: 48, y: 80), CGPoint(x: 59, y: 91), CGPoint(x: 91, y: 93 + (active ? phase * 1.8 : 0))])
             if presence == .waiting {
-                line([CGPoint(x: 76, y: 79), CGPoint(x: 89, y: 63), CGPoint(x: 90, y: 36)], color: Palette.accent)
-                line([CGPoint(x: 85, y: 42), CGPoint(x: 90, y: 49), CGPoint(x: 96, y: 38)], color: Palette.accent)
+                line([CGPoint(x: 76, y: 79), CGPoint(x: 89, y: 63), CGPoint(x: 90, y: 36)], color: accent)
+                line([CGPoint(x: 85, y: 42), CGPoint(x: 90, y: 49), CGPoint(x: 96, y: 38)], color: accent)
             } else if presence == .thinking {
                 line([CGPoint(x: 75, y: 82), CGPoint(x: 88, y: 66), CGPoint(x: 77, y: 54 + phase)])
             } else {
@@ -156,9 +169,96 @@ struct AgentPresenceView: View {
                                CGPoint(x: 89, y: 98), CGPoint(x: 98, y: 71)])
             }
             context.fill(laptop, with: .color(Palette.surface))
-            stroke(laptop, color: Palette.accent)
+            stroke(laptop, color: accent)
             context.draw(Text(Image(systemName: presence.symbol)).font(.system(size: 19, weight: .medium))
-                .foregroundColor(Palette.accent), at: CGPoint(x: 137, y: 40))
+                .foregroundColor(accent), at: CGPoint(x: 137, y: 40))
         }
+    }
+}
+
+struct SubagentTeamView: View {
+    @ObservedObject var store: Store
+    let session: SessionRecord
+    var compact = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var presence: AgentPresence { AgentPresence(session: session) }
+    private var current: Bool { session.connected && session.team?.error == nil }
+    private var moving: Bool {
+        store.centerVisible && !reduceMotion && session.connected &&
+            (presence.animates(visible: true, reduceMotion: false) || (current && (session.team?.runningCount ?? 0) > 0))
+    }
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 0.125, paused: !moving)) { clock in
+            let phase = moving ? sin(clock.date.timeIntervalSinceReferenceDate * 4) : 0
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Your team").font(WorkspaceType.text(20, strong: true)).accessibilityAddTraits(.isHeader)
+                HStack(spacing: 8) {
+                    AgentIllustration(presence: presence, phase: phase, accent: store.sessionColor(session))
+                        .frame(width: 92, height: 72).accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Main agent").font(WorkspaceType.text(13, strong: true))
+                        Text(presence.title).font(WorkspaceType.text(12)).foregroundStyle(Palette.muted)
+                    }
+                }
+                Divider()
+                if let team = session.team {
+                    if let error = team.error {
+                        Text(error).font(WorkspaceType.text(12)).foregroundStyle(Palette.amber)
+                    } else {
+                        Text(current ? "\(team.runningCount) subagent\(team.runningCount == 1 ? "" : "s") running" : "Previous team")
+                            .font(WorkspaceType.text(13, strong: true))
+                        if current && team.idleCount > 0 {
+                            Text("\(team.idleCount) ready for follow-up").font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
+                        }
+                        if team.agents.isEmpty {
+                            Text("No subagents reported.").font(WorkspaceType.text(12)).foregroundStyle(Palette.muted)
+                        } else {
+                            ScrollView {
+                                LazyVStack(alignment: .leading, spacing: 16) {
+                                    ForEach(team.agents) { agent in
+                                        member(agent, phase: phase)
+                                    }
+                                    if team.truncated {
+                                        Text("Showing the first 100 agents. Counts include the full team.")
+                                            .font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
+                                    }
+                                }.padding(.vertical, 4)
+                            }.frame(maxHeight: compact ? 120 : .infinity).scrollIndicators(.visible)
+                        }
+                        if !current {
+                            Text("Reconnect to see current subagent status.").font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
+                        }
+                    }
+                } else {
+                    Text("Subagent status is not available yet.").font(WorkspaceType.text(12)).foregroundStyle(Palette.muted)
+                    Text(session.agent == "copilot" ? "An updated Notify extension supplies the live team." :
+                            "This connection does not report a live team.")
+                        .font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
+                }
+            }.frame(maxWidth: .infinity, maxHeight: compact ? nil : .infinity, alignment: .topLeading)
+        }
+    }
+    private func member(_ agent: SubagentRecord, phase: Double) -> some View {
+        let state: AgentPresence = !current ? .disconnected :
+            agent.status == .running ? .working : agent.status == .idle ? .resting :
+            agent.status == .failed ? .error : agent.status == .completed ? .finished : .resting
+        let recent = session.activity.entries.last { $0.agentID == agent.id }
+        return HStack(alignment: .top, spacing: 8) {
+            AgentIllustration(presence: state, phase: state == .working ? phase : 0, accent: store.sessionColor(session))
+                .frame(width: 68, height: 53).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(agent.name).font(WorkspaceType.text(13, strong: true)).lineLimit(2)
+                Text(!current ? "Last seen: \(agent.status.rawValue)" : agent.status == .idle ? "Ready for follow-up" : agent.status.rawValue.capitalized)
+                    .font(WorkspaceType.text(11)).foregroundStyle(agent.status == .failed ? Palette.error : Palette.muted)
+                Text(agent.task).font(WorkspaceType.text(12)).lineLimit(compact ? 2 : 4).help(agent.task)
+                if current, agent.status == .running, let recent, recent.kind == "tool" || recent.kind == "reasoning" {
+                    Text(recent.kind == "reasoning" ? "Thinking" : recent.title)
+                        .font(WorkspaceType.text(11)).foregroundStyle(Palette.muted).lineLimit(2).help(recent.title)
+                }
+                if !compact, let model = agent.model {
+                    Text(model).font(WorkspaceType.text(10)).foregroundStyle(Palette.muted).lineLimit(1).help(model)
+                }
+            }.textSelection(.enabled)
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }

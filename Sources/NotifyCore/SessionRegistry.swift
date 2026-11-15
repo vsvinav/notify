@@ -87,6 +87,11 @@ public struct SessionRegistry {
         guard sessions[id]?.connected == true else { throw ProtocolError.stale }
         try sessions[id]?.activity.receive(entry)
     }
+    public mutating func team(_ id: String, snapshot: SubagentTeam) throws {
+        guard sessions[id]?.connected == true else { throw ProtocolError.stale }
+        guard snapshot.isValid else { throw ProtocolError.invalid }
+        sessions[id]?.team = snapshot
+    }
     public mutating func add(_ request: AgentRequest, to id: String) throws {
         guard request.isValid, var session = sessions[id], session.connected else { throw ProtocolError.invalid }
         guard !session.requests.contains(where: { $0.id == request.id }) else { return }

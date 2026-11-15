@@ -235,6 +235,37 @@ do {
     preconditionFailure("Invalid event identity must be rejected")
 } catch ProtocolError.invalid {}
 print("Native session appearance and bounded activity checks passed")
+do {
+    func team(_ agents: [[String: Any]], running: Int = 1, idle: Int = 0, truncated: Bool = false) throws -> SubagentTeam {
+        try JSONDecoder().decode(SubagentTeam.self, from: JSONSerialization.data(withJSONObject: [
+            "agents": agents, "runningCount": running, "idleCount": idle, "truncated": truncated
+        ]))
+    }
+    let worker: [String: Any] = ["id": "child", "name": "Reviewer", "task": "Review the changes", "status": "running"]
+    var teams = SessionRegistry()
+    teams.register(id: "parent", agent: "copilot", cwd: "/project")
+    let snapshot = try team([worker])
+    try teams.team("parent", snapshot: snapshot)
+    check(teams.sessions["parent"]?.team?.runningCount == 1, "A real task snapshot supplies the active count")
+    let mismatched = try team([worker], running: 0)
+    let duplicate = try team([worker, worker], running: 2)
+    let oversized = try team(Array(repeating: worker, count: 101), running: 101)
+    for invalid in [mismatched, duplicate, oversized] {
+        do {
+            try teams.team("parent", snapshot: invalid)
+            preconditionFailure("Invalid task snapshots must be rejected")
+        } catch ProtocolError.invalid {}
+    }
+    let partial = try team([worker], running: 150, truncated: true)
+    check(partial.isValid, "Capped detail must retain the runtime's complete running count")
+    teams.disconnect("parent")
+    do {
+        try teams.team("parent", snapshot: snapshot)
+        preconditionFailure("Disconnected tasks must not be refreshed as live")
+    } catch ProtocolError.stale {}
+    teams.register(id: "parent", agent: "copilot", cwd: "/project")
+    check(teams.sessions["parent"]?.team == nil, "A fresh connection must not inherit old running counts")
+}
 var workSession = SessionRecord(id: "work-summary", agent: "copilot", cwd: "/project")
 try workSession.activity.receive(activity("work-action"))
 check(workSession.workHeadline == "Last action: Run tests", "Idle must not be described as a currently running tool")

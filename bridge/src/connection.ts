@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { PendingRequests } from "./pending.ts";
 import { object, type Request, type Reply } from "./protocol.ts";
 import type { ActivityEntry } from "./activity.ts";
+import type { SubagentTeam } from "./subagents.ts";
 
 export const discoveryPath = join(homedir(), "Library", "Application Support", "Notify", "connection.json");
 
@@ -25,6 +26,7 @@ export class Bridge {
   private receipts = new Map<string, { status: string; text: string }>();
   private activities = new Map<string, ActivityEntry>();
   private activityFeed = false;
+  private teamSnapshot?: SubagentTeam;
 
   constructor(readonly agent: string, readonly cwd: string, private readonly connectionFile = discoveryPath,
     readonly sessionID: string = randomUUID(), private readonly terminalChat = true) {
@@ -66,6 +68,7 @@ export class Bridge {
               this.send({ type: "state", state: this.state, text: this.lastText });
               if (this.title !== undefined) this.send({ type: "metadata", title: this.title, sourceSessionID: this.sourceSessionID });
               this.send({ type: "capabilities", ...this.capabilities, activityFeed: this.activityFeed });
+              if (this.teamSnapshot) this.send({ type: "team", team: this.teamSnapshot });
               for (const activity of this.activities.values()) this.send({ type: "activity", activity });
               for (const [commandID, receipt] of this.receipts) this.send({ type: "control_status", commandID, ...receipt });
               for (const request of this.pending.requests) this.send({ type: "request", request });
@@ -113,6 +116,10 @@ export class Bridge {
     this.send({ type: "capabilities", ...value, activityFeed: this.activityFeed });
   }
   enableActivity(): void { this.activityFeed = true; this.setCapabilities(this.capabilities); }
+  team(snapshot: SubagentTeam): void {
+    this.teamSnapshot = snapshot;
+    this.send({ type: "team", team: snapshot });
+  }
   activity(entry: ActivityEntry): void {
     this.activities.set(entry.id, entry);
     let size = [...this.activities.values()].reduce((n, item) => n + Buffer.byteLength(item.detail) + 1024, 0);

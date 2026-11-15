@@ -486,11 +486,18 @@ final class Store: ObservableObject {
             do {
                 let previous = registry.sessions[packet.sessionID]?.activity.entries.first(where: { $0.id == activity.id })
                 try registry.activity(packet.sessionID, entry: activity)
-                if activity.kind == "assistant", activity.status == "complete", previous?.status != "complete" {
+                if activity.kind == "assistant", activity.agentID == nil, activity.status == "complete", previous?.status != "complete" {
                     registry.output(packet.sessionID, text: activity.detail + "\n\n")
                 }
             }
             catch { localSessionErrors[packet.sessionID] = "Invalid activity event; check the original terminal." }
+        case "team":
+            guard let snapshot = packet.team else {
+                localSessionErrors[packet.sessionID] = "Agent sent an empty subagent snapshot."
+                return
+            }
+            do { try registry.team(packet.sessionID, snapshot: snapshot) }
+            catch { localSessionErrors[packet.sessionID] = "Invalid subagent status; check the original terminal." }
         case "control_status":
             if let id = packet.commandID, let status = packet.status {
                 steeringWorkspace.update(sessionID: packet.sessionID, commandID: id, status: status, text: packet.text ?? "")

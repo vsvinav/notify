@@ -11,7 +11,7 @@ export interface ActivityEntry {
   agentID?: string;
 }
 
-const bounded = (text: string) => text.length > 16000 ? text.slice(0, 15970) + "\n[Preview truncated]" : text;
+export const boundActivityText = (text: string) => text.length > 16000 ? text.slice(0, 15970) + "\n[Preview truncated]" : text;
 const text = (value: unknown) => typeof value === "string" ? value : "";
 
 export class ActivityFeed {
@@ -40,7 +40,7 @@ export class ActivityFeed {
         kind = "tool"; title = event.data.toolTitle || event.data.toolName; key = event.data.toolCallId; status = "running";
         const args = event.data.arguments;
         if (object(args)) detail = ["description", "command", "path", "file_path", "pattern"]
-          .filter(name => typeof args[name] === "string").map(name => `${name}: ${bounded(text(args[name]))}`).join("\n");
+          .filter(name => typeof args[name] === "string").map(name => `${name}: ${boundActivityText(text(args[name]))}`).join("\n");
         break;
       }
       case "tool.execution_complete":
@@ -65,7 +65,7 @@ export class ActivityFeed {
       detail = `${command}\n\nResult:\n${detail}`;
     }
     const entry: ActivityEntry = {
-      id, kind, title: title.slice(0, 300), detail: bounded(delta ? (previous?.detail ?? "") + detail : detail),
+      id, kind, title: title.slice(0, 300), detail: boundActivityText(delta ? (previous?.detail ?? "") + detail : detail),
       status, timestamp: previous?.timestamp ?? event.timestamp, ...(event.agentId ? { agentID: event.agentId } : {})
     };
     this.entries.set(id, entry);

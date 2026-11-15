@@ -1,5 +1,40 @@
 import Foundation
 
+public enum SubagentStatus: String, Codable {
+    case running, idle, completed, failed, cancelled
+}
+
+public struct SubagentRecord: Codable, Identifiable, Equatable {
+    public let id: String
+    public let name: String
+    public let task: String
+    public let status: SubagentStatus
+    public let model: String?
+
+    public var isValid: Bool {
+        !id.isEmpty && id.count <= 128 && !name.isEmpty && name.count <= 160 &&
+        task.count <= 1000 && (model?.count ?? 0) <= 200
+    }
+}
+
+public struct SubagentTeam: Codable, Equatable {
+    public let agents: [SubagentRecord]
+    public let runningCount: Int
+    public let idleCount: Int
+    public let truncated: Bool
+    public let error: String?
+
+    public var isValid: Bool {
+        guard agents.count <= 100, agents.allSatisfy(\.isValid),
+              Set(agents.map(\.id)).count == agents.count,
+              (0...1_000_000).contains(runningCount), (0...1_000_000).contains(idleCount),
+              (error?.count ?? 0) <= 1000 else { return false }
+        let running = agents.filter { $0.status == .running }.count
+        let idle = agents.filter { $0.status == .idle }.count
+        return truncated ? runningCount >= running && idleCount >= idle : runningCount == running && idleCount == idle
+    }
+}
+
 public struct ActivityEntry: Codable, Identifiable, Equatable {
     public let id: String
     public let kind: String

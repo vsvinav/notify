@@ -117,6 +117,7 @@ public struct AgentPacket: Decodable {
     public let status: String?
     public let activity: ActivityEntry?
     public let activityFeed: Bool?
+    public let team: SubagentTeam?
 }
 
 public struct SessionRecord: Identifiable {
@@ -130,6 +131,7 @@ public struct SessionRecord: Identifiable {
     public var canAutoYes = false
     public var hasActivityFeed = false
     public var activity = SessionActivity()
+    public var team: SubagentTeam?
     public var ownerPID: Int32?
     public var isSaved = false
     public var connected = true

@@ -195,8 +195,11 @@ private struct WorkRow: View {
     let session: SessionRecord
     @State private var hovering = false
     var body: some View {
-        HStack(spacing: 11) {
-                Circle().fill(store.sessionColor(session)).frame(width: 8, height: 8)
+        HStack(alignment: .top, spacing: 10) {
+                AgentIllustration(presence: AgentPresence(session: session), accent: store.sessionColor(session), portrait: true)
+                    .frame(width: 36, height: 36)
+                    .background(store.sessionColor(session).opacity(0.18), in: Circle())
+                    .clipShape(Circle()).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(session.name).font(WorkspaceType.text(14, strong: true)).lineLimit(2)
                     Text("\(agentName(session.agent)) · \(session.projectLabel)")
@@ -204,6 +207,14 @@ private struct WorkRow: View {
                     Text(session.needsSetup ? "Needs setup" : !session.connected ? "Disconnected" :
                             session.requests.first?.title ?? stateName(session.state))
                         .font(WorkspaceType.text(12)).foregroundStyle(Palette.muted).lineLimit(2)
+                    if session.connected, let team = session.team, team.error == nil {
+                        Label("\(team.runningCount) running", systemImage: "person.2")
+                            .font(WorkspaceType.text(10)).foregroundStyle(Palette.muted)
+                            .help("Running subagents: \(team.runningCount)")
+                    } else if session.connected {
+                        Label("Team unavailable", systemImage: "person.2")
+                            .font(WorkspaceType.text(10)).foregroundStyle(Palette.muted)
+                    }
                     if store.automation.dangerous.contains(session.id) {
                         Label("Dangerous Auto-yes", systemImage: "exclamationmark.triangle.fill")
                             .font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.error)
@@ -229,7 +240,7 @@ private struct WorkDetail: View {
     init(store: Store, session: SessionRecord) {
         self.store = store
         self.session = session
-        _tab = State(initialValue: session.connected && !session.needsSetup && !session.isSaved && session.requests.isEmpty ? "Controls" : "Decision")
+        _tab = State(initialValue: session.connected && !session.needsSetup && !session.isSaved && session.requests.isEmpty ? "Responses" : "Decision")
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -250,6 +261,7 @@ private struct WorkDetail: View {
                 HStack(alignment: .top, spacing: 20) {
                     VStack(alignment: .leading, spacing: 16) {
                         Picker("Session view", selection: $tab) {
+                            Text("Responses").tag("Responses")
                             Text(session.requests.isEmpty ? "Overview" : "Decision").tag("Decision")
                             Text("Controls").tag("Controls")
                             Text("Settings").tag("Session")
@@ -268,12 +280,14 @@ private struct WorkDetail: View {
                     }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     Divider()
                     VStack(alignment: .leading, spacing: 16) {
-                        AgentPresenceView(presence: AgentPresence(session: session), visible: store.centerVisible)
-                        Divider()
-                        Label(session.connected && !session.needsSetup && !session.isSaved ? "Live activity" : "Recent activity",
-                              systemImage: "text.alignleft")
-                            .font(WorkspaceType.text(16, strong: true))
-                        SessionTimeline(store: store, showsHeader: false)
+                        SubagentTeamView(store: store, session: session, compact: tab != "Responses")
+                        if tab != "Responses" {
+                            Divider()
+                            Label(session.connected && !session.needsSetup && !session.isSaved ? "Live activity" : "Recent activity",
+                                  systemImage: "text.alignleft")
+                                .font(WorkspaceType.text(16, strong: true))
+                            SessionTimeline(store: store, showsHeader: false)
+                        }
                     }.frame(width: min(310, max(252, geometry.size.width * 0.36)),
                             height: geometry.size.height, alignment: .topLeading)
                 }
@@ -281,7 +295,12 @@ private struct WorkDetail: View {
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
     @ViewBuilder private var content: some View {
-            if tab == "Controls" {
+            if tab == "Responses" {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(session.connected ? "Live activity" : "Recent responses").font(WorkspaceType.text(25, strong: true))
+                    SessionTimeline(store: store, showsHeader: false)
+                }
+            } else if tab == "Controls" {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Give your agent direction.").font(WorkspaceType.text(25, strong: true))
                     Text("Queue the next step, redirect the current turn, or stop its work. Your terminal stays open.")

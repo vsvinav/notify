@@ -3,6 +3,8 @@ import { CopilotClient, RuntimeConnection, type CopilotSession, type SessionConf
 import { Bridge } from "./connection.ts";
 import { claudeQuestions, formQuestions, formContent, safeRead, type Question } from "./protocol.ts";
 import { claudePermissionOptions, scopedOptions, selectedPermissionOption, type ScopedOption } from "./permission-options.ts";
+import { attachSubagents } from "./subagents.ts";
+import { ActivityFeed, boundActivityText } from "./activity.ts";
 
 const detail = (value: unknown) => JSON.stringify(value, null, 2).slice(0, 120_000);
 
@@ -53,6 +55,7 @@ export class ClaudeAgent {
   }
   async send(prompt: string): Promise<void> {
     this.controller = new AbortController();
+    this.bridge.enableActivity();
     this.current = this.makeQuery({
       prompt,
       options: {
@@ -94,9 +97,20 @@ export class ClaudeAgent {
       for await (const message of this.current) {
         if ("session_id" in message) this.resume = message.session_id;
         if (message.type === "assistant") {
+          const paragraphs: string[] = [];
           for (const block of message.message.content) {
-            if (block.type === "text") this.bridge.output(block.text + "\n");
-            else if (block.type === "tool_use") this.bridge.setState("working", `Using ${block.name}`);
+            if (block.type === "text") {
+              paragraphs.push(block.text);
+              this.bridge.output(block.text + "\n");
+            } else if (block.type === "tool_use") this.bridge.setState("working", `Using ${block.name}`);
+          }
+          const response = paragraphs.join("\n");
+          if (response.trim()) {
+            this.bridge.activity({
+              id: message.uuid, kind: "assistant", title: "Agent response",
+              detail: boundActivityText(response), status: "complete", timestamp: new Date().toISOString(),
+              ...(message.parent_tool_use_id ? { agentID: message.parent_tool_use_id } : {})
+            });
           }
         }
         if (message.type === "result" && message.is_error) {
@@ -120,6 +134,8 @@ export class ClaudeAgent {
 export class CopilotAgent {
   private client: CopilotClient;
   private session?: CopilotSession;
+  private team?: ReturnType<typeof attachSubagents>;
+  private activity?: ActivityFeed;
   constructor(private bridge: Bridge, executable: string, private model?: string, private resume?: string) {
     this.client = new CopilotClient({ connection: RuntimeConnection.forStdio({ path: executable }), workingDirectory: bridge.cwd });
   }
@@ -175,8 +191,13 @@ export class CopilotAgent {
     };
     this.session = this.resume ? await this.client.resumeSession(this.resume, config) : await this.client.createSession(config);
     this.bridge.setTitle("", this.session.sessionId);
+    this.team = attachSubagents(this.session, this.bridge);
+    void this.team.refresh();
+    this.activity = new ActivityFeed(entry => this.bridge.activity(entry));
+    this.bridge.enableActivity();
     console.log(`Copilot session: ${this.session.sessionId}`);
     this.session.on(event => {
+      this.activity?.receive(event);
       if (event.type === "assistant.message_delta") this.bridge.output(event.data.deltaContent);
       else if (event.type === "session.title_changed") this.bridge.setTitle(event.data.title, this.session!.sessionId);
       else if (event.type === "tool.execution_start") this.bridge.setState("working", `Using ${event.data.toolName}`);
@@ -191,6 +212,8 @@ export class CopilotAgent {
     } finally { this.bridge.pending.discardAll(); }
   }
   async stop(): Promise<void> {
+    this.team?.stop();
+    this.activity?.stop();
     this.bridge.pending.discardAll();
     if (this.session) await this.session.disconnect();
     const errors = await this.client.stop();

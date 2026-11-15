@@ -10,6 +10,7 @@ import Vision
         NSApp.setActivationPolicy(.accessory)
         NSApp.appearance = NSAppearance(named: .aqua)
         NSApp.finishLaunching()
+        ResponseRenderingChecks.run()
         let plist = try PropertyListSerialization.propertyList(from: Data(contentsOf: URL(fileURLWithPath: "resources/Info.plist")), format: nil) as! [String: Any]
         precondition(plist["LSUIElement"] as? Bool != true, "Notify must be a normal Dock application, not a hidden menu-bar agent")
         let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent("notify-ui-" + UUID().uuidString)
@@ -18,6 +19,37 @@ import Vision
         let defaults = UserDefaults(suiteName: suite)!
         defaults.set("dark", forKey: "appearanceMode")
         let store = Store(directory: fixtureRoot, defaults: defaults)
+        do {
+            let teamStore = Store(directory: fixtureRoot.appendingPathComponent("team"), defaults: defaults)
+            defer { teamStore.stop() }
+            func receiveTeam(_ value: [String: Any]) throws {
+                teamStore.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: JSONSerialization.data(withJSONObject: value)))
+            }
+            try receiveTeam(["type": "hello", "sessionID": "team-session", "agent": "copilot", "cwd": "/Projects/example"])
+            try receiveTeam(["type": "team", "sessionID": "team-session", "team": [
+                "agents": [["id": "worker-1", "name": "Reviewer", "task": "Review the changes", "status": "running"]],
+                "runningCount": 1, "idleCount": 0, "truncated": false
+            ]])
+            precondition(teamStore.error == nil, "Native sessions must accept authoritative subagent snapshots. Fixture: \(fixtureRoot.path)")
+            precondition(teamStore.registry.sessions["team-session"]?.team?.runningCount == 1)
+            try receiveTeam(["type": "team", "sessionID": "team-session", "team": [
+                "agents": [], "runningCount": 0, "idleCount": 0, "truncated": false
+            ]])
+            precondition(teamStore.registry.sessions["team-session"]?.team?.agents.isEmpty == true,
+                         "Authoritative snapshots must remove finished or vanished agents")
+            try receiveTeam(["type": "hello", "sessionID": "team-session", "agent": "copilot", "cwd": "/Projects/example"])
+            precondition(teamStore.registry.sessions["team-session"]?.team == nil,
+                         "Reconnect must wait for a fresh snapshot instead of claiming an old running count")
+            for (id, child) in [("main-reply", false), ("child-reply", true)] {
+                var activity: [String: Any] = ["id": id, "kind": "assistant", "title": "Agent response",
+                                               "detail": id, "status": "complete", "timestamp": ISO8601DateFormatter().string(from: Date())]
+                if child { activity["agentID"] = "worker-1" }
+                try receiveTeam(["type": "activity", "sessionID": "team-session", "activity": activity])
+            }
+            precondition(teamStore.registry.sessions["team-session"]?.output.contains("main-reply") == true &&
+                         teamStore.registry.sessions["team-session"]?.output.contains("child-reply") == false,
+                         "Legacy conversation context must not mislabel child responses as the main agent")
+        }
         do {
             let recovering = Store(directory: fixtureRoot.appendingPathComponent("error-recovery"), defaults: defaults)
             defer { recovering.stop() }
@@ -332,7 +364,7 @@ import Vision
                      "Only visible working/thinking agents may animate, respecting Reduce Motion")
         let host = NSHostingView(rootView: RequestEditor(store: store, session: session, request: request)
             .padding(20).background(Palette.surface).preferredColorScheme(.light))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 410, height: 430),
+        let window = ReplyPanel(contentRect: NSRect(x: 0, y: 0, width: 410, height: 430),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = host
         host.frame = NSRect(x: 0, y: 0, width: 410, height: 430)
@@ -642,9 +674,9 @@ import Vision
                      "The workspace must expose live activity alongside direct agent controls, not hide them in separate screens")
         func showActivity(in view: NSView) {
             guard let tabs = descendants(view).compactMap({ $0 as? NSSegmentedControl }).first(where: {
-                $0.segmentCount == 3 && $0.label(forSegment: 1) == "Controls"
+                $0.segmentCount == 4 && $0.label(forSegment: 2) == "Controls"
             }) else { preconditionFailure("Session navigation must expose recognizable native tabs") }
-            tabs.selectedSegment = 1
+            tabs.selectedSegment = 2
             precondition(tabs.sendAction(tabs.action, to: tabs.target), "Controls navigation must respond without hiding live activity")
             for _ in 0..<10 {
                 view.layoutSubtreeIfNeeded()
@@ -678,6 +710,28 @@ import Vision
                     "detail": "Read the relevant implementation before making changes.", "status": "complete",
                     "timestamp": ISO8601DateFormatter().string(from: Date().addingTimeInterval(-95))
                 ]])
+                try receive(["type": "activity", "sessionID": id, "activity": [
+                    "id": "reply-\(index)", "kind": "assistant", "title": "Agent response",
+                    "detail": index == 0 ? "I found the expired-token path. The change is ready for a focused check." :
+                        "I am checking the implementation and its edge cases before making changes.",
+                    "status": "complete", "timestamp": ISO8601DateFormatter().string(from: Date().addingTimeInterval(-90))
+                ]])
+                if index != 1 {
+                    let helpers: [[String: Any]] = index == 0 || index == 2 ? [
+                        ["id": "worker-one", "name": "Code explorer", "task": "Trace focus order through the overflow menu", "status": "running", "model": "Claude Sonnet"],
+                        ["id": "worker-two", "name": "Test runner", "task": "Exercise keyboard navigation and dismissal", "status": "running"],
+                        ["id": "worker-three", "name": "Reviewer", "task": "Review the proposed keyboard changes", "status": "idle"]
+                    ] : []
+                    try receive(["type": "team", "sessionID": id, "team": [
+                        "agents": helpers, "runningCount": helpers.isEmpty ? 0 : 2,
+                        "idleCount": helpers.isEmpty ? 0 : 1, "truncated": false
+                    ]])
+                    try receive(["type": "activity", "sessionID": id, "activity": [
+                        "id": "child-tool", "agentID": "worker-one", "kind": "tool", "title": "Reading menu.tsx",
+                        "detail": "PRIVATE CHILD TOOL DETAIL", "status": "running",
+                        "timestamp": ISO8601DateFormatter().string(from: Date())
+                    ]])
+                }
             }
             let choices = [
                 ["id": "session", "label": "Allow every time in this session", "detail": "Command pattern: npm test. Applies to this running session; resume may ask again."],
@@ -866,8 +920,9 @@ import Vision
                     let right = (recognition.results ?? []).filter { $0.boundingBox.minX > 0.68 }
                         .compactMap { $0.topCandidates(1).first?.string }
                     if name == "control-center.png" {
-                        precondition(right.joined(separator: " ").contains("Read the relevant"),
-                                     "Actual tool activity must be readable without expanding every entry. Found: \(right)")
+                        precondition(right.joined(separator: " ").contains("expired-token") &&
+                                     !right.joined(separator: " ").contains("Read the relevant"),
+                                     "Only agent responses, not tool details, belong in the response feed. Found: \(right)")
                     } else {
                         precondition(right.contains("Disconnected"), "The agent state must not wrap in the middle of a word")
                     }
@@ -898,6 +953,48 @@ import Vision
                     let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
                     precondition(text.contains("Connected") && text.contains("Not connected"),
                                  "Rendered connection groups must remain findable. Found: \(text)")
+                }
+                if name == "control-center-responses.png" {
+                    let recognition = VNRecognizeTextRequest()
+                    recognition.recognitionLevel = .accurate
+                    try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                    guard let copy = recognition.results?.first(where: { $0.topCandidates(1).first?.string.split(separator: " ").last == "Copy" }) else {
+                        preconditionFailure("Code blocks must expose a visible Copy action")
+                    }
+                    let pasteboard = NSPasteboard.general
+                    let original = (pasteboard.pasteboardItems ?? []).map { item in
+                        let saved = NSPasteboardItem()
+                        for type in item.types {
+                            if let data = item.data(forType: type) { saved.setData(data, forType: type) }
+                        }
+                        return saved
+                    }
+                    let wasVisible = window.isVisible
+                    window.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                    let activationDeadline = Date().addingTimeInterval(2)
+                    while !NSApp.isActive && Date() < activationDeadline {
+                        pumpNativeEvents()
+                        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+                    }
+                    precondition(NSApp.isActive && window.isKeyWindow,
+                                 "Pointer interaction requires an active fixture window (app: \(NSApp.isActive), key: \(window.isKeyWindow))")
+                    let location = capture.convert(NSPoint(x: copy.boundingBox.midX * capture.bounds.width,
+                        y: (capture.isFlipped ? 1 - copy.boundingBox.midY : copy.boundingBox.midY) * capture.bounds.height), to: nil)
+                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                        window.sendEvent(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                            context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!)
+                        pumpNativeEvents()
+                    }
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+                    let copiedCode = pasteboard.string(forType: .string)
+                    pasteboard.clearContents()
+                    precondition(original.isEmpty || pasteboard.writeObjects(original), "The clipboard fixture must restore the previous contents")
+                    if !wasVisible { window.orderOut(nil) }
+                    precondition(copiedCode ==
+                        "function closeMenu(trigger: HTMLElement) {\n  setOpen(false);\n  trigger.focus();\n}\n",
+                                 "Copy must preserve code whitespace without its Markdown fences")
                 }
             }
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center.png")
@@ -984,13 +1081,31 @@ import Vision
             visual.select("visual-2")
             for (id, kind, title, text) in [
                 ("reason", "reasoning", "Published reasoning", "The focus order should follow the visible navigation, including the overflow menu."),
-                ("response", "assistant", "Agent response", "I found a focus-order mismatch in the overflow menu. Next I will update the keyboard navigation test.")
+                ("response", "assistant", "Agent response", """
+                ## A clearer keyboard path
+
+                The overflow menu now follows the visible navigation. `Escape` returns focus to the trigger.
+
+                ```typescript
+                function closeMenu(trigger: HTMLElement) {
+                  setOpen(false);
+                  trigger.focus();
+                }
+                ```
+
+                - Keep the current selection.
+                - Check tab order before continuing.
+                """)
             ] {
                 try receive(["type": "activity", "sessionID": "visual-2", "activity": [
                     "id": id, "kind": kind, "title": title, "detail": text, "status": "complete",
                     "timestamp": ISO8601DateFormatter().string(from: Date())
                 ]])
             }
+            try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center-responses.png")
+            try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center-responses-dark.png", appearance: .darkAqua)
+            try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-responses-small.png")
+            try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-responses-small-dark.png", appearance: .darkAqua)
             try capture(DashboardView(store: visual), width: 1120, height: 800, name: "control-center-activity.png")
             try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-controls-small.png")
             try capture(DashboardView(store: visual), width: 960, height: 620, name: "control-center-controls-dark.png", appearance: .darkAqua)
@@ -1208,7 +1323,7 @@ import Vision
         assertReturnReleased("Return must be released after key-up when the request is already sending")
         store.sending.remove("dock-test")
         store.onAttentionChange?()
-        let replyPanel = NSApp.windows.compactMap { $0 as? ReplyPanel }.first!
+        let replyPanel = NSApp.windows.compactMap { $0 as? ReplyPanel }.first { $0 !== window }!
         let confirmation = NSAlert()
         confirmation.messageText = "Synthetic dangerous-mode confirmation"
         confirmation.addButton(withTitle: "Cancel")
