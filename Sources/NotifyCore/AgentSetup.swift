@@ -83,4 +83,68 @@ public enum AgentSetup {
         default: return error.localizedDescription
         }
     }
+
+    static let hookEvents = [
+        "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+        "PermissionRequest", "Stop", "SubagentStart", "SubagentStop", "SessionEnd"
+    ]
+
+    public static func installClaude(_ snapshot: AgentSetupSnapshot) throws {
+        guard snapshot.nodeReady, let node = snapshot.node, let script = snapshot.script else {
+            throw NSError(domain: "NotifySetup", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                "Install Node.js 22.18 or newer and reopen an installed copy of Notify before adding hooks."])
+        }
+        let configDir = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"]
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude").path
+        let settingsURL = URL(fileURLWithPath: configDir).appendingPathComponent("settings.json")
+        let hookCommand = "\(TerminalSession.shellQuote(node.path)) \(TerminalSession.shellQuote(script.path.replacingOccurrences(of: "cli.js", with: "claude-hook.js")))"
+        // Read existing settings or start fresh.
+        var settings: [String: Any]
+        if FileManager.default.fileExists(atPath: settingsURL.path) {
+            guard let data = try? Data(contentsOf: settingsURL),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw NSError(domain: "NotifySetup", code: 2, userInfo: [NSLocalizedDescriptionKey:
+                    "settings.json exists but is not valid JSON. Back it up and remove it before adding Notify hooks."])
+            }
+            settings = obj
+        } else {
+            try FileManager.default.createDirectory(
+                at: URL(fileURLWithPath: configDir), withIntermediateDirectories: true)
+            settings = [:]
+        }
+        // Merge hooks — idempotent.
+        var hooks = settings["hooks"] as? [String: Any] ?? [:]
+        let entry: [String: Any] = ["hooks": [["type": "command", "command": hookCommand]]]
+        for event in hookEvents {
+            var eventHooks = hooks[event] as? [[String: Any]] ?? []
+            let alreadyPresent = eventHooks.contains { group in
+                (group["hooks"] as? [[String: Any]])?.contains { h in h["command"] as? String == hookCommand } == true
+            }
+            if !alreadyPresent { eventHooks.append(entry) }
+            hooks[event] = eventHooks
+        }
+        settings["hooks"] = hooks
+        let updated = try JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys])
+        try updated.write(to: settingsURL, options: .atomic)
+        // Restrict permissions to owner-only.
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: settingsURL.path)
+    }
+
+    public static func claudeHooksInstalled(_ snapshot: AgentSetupSnapshot) -> Bool {
+        guard let script = snapshot.script else { return false }
+        let hookScript = script.path.replacingOccurrences(of: "cli.js", with: "claude-hook.js")
+        let configDir = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"]
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude").path
+        let settingsURL = URL(fileURLWithPath: configDir).appendingPathComponent("settings.json")
+        guard let data = try? Data(contentsOf: settingsURL),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let hooks = obj["hooks"] as? [String: Any] else { return false }
+        return hookEvents.allSatisfy { event in
+            (hooks[event] as? [[String: Any]])?.contains { group in
+                (group["hooks"] as? [[String: Any]])?.contains { h in
+                    (h["command"] as? String)?.contains(hookScript) == true
+                } == true
+            } == true
+        }
+    }
 }
