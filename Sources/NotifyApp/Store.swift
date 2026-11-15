@@ -462,7 +462,7 @@ final class Store: ObservableObject {
                 switch result {
                 case .success(let desc):
                     var updated = self.descriptions
-                    updated[session.id] = desc
+                    updated[session.sourceSessionID ?? session.id] = desc
                     self.descriptions = updated
                     try? DescriptionCache.save(updated, in: self.directory)
                 case .failure(let err):

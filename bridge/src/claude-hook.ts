@@ -122,13 +122,24 @@ async function daemonMode(sessionID: string, cwd: string, claudePID: number, tra
     }
 
     const escaped = text.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    // Prepend "tty" so ps output "s002" becomes "ttys002"; iTerm2 reports "/dev/ttys002".
+    const ttyDevice = `tty${tty}`;
     let script: string;
+    const sessionFinder = `set foundSession to missing value
+  repeat with w in windows
+    repeat with t in tabs of w
+      repeat with s in sessions of t
+        if tty of s ends with "/dev/${ttyDevice}" then set foundSession to s
+      end repeat
+    end repeat
+  end repeat
+  if foundSession is missing value then error "Claude terminal not found."`;
     if (action === "stop") {
-      script = `tell application "iTerm2"\ntell current window\ntell current session\nwrite text "${"\u001b"}" newline NO\nend tell\nend tell\nend tell`;
+      script = `tell application "iTerm2"\n  ${sessionFinder}\n  tell foundSession to write text "${"\u001b"}" newline NO\nend tell`;
     } else if (action === "interrupt") {
-      script = `tell application "iTerm2"\ntell current window\ntell current session\nwrite text "${"\u001b"}" newline NO\nwrite text "${escaped}"\nend tell\nend tell\nend tell`;
+      script = `tell application "iTerm2"\n  ${sessionFinder}\n  tell foundSession to write text "${"\u001b"}" newline NO\n  tell foundSession to write text "${escaped}"\nend tell`;
     } else {
-      script = `tell application "iTerm2"\ntell current window\ntell current session\nwrite text "${escaped}"\nend tell\nend tell\nend tell`;
+      script = `tell application "iTerm2"\n  ${sessionFinder}\n  tell foundSession to write text "${escaped}"\nend tell`;
     }
 
     try {
@@ -378,7 +389,7 @@ async function findClaudeTTY(pid: number): Promise<string> {
   return row.tty;
 }
 
-async function runOsascript(script: string, _tty: string): Promise<void> {
+async function runOsascript(script: string, tty: string): Promise<void> {
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");
   const exec = promisify(execFile);
