@@ -4,11 +4,13 @@
 
 A lightweight native Mac app for Copilot and Claude Code. See which session needs you, review its request, and approve, deny or answer from a floating panel. Connect your phone when you want to step away from the Mac.
 
+**Visual team workspace:** see the main agent and its reported subagents alongside readable assistant responses and copyable code blocks. The [previous design and its installation guide are preserved on v1](https://github.com/vsvinav/notify/tree/v1).
+
 [Install on Mac](#install-on-macos) · [Quickstart](#quickstart) · [Screenshots](#screenshots) · [Install on your phone](#use-your-phone)
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/sessions-dark.png">
-  <img src="docs/images/sessions.png" alt="Notify control center with connected sessions, a pending command, reply controls and live agent activity">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/visual-teams-dark.png">
+  <img src="docs/images/visual-teams.png" alt="Notify visual control center with assistant responses, a copyable code block, and an illustrated main agent and subagent team">
 </picture>
 
 ## Install on macOS
@@ -44,6 +46,8 @@ This installs **`~/Applications/Notify.app`** and the **`~/.local/bin/notify`** 
 3. **Answer a request.** A floating panel shows the session, project and exact command, address or question. Approve, deny, choose an option, or write your own answer where supported.
 4. **Make it yours.** Pick System, Light or Dark in main Settings. Assign session colors, reorder sessions, or connect your phone.
 
+Select a connected Copilot session's **Responses** tab to read assistant replies and see its reported team. Use **Controls** to queue a message, interrupt the main turn or stop supported work. In this preview, the response feed is read-only and subagent rows show status, not individual controls; native chat and per-subagent controls are still in development.
+
 Try a sample request without starting an agent or spending model credits:
 
 ```sh
@@ -70,18 +74,20 @@ Try a sample request without starting an agent or spending model credits:
 ### Keep an eye on unattended work
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/dangerous-mode-dark.png">
-  <img src="docs/images/dangerous-mode.png" alt="Notify showing a persistent red Dangerous Auto-yes warning and a Turn off button">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/visual-controls-dark.png">
+  <img src="docs/images/visual-controls.png" alt="Notify visual team workspace with a persistent red Dangerous Auto-yes warning and a Turn off button">
 </picture>
 
-<p align="center"><sub>Captured from the current native app with example sessions. These are rendered app screens, not mockups.</sub></p>
+<p align="center"><sub>Captured from the committed native visual preview with example sessions. These are rendered app screens, not mockups or the unfinished next version.</sub></p>
 
 ## What you can do
 
 - **Review the actual request.** Prominent commands, URLs and paths; expandable details when you need them.
 - **Reply your way.** Approvals, denials, single/multiple choices and supported custom answers.
 - **Keep sessions organized.** Live and saved sessions, clear connection states, drag-to-reorder and twenty shared colors.
-- **Watch and steer.** Follow reported activity; queue, interrupt or stop supported attached Copilot sessions.
+- **See the team.** Illustrated main agent and subagents, with reported tasks and real running/idle counts when the connection supplies them.
+- **Read responses, not tool logs.** Assistant replies render as Markdown with headings, lists and code blocks with Copy.
+- **Steer the main session.** Queue, interrupt or stop supported attached Copilot sessions from Controls. This is not an embedded terminal.
 - **Choose when to step aside.** Supported Copilot sessions offer separate Dangerous Auto-yes for waiting and future eligible tools, with explicit confirmation, red warnings and an Off control.
 - **Use your phone.** Pair an iPhone or Android Home Screen app for same-network replies and optional generic background alerts.
 
