@@ -1,4 +1,6 @@
-# Notify
+# Notify v1
+
+**Previous design, preserved.** This branch contains the original decision-first control center and its matching screenshots. For the newer visual team workspace, see [Notify on main](https://github.com/vsvinav/notify).
 
 **Your terminal needs an answer. Stay where you are.**
 
@@ -24,7 +26,7 @@ open ~/Applications/Notify.app
 You'll need **macOS 14+**, **Node.js 22.18+**, Apple's command-line tools, and an installed, signed-in Copilot or Claude Code CLI. If Apple's tools are missing, run `xcode-select --install` first. Both repositories must be accessible to your GitHub account; the mobile companion repository is currently private.
 
 ```sh
-git clone https://github.com/vsvinav/notify.git
+git clone --branch v1 --single-branch https://github.com/vsvinav/notify.git
 git clone https://github.com/vsvinav/notify-mobile.git
 cd notify
 
@@ -74,7 +76,7 @@ Try a sample request without starting an agent or spending model credits:
   <img src="docs/images/dangerous-mode.png" alt="Notify showing a persistent red Dangerous Auto-yes warning and a Turn off button">
 </picture>
 
-<p align="center"><sub>Captured from the current native app with example sessions. These are rendered app screens, not mockups.</sub></p>
+<p align="center"><sub>Captured from the v1 native app with example sessions. These screenshots preserve the previous design, not the newer visual team workspace.</sub></p>
 
 ## What you can do
 
