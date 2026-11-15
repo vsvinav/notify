@@ -6,10 +6,15 @@ import Vision
 
 @main struct UIChecks {
     @MainActor static func main() throws {
+        let previousApplication = NSWorkspace.shared.frontmostApplication
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.accessory)
         NSApp.appearance = NSAppearance(named: .aqua)
         NSApp.finishLaunching()
+        if CommandLine.arguments.contains("--notification-focus") {
+            try NotificationFocusChecks.run(previousApplication: previousApplication)
+            return
+        }
         if CommandLine.arguments.contains("--performance") {
             try AgentPerformanceChecks.run()
             return
