@@ -74,6 +74,8 @@ Try a fictional request without an agent call or model credits:
 
 **Internet:** use **Settings > Internet**, enter your operator's exact HTTPS origin, enable access and choose **Pair an internet device**. Sign in with a passkey, then compare the **complete public key** on both devices before approving on the Mac. A short code is insufficient. The Android native client is separate from the LAN web app; use its versioned APK and release instructions supplied by your operator.
 
+**Different account or stuck pairing:** try the original Notify passkey first. Build 7 adds **Start fresh internet setup** under **Pairing recovery**: turn internet off, wait for the helper to stop, and confirm the private backup before pairing again. It never resets automatically or changes terminal sessions, LAN pairing or Google passkeys. This recovery button is not included in the published beta 4/build 6. See [safe recovery](docs/remote-setup.md#8-revoke-rotate-and-recover-safely).
+
 [Complete setup: joining a service, Render, Firebase/Firestore, Android and alerts](docs/remote-setup.md).
 
 Durable Firestore preserves approved pairing across normal service restarts; account sessions and routing grants are short-lived, so sign-in can be required again. Records already lost by an older memory-only service cannot be reconstructed: one explicit new enrollment may be necessary. Never delete or silently import trust to repair it.

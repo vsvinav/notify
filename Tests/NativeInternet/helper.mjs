@@ -4,6 +4,11 @@ import { basename, dirname, join } from "node:path";
 import { createConnection } from "node:net";
 
 let directory, agent;
+process.on("SIGTERM", () => {
+  if (directory && existsSync(join(directory, "delay-stop"))) {
+    setTimeout(() => process.exit(0), 300);
+  } else process.exit(0);
+});
 const emit = value => process.stdout.write(JSON.stringify(value) + "\n");
 for await (const line of createInterface({ input: process.stdin })) {
   const command = JSON.parse(line);

@@ -1,6 +1,8 @@
 import Foundation
 import AppKit
 import NotifyCore
+import SwiftUI
+import Vision
 
 private final class MemoryDefaults: UserDefaults {
     private var values: [String: Any] = [:]
@@ -17,7 +19,7 @@ private final class MemoryDefaults: UserDefaults {
         Swift.precondition(condition, message, file: file, line: line)
     }
 
-    static func main() throws {
+    @MainActor static func main() throws {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(".build/internet-check-" + UUID().uuidString)
         let defaults = MemoryDefaults()
@@ -221,6 +223,159 @@ private final class MemoryDefaults: UserDefaults {
         let restarted = Store(directory: root.appendingPathComponent("restarted"), defaults: defaults, mobileResources: resources)
         precondition(!restarted.internet.enabled)
         restarted.stop()
-        print("Native internet checks passed: opt-in, strict origins, helper errors, isolated tickets/IDs, exact ACKs, disconnect uncertainty; no app launch or Keychain access.")
+        let recoveryDirectory = root.appendingPathComponent("recovery")
+        try FileManager.default.createDirectory(at: recoveryDirectory, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        let originalIdentity = Data("synthetic saved account and phone trust".utf8)
+        let identityFile = recoveryDirectory.appendingPathComponent("identity.json")
+        try originalIdentity.write(to: identityFile)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: identityFile.path)
+        try Data().write(to: recoveryDirectory.appendingPathComponent("delay-stop"))
+        let recovery = MobileConnection(directory: recoveryDirectory, defaults: defaults, resources: resources, transport: .internet)
+        defer { recovery.stop() }
+        recovery.setEnabled(true)
+        wait { recovery.internetStatus != nil }
+        recovery.startFreshInternetSetup()
+        precondition(recovery.error != nil && recovery.internetBackupURL == nil)
+        precondition(try Data(contentsOf: identityFile) == originalIdentity, "Enabled recovery must not alter saved trust")
+        recovery.setEnabled(false)
+        precondition(!recovery.canStartFreshInternetSetup, "Stopping is not stopped: the old helper may still write")
+        recovery.startFreshInternetSetup()
+        precondition(recovery.error != nil && recovery.internetBackupURL == nil)
+        wait { recovery.canStartFreshInternetSetup }
+        recovery.startFreshInternetSetup()
+        precondition(recovery.error == nil && !recovery.enabled && recovery.internetStatus == nil)
+        let backup = recovery.internetBackupURL!
+        precondition(backup.deletingLastPathComponent() == recoveryDirectory.deletingLastPathComponent())
+        precondition(try Data(contentsOf: backup.appendingPathComponent("identity.json")) == originalIdentity)
+        precondition((try FileManager.default.attributesOfItem(atPath: backup.path)[.posixPermissions] as? NSNumber)?.intValue == 0o700)
+        precondition((try FileManager.default.attributesOfItem(atPath: backup.appendingPathComponent("identity.json").path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        precondition(!FileManager.default.fileExists(atPath: recoveryDirectory.path))
+        precondition(store.mobile.canReceiveCommands, "Internet recovery must not stop LAN or the synthetic terminal")
+        recovery.setEnabled(true)
+        wait { recovery.internetStatus != nil }
+        precondition(!FileManager.default.fileExists(atPath: identityFile.path), "Fresh startup must not inherit the previous identity")
+        precondition(try Data(contentsOf: backup.appendingPathComponent("identity.json")) == originalIdentity)
+        recovery.setEnabled(false)
+        wait { recovery.canStartFreshInternetSetup }
+
+        let linkedDirectory = root.appendingPathComponent("linked-recovery")
+        try FileManager.default.createSymbolicLink(at: linkedDirectory, withDestinationURL: backup)
+        let linkedRecovery = MobileConnection(directory: linkedDirectory, defaults: defaults, resources: resources, transport: .internet)
+        linkedRecovery.startFreshInternetSetup()
+        precondition(linkedRecovery.error != nil && linkedRecovery.internetBackupURL == nil)
+        precondition(try Data(contentsOf: backup.appendingPathComponent("identity.json")) == originalIdentity,
+                     "A symlink must never redirect recovery to another setup")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: recoveryDirectory.path)
+        recovery.startFreshInternetSetup()
+        precondition(recovery.error != nil && FileManager.default.fileExists(atPath: recoveryDirectory.path),
+                     "Unsafe permissions must fail without moving the original")
+        let lanRecovery = MobileConnection(directory: backup, defaults: defaults, resources: resources, transport: .lan)
+        lanRecovery.startFreshInternetSetup()
+        precondition(lanRecovery.error != nil && FileManager.default.fileExists(atPath: backup.path),
+                     "The internet recovery operation must never archive LAN state")
+        if CommandLine.arguments.contains("--recovery-ui") {
+            let uiDirectory = root.appendingPathComponent("recovery-ui")
+            try FileManager.default.createDirectory(at: uiDirectory, withIntermediateDirectories: false,
+                                                    attributes: [.posixPermissions: 0o700])
+            try originalIdentity.write(to: uiDirectory.appendingPathComponent("identity.json"))
+            let uiConnection = MobileConnection(directory: uiDirectory, defaults: defaults, resources: resources, transport: .internet)
+            try recoveryUI(uiConnection, directory: uiDirectory)
+        }
+        print("Native internet checks passed: opt-in, isolated commands, safe recovery/backup, helper-exit gating and confirmation when requested; no installed-app changes or Keychain access.")
+    }
+
+    @MainActor static func recoveryUI(_ connection: MobileConnection, directory: URL) throws {
+        let previousApplication = NSWorkspace.shared.frontmostApplication
+        defer { previousApplication?.activate(options: []) }
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.accessory)
+        NSApp.finishLaunching()
+        let output = URL(fileURLWithPath: ".build/internet-recovery-captures", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        func requireUI(_ condition: Bool, _ message: String) throws {
+            guard condition else {
+                throw NSError(domain: "RecoveryUI", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
+            }
+        }
+        func pump() {
+            let deadline = Date().addingTimeInterval(0.3)
+            while Date() < deadline {
+                while let event = NSApp.nextEvent(matching: .any, until: Date(), inMode: .default, dequeue: true) {
+                    NSApp.sendEvent(event)
+                }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            }
+        }
+        func click(_ title: String, in view: NSView) throws {
+            let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            let recognition = VNRecognizeTextRequest()
+            recognition.recognitionLevel = .accurate
+            try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+            guard let item = recognition.results?.first(where: { $0.topCandidates(1).first?.string == title }),
+                  let window = view.window else {
+                throw NSError(domain: "RecoveryUI", code: 4, userInfo: [NSLocalizedDescriptionKey: "Missing visible button: \(title)"])
+            }
+            let point = view.convert(NSPoint(x: item.boundingBox.midX * view.bounds.width,
+                y: (view.isFlipped ? 1 - item.boundingBox.midY : item.boundingBox.midY) * view.bounds.height), to: nil)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                NSApp.postEvent(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!, atStart: false)
+            }
+            pump()
+        }
+        for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            NSApp.appearance = NSAppearance(named: appearance)
+            let host = NSHostingView(rootView: InternetSettingsView(internet: connection)
+                .padding(24).frame(width: 560, height: 680, alignment: .topLeading).background(Palette.surface))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 680),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            defer { window.close() }
+            window.appearance = NSAppearance(named: appearance)
+            window.contentView = host
+            host.frame = NSRect(x: 0, y: 0, width: 560, height: 680)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+            host.layoutSubtreeIfNeeded()
+            let image = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+            host.cacheDisplay(in: host.bounds, to: image)
+            let recognition = VNRecognizeTextRequest()
+            recognition.recognitionLevel = .accurate
+            try VNImageRequestHandler(cgImage: image.cgImage!, options: [:]).perform([recognition])
+            let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+            guard text.contains("Start fresh internet setup") else {
+                throw NSError(domain: "RecoveryUI", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: "Recovery must be reachable while internet is disabled. Rendered: \(text)"
+                ])
+            }
+            try image.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("recovery-\(name).png"))
+            if name == "dark" {
+                window.title = "Notify recovery check - synthetic data only"
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                pump()
+                try click("Start fresh internet setup", in: host)
+                try requireUI(FileManager.default.fileExists(atPath: directory.path) && connection.internetBackupURL == nil,
+                              "Opening confirmation must not move saved state")
+                guard let sheet = window.attachedSheet, let sheetView = sheet.contentView else {
+                    throw NSError(domain: "RecoveryUI", code: 3, userInfo: [NSLocalizedDescriptionKey: "Recovery must require a native confirmation"])
+                }
+                let confirmation = sheetView.bitmapImageRepForCachingDisplay(in: sheetView.bounds)!
+                sheetView.cacheDisplay(in: sheetView.bounds, to: confirmation)
+                try confirmation.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("recovery-confirmation.png"))
+                try click("Cancel", in: sheetView)
+                try requireUI(FileManager.default.fileExists(atPath: directory.path) && connection.internetBackupURL == nil,
+                              "Cancel must preserve the original setup")
+                try click("Start fresh internet setup", in: host)
+                guard let confirmedSheet = window.attachedSheet?.contentView else {
+                    throw NSError(domain: "RecoveryUI", code: 5, userInfo: [NSLocalizedDescriptionKey: "Missing repeated confirmation"])
+                }
+                try click("Back up and start fresh", in: confirmedSheet)
+                try requireUI(connection.internetBackupURL != nil && !FileManager.default.fileExists(atPath: directory.path) &&
+                              !connection.enabled, "Confirmed recovery must archive only the synthetic setup and stay disabled")
+            }
+        }
     }
 }

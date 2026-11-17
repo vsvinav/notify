@@ -109,6 +109,11 @@ final class MobileConnection: ObservableObject {
         return key.base64EncodedString() == value
     }
     @Published private(set) var error: String?
+    @Published private(set) var internetBackupURL: URL?
+    @Published private var retiringProcesses: [Process] = []
+    var canStartFreshInternetSetup: Bool {
+        transport == .internet && !enabled && process == nil && retiringProcesses.isEmpty
+    }
     var snapshot: (() -> [MobileItem])?
     var onReply: ((MobileReply) -> Void)?
     var onControl: ((MobileControl) -> Void)?
@@ -207,7 +212,9 @@ final class MobileConnection: ObservableObject {
         }
         child.terminationHandler = { [weak self] child in
             DispatchQueue.main.async {
-                guard let self, self.process === child else { return }
+                guard let self else { return }
+                self.retiringProcesses.removeAll { $0 === child }
+                guard self.process === child else { return }
                 self.stop()
                 self.error = "The phone companion stopped (exit \(child.terminationStatus)). Turn phone connections off and on to retry."
             }
@@ -260,7 +267,10 @@ final class MobileConnection: ObservableObject {
         let child = process
         process = nil
         input = nil
-        if child?.isRunning == true { child?.terminate() }
+        if let child, child.isRunning {
+            retiringProcesses.append(child)
+            child.terminate()
+        }
         invalidateAuthority()
         status = nil
         internetStatus = nil
@@ -275,6 +285,39 @@ final class MobileConnection: ObservableObject {
         lastWorkspace = []
         workspace.invalidate()
         onUnavailable?()
+    }
+
+    func startFreshInternetSetup() {
+        guard canStartFreshInternetSetup else {
+            error = "Turn off internet access and wait for its helper to stop before starting fresh. Nothing was changed."
+            return
+        }
+        do {
+            let parent = directory.deletingLastPathComponent()
+            let parentFD = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard parentFD >= 0 else { throw POSIXError(.EACCES) }
+            defer { close(parentFD) }
+            var parentInfo = stat()
+            guard fstat(parentFD, &parentInfo) == 0, parentInfo.st_uid == getuid(),
+                  parentInfo.st_mode & 0o077 == 0 else { throw POSIXError(.EACCES) }
+            let name = directory.lastPathComponent
+            guard !name.isEmpty, name != ".", name != "..", directory != parent else { throw POSIXError(.EINVAL) }
+            let sourceFD = openat(parentFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard sourceFD >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            defer { close(sourceFD) }
+            var sourceInfo = stat()
+            guard fstat(sourceFD, &sourceInfo) == 0, sourceInfo.st_uid == getuid(),
+                  sourceInfo.st_mode & 0o077 == 0 else { throw POSIXError(.EACCES) }
+            let backupName = name + "-backup-" + UUID().uuidString.lowercased()
+            // Same-parent, exclusive rename keeps the old trust intact and never overwrites a backup.
+            guard renameatx_np(parentFD, name, parentFD, backupName, UInt32(RENAME_EXCL)) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            internetBackupURL = parent.appendingPathComponent(backupName)
+            error = nil
+        } catch {
+            self.error = "Could not back up the internet setup: \(error.localizedDescription) No fresh setup was started."
+        }
     }
 
     func invite() { error = nil; send(["type": "invite"]) }

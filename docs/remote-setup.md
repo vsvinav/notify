@@ -126,7 +126,7 @@ Sources: [Digital Asset Links](https://developers.google.com/digital-asset-links
 
 1. Install a matching Mac release and connect your original agent terminal explicitly. Confirm local Notify works first.
 2. Open Mac **Settings > Internet**, enter `https://YOUR_SERVICE.onrender.com` (your operator's real origin), then turn on **Enable internet**. It starts off each time Notify launches. LAN phone approval does not grant internet access.
-3. Choose **Pair an internet device**. Scan the current invitation in person, or transfer it privately to your own client. Invitations are short-lived and pin the Mac key; never put the QR, invitation URL or token in public troubleshooting.
+3. Choose **Pair an internet device**. Scan the current invitation with a compatible client, or transfer it privately to your own client. The Android preview currently needs manual pairing-link entry; an in-app camera scanner is not implemented yet. Invitations are short-lived and pin the Mac key; never put the QR, invitation URL or token in public troubleshooting.
 4. Register or sign in with a passkey through the compatible phone client. Use the **same account/passkey** when returning to an existing pairing. An account login alone does not approve a new phone.
 5. Compare the **complete phone public key** on the phone and Mac, character for character. Choose **Confirm full public key matches** only when it matches; otherwise reject. A friendly device name, truncated fingerprint or six-digit LAN comparison cannot replace this step.
 6. Wait for connected state. Review live state using a harmless demo before relying on remote control. A sent message is not a completed action: wait for the exact native acknowledgment.
@@ -165,7 +165,19 @@ Sources: [Render Free limitations](https://render.com/docs/free), [Firestore quo
 - **Routine backend key rotation:** create a new key for the same restricted service account, replace the managed Render secret, redeploy and verify readiness/reconnection. Then disable/delete the old key in Google Cloud. Do not rotate endpoint identities or erase Firestore as part of this operation.
 - **Exposed backend key:** revoke the exposed key promptly, even if it causes downtime; provision a replacement, audit IAM and the deployment, and assess trust-record integrity before reopening access. Never paste the exposed key into a report.
 - **Signing-key changes:** retain the supported Mac nested signer; arbitrary rebuild/re-sign operations can make saved hardware-backed keys inaccessible. For Android certificate rotation, approve only the intentional new release fingerprint and test passkeys before removing the old one.
-- **Lost passkey, owner mismatch, unreadable key or corrupt database:** stop and investigate with the operator. There is no documented automatic account transfer, trust reconstruction or supported “delete everything to repair” path. Do not restore an old backend lacking durable-state protections against current records.
+- **Lost passkey or owner mismatch:** try signing in with the original Notify passkey first. Creating another account, even in the same Google password manager, does not restore the original account. If you deliberately want a new internet identity, use the confirmed local recovery steps below. No account or phone trust is transferred automatically.
+- **Unreadable hardware key or corrupt service database:** stop and investigate with the operator. Recovery does not repair keys or service storage. Do not delete Firestore records or restore an old backend lacking durable-state protections against current records.
+
+### Start fresh internet setup
+
+This action requires Mac build 7 or newer; beta 4/build 6 does not include it.
+
+1. In **Settings > Internet**, turn **Enable internet** off. Wait for the helper to stop; recovery is disabled while it could still write to the old setup.
+2. Choose **Start fresh internet setup** under **Pairing recovery** and read the confirmation. **Cancel** changes nothing.
+3. Choose **Back up and start fresh** only if you intend to retire this Mac's current internet identity. Notify moves the old private setup to a unique `remote-mobile-backup-<id>` directory inside `~/Library/Application Support/Notify`. It does not erase the old hardware-backed key, modify terminal sessions or LAN pairing, or delete Google passkeys. If the backup fails, no new setup starts.
+4. Internet stays off. When you explicitly enable it again, Notify creates a new Mac identity. Obtain a fresh invitation, sign in on your phone, and compare and approve its complete public key again. A previously paired phone is not automatically trusted.
+
+Backups contain private registration and pairing data: keep them private and out of Git or support attachments. This is a new local enrollment, not account recovery, automatic restoration, or deletion of old server records. For a lost or untrusted phone, use **Revoke** rather than treating a backup as server-side revocation.
 
 ## Safe troubleshooting
 
@@ -176,6 +188,8 @@ Sources: [Render Free limitations](https://render.com/docs/free), [Firestore quo
 | Credential file rejected | Check the exact `/etc/secrets/notify-firebase.json` mount and same-project service account. Do not print the key, use env-var JSON, or follow arbitrary symlinks. |
 | Native Android passkey fails | Verify the actual installed APK signer, supported package, DAL response, exact origin and passkey provider. Browser success is not native verification. |
 | Sign-in works but pairing does not | Check whether this is the saved account, whether old memory-only enrollment was lost, and whether a fresh local invitation/full-key confirmation is required. Never transfer trust silently. |
+| Account differs from the locally approved owner | Use the original Notify passkey, or deliberately confirm **Start fresh internet setup** on the Mac after disabling internet. Do not keep creating accounts or deleting credentials. |
+| Pairing conflict or expired registration | Finish or reject an existing pending phone, or wait for its three-minute expiry, then choose **Pair an internet device** for a fresh invitation. Persistent enrollment conflicts can use the confirmed recovery flow above. |
 | Mac unavailable after wake/update | Open Notify, explicitly enable internet if restarted, verify connectivity and saved identity availability. Do not restart agent terminals or replace keys automatically. |
 | No alert | Check app opt-in, Android permission/channel, same-project FCM configuration, sender permission and phone connectivity. API acceptance is not delivery. |
 | Action timeout | Inspect the actual agent/session before retrying; delivery can be uncertain. Do not increase permissions or auto-resend. |
