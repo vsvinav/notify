@@ -12,7 +12,10 @@ for file in src/main.mjs src/remote-main.mjs public/index.html public/remote-cry
 done
 MOBILE_SOURCE="$(cd "$MOBILE_SOURCE" && pwd)"
 bash scripts/build-remote-crypto.sh
-swift build -c release --quiet --product Notify
+swift build -c release --quiet --product Notify \
+    -Xswiftc -file-prefix-map -Xswiftc "$HOME=/build" \
+    -Xswiftc -debug-prefix-map -Xswiftc "$HOME=/build" \
+    -Xcc "-ffile-prefix-map=$HOME=/build"
 (cd bridge && npm run build)
 APP="$ROOT/build/Notify.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin" "$APP/Contents/Resources/bridge"
@@ -22,6 +25,7 @@ install -m 755 "$CRYPTO_TARGET/release/notify-channel" "$APP/Contents/Resources/
 install -m 755 "$CRYPTO_TARGET/release/libNotifyHardwareSigner.dylib" "$APP/Contents/Resources/remote-crypto/libNotifyHardwareSigner.dylib"
 install -m 644 crypto/THIRD-PARTY-NOTICES.txt "$APP/Contents/Resources/remote-crypto/LICENSES.txt"
 cp .build/release/Notify "$APP/Contents/MacOS/Notify"
+strip -S "$APP/Contents/MacOS/Notify"
 cp resources/Info.plist "$APP/Contents/Info.plist"
 swift scripts/generate-icon.swift "$ROOT/build/Notify.iconset"
 iconutil -c icns -o "$APP/Contents/Resources/Notify.icns" "$ROOT/build/Notify.iconset"
