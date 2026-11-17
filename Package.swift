@@ -11,6 +11,7 @@ let package = Package(
         .executableTarget(name: "NotifyApp", dependencies: ["NotifyCore"]),
         .executableTarget(name: "NotifyCoreChecks", dependencies: ["NotifyCore"], path: "Tests/NotifyCoreTests"),
         .executableTarget(name: "NotifyTransportChecks", dependencies: ["NotifyCore"], path: "Tests/Transport"),
-        .executableTarget(name: "NotifyTerminalChecks", dependencies: ["NotifyCore"], path: "Tests/Terminal")
+        .executableTarget(name: "NotifyTerminalChecks", dependencies: ["NotifyCore"], path: "Tests/Terminal"),
+        .executableTarget(name: "NotifyRemoteIdentityChecks", dependencies: ["NotifyCore"], path: "Tests/RemoteIdentity")
     ]
 )

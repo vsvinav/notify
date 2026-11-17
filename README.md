@@ -143,6 +143,30 @@ Alongside **Requests**, the phone's **Sessions** view now offers live main-agent
 
 Your Mac must be awake and reachable on the same network for request details and replies. Generic alerts use platform push services. Physical-phone certificate setup and lock-screen delivery still need real-device verification; there is no App Store release or hosted Notify relay.
 
+## Remote identity development
+
+This branch adds saved, hardware-backed signing identities as groundwork for
+internet access. It does **not** enable internet access or change existing phone
+pairing. An identity is created only by an explicit caller; missing, unreadable or
+mismatched saved identities are never silently replaced. Free ad-hoc app updates
+may require re-pairing. The file-based Keychain APIs used for this build emit
+deprecation warnings; provisioned signing and key-storage migration remain separate work.
+
+An opt-in check creates one uniquely named temporary Keychain item, verifies it
+across separate processes and changed app signatures, then deletes it and its
+temporary helpers. It requires a Secure Enclave-capable Mac with an unlocked
+login Keychain, Swift tools and Node.js. No existing credentials or terminal
+sessions are used:
+
+```sh
+NODE_TLS_REJECT_UNAUTHORIZED=1 node scripts/check-remote-identity.mjs --temporary-keychain-test
+```
+
+Deleting a saved identity does not revoke an already loaded signing object.
+Integration must close its channels and release that object before reporting
+remote access disabled. Account binding, peer enrollment and remote control
+remain unconnected.
+
 ---
 
 [Install and use guide](docs/guide.md) · [Connection help](docs/guide.md#connect-agents) · [Current limits](docs/guide.md#local-data-and-limits) · [Report an issue](https://github.com/vsvinav/notify/issues)
