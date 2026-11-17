@@ -11,7 +11,9 @@ A native macOS app for answering Claude Code and Copilot requests without switch
 3. Run `~/Applications/Notify.app/Contents/Resources/bin/notify demo` to try the floating controls without starting an agent or spending credits.
 4. Answer connected sessions from their floating panels or the control center. Add your phone through **Settings > Phone connections**.
 
-[Current app screenshots](../README.md#screenshots) · [Update an existing installation](#updating-notify) · [Phone setup](#phone-connections)
+[Current app screenshots](../README.md#screenshots) · [Update an existing installation](#updating-notify) · [LAN phone setup](#phone-connections) · [Internet / Render / Firebase setup](remote-setup.md)
+
+Mac-only use needs no Notify cloud account. LAN phones and internet devices are separate opt-in connections. Internet users can join an existing service; only its operator needs to provision Render/Firebase.
 
 The sidebar puts **Needs you** first, then connected agents you're monitoring. **Not connected** stays separate, and saved chats have their own tab. Select a session, then use **Chat**, **Decision** (or **Overview**), **Settings**, or **Hierarchy**. Click the main agent or a helper in **Your team** to open its conversation. Messaging controls live only in Chat; session automation stays in Settings. A session-colored floating panel brings permission requests, choices, multi-select questions, and text fields to your current desktop.
 
@@ -43,7 +45,7 @@ The updated Copilot extension streams partial assistant replies before completio
 
 **Open in iTerm2** checks live ownership and matches the process's terminal to an exact iTerm2 session. A currently running chat is opened instead of resumed again. An absent/ambiguous terminal or denied Automation access produces an error rather than choosing a random tab. Launching is not the same as connecting: permissions remain unavailable until the extension connects.
 
-iTerm2 must be installed at `/Applications/iTerm.app`; Notify finds the agent executable using its setup search paths. macOS may ask permission for Notify to control iTerm2. Missing project folders, linked/ambiguous history locations and existing live owners block a duplicate resume. Claude support requires the `feature/claude-code-parity` build; the beta 3 download predates it.
+iTerm2 must be installed at `/Applications/iTerm.app`; Notify finds the agent executable using its setup search paths. macOS may ask permission for Notify to control iTerm2. Missing project folders, linked/ambiguous history locations and existing live owners block a duplicate resume. Claude support is included on this development branch; the beta 3 download predates it.
 
 ## Requirements
 
@@ -54,7 +56,7 @@ iTerm2 must be installed at `/Applications/iTerm.app`; Notify finds the agent ex
 
 ## Install the download
 
-1. Download **Notify-0.2.0-beta.3-macos-arm64.zip** and **SHA256SUMS.txt** from the [macOS beta release](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.3). With both files in the same folder, run `shasum -a 256 -c SHA256SUMS.txt` there to check the download.
+1. Download the Apple Silicon ZIP and **SHA256SUMS.txt** from [Mac releases](https://github.com/vsvinav/notify/releases). Read that release's notes for its included features. With both files in the same folder, run `shasum -a 256 -c SHA256SUMS.txt` there to check the download.
 2. Unzip the archive. In Finder, open your home folder and create **Applications** there if needed. Move **Notify.app** into that folder. When updating, quit Notify first and replace only the app; leave agent terminals running.
 3. Open Notify, choose **Connect agents**, and follow the setup instructions. Install **Node.js 22.18+** and sign in through your Copilot or Claude CLI beforehand. Node and the CLIs are not bundled.
 
@@ -94,16 +96,16 @@ ln -s "$HOME/Applications/Notify.app/Contents/Resources/bin/notify" ~/.local/bin
 For a local source build, start from an empty parent folder:
 
 ```sh
-git clone https://github.com/vsvinav/notify.git
-git clone https://github.com/vsvinav/notify-mobile.git
+git clone --branch feature/remote-native-identity https://github.com/vsvinav/notify.git
+git clone --branch feature/remote-access https://github.com/vsvinav/notify-mobile.git
 cd notify
 (cd bridge && NODE_TLS_REJECT_UNAUTHORIZED=1 npm ci --ignore-scripts)
-NOTIFY_MOBILE_SOURCE=../notify-mobile bash scripts/build.sh
+NODE_TLS_REJECT_UNAUTHORIZED=1 NOTIFY_MOBILE_SOURCE=../notify-mobile bash scripts/build.sh
 bash scripts/install.sh
 open ~/Applications/Notify.app
 ```
 
-The build requires an explicit checkout of the separate [notify-mobile repository](https://github.com/vsvinav/notify-mobile), bundles its web app and production dependencies, and ad-hoc signs the combined Mac app. Node itself remains a prerequisite. Phone connections are off by default. If Apple's command-line tools are missing, run `xcode-select --install` and finish their installation first.
+The build requires Rust 1.91+ and an explicit checkout of the separate [notify-mobile repository](https://github.com/vsvinav/notify-mobile), bundles its web app and production dependencies, and ad-hoc signs the combined Mac app. Node itself remains a prerequisite. Phone connections are off by default. If Apple's command-line tools are missing, run `xcode-select --install` and finish their installation first.
 
 The installer creates `~/.local/bin/notify`, without replacing existing apps or launchers. If that directory is not on your PATH:
 
@@ -129,12 +131,14 @@ notify demo
 
 ### Updating Notify
 
-1. Download and unzip the new release, or get the new source for both repositories and rebuild with `NOTIFY_MOBILE_SOURCE=/path/to/notify-mobile bash scripts/build.sh` from the Mac repository.
+1. Download and unzip the new release, or get the new source for both repositories and rebuild with `NODE_TLS_REJECT_UNAUTHORIZED=1 NOTIFY_MOBILE_SOURCE=/path/to/notify-mobile bash scripts/build.sh` from the Mac repository.
 2. **Quit Notify from its menu**, not just by closing its window. Leave your agent terminals running.
 3. In Finder, replace **`~/Applications/Notify.app`** with the downloaded app or new **`build/Notify.app`**. Keep your existing `~/.local/bin/notify` launcher link; do not run the first-install script again.
 4. Reopen Notify. Existing extensions reconnect; a changed extension may still require an explicit reload in its original terminal.
 
 Replacing the app does not remove settings or paired-phone data in `~/Library/Application Support/Notify/`. Session Auto-yes modes reset on restart. A repository-access error is not an installation success: obtain access before building.
+
+Internet access also starts off after an app restart. Re-enable it explicitly. Source rebuilds or arbitrary re-signing can make an existing hardware-backed identity inaccessible; preserve the supported nested signer and never silently delete/recreate keys to bypass a signing mismatch. [Internet recovery](remote-setup.md#8-revoke-rotate-and-recover-safely).
 
 ## Connect agents
 
@@ -176,7 +180,7 @@ The Copilot extension does not attach Claude terminals; Claude uses its own hook
 
 ## Existing Claude Code terminals
 
-This section requires a build from `feature/claude-code-parity`, not the published beta 3 app.
+This section describes the current branch; the beta 3 app predates these hooks. Check your selected release's notes before using this setup.
 
 1. Open **Connect agents > Claude Code > Add hooks**. Check the exact settings path and confirm sharing supported requests/activity with Notify and any paired phones.
 2. Wait until the already-open Claude terminal is idle, then review and close `/hooks` to accept the changes. **Opening `/hooks` ends the current turn in Claude 2.1.81; do not open it during active work.** Installing hooks alone does not replay a session-start event.
@@ -331,7 +335,9 @@ Opt-in and each automatic dispatch are audited before sending. Audit/delivery fa
 
 ## Phone connections
 
-In main **Settings > Phone connections**, enable **Allow phone connections**, then choose **Pair a phone**. The companion supports an installable web app shared by iPhone and Android, not separate App Store apps.
+This section describes **LAN mode**, an installable web app for iPhone and Android. Native Android internet access is a separate client and enrollment; see [internet setup](remote-setup.md).
+
+In main **Settings > Phone connections**, enable **Allow phone connections**, then choose **Pair a phone**.
 
 Your phone and awake Mac must be on the same local network. Scan the setup QR, compare the certificate's SHA-256 fingerprint with the Mac, and follow the phone's instructions to manually install and trust the local certificate. Notify never installs trust automatically. The HTTP setup page serves only public instructions/certificate material; pairing, request details and replies use HTTPS.
 
@@ -341,7 +347,7 @@ The Mac lists paired phones separately from currently connected browsers and ena
 
 Allow notifications from a direct tap in the installed phone app. iPhone requires iOS 16.4+ and a Home Screen web app for Web Push. Background alerts use Apple/Google/Mozilla push infrastructure and contain only a generic prompt, never agent request content. **Send test alert** requests a generic alert for subscribed devices; a provider accepting it does not prove delivery.
 
-Phone replies use the same exact choices, custom-answer restrictions and permission scopes as the Mac. They require a fresh live request and matching agent acknowledgment. Disconnects, sleep, revocation, changed requests and uncertain replies fail explicitly; replies are not automatically replayed. There is no remote shell or hosted Notify relay.
+Phone replies use the same exact choices, custom-answer restrictions and permission scopes as the Mac. They require a fresh live request and matching agent acknowledgment. Disconnects, sleep, revocation, changed requests and uncertain replies fail explicitly; replies are not automatically replayed. There is no remote shell; LAN mode does not use a hosted relay.
 
 The phone's **Sessions** view shows live session status and on-demand recent conversations. Select the main agent or an exact helper in **Chat with**, or choose its tile in **Hierarchy**. Tools and reported thinking stay separate from chat. Phone drafts do not overwrite Mac drafts; reloading the phone page clears its unsent drafts.
 
@@ -359,11 +365,11 @@ After updating Notify on the Mac, close and reopen the installed phone web app o
 - Agent IPC listens only on loopback and requires a random token from a user-private file. Explicitly enabled phone support uses a separate authenticated same-network HTTPS listener.
 - Settings use macOS preferences. Connection information, session color overrides, the last 200 approval records and up to 200 private cached descriptions live in `~/Library/Application Support/Notify/`.
 - History records session labels and decisions, not answers, commands, or conversation contents. The app keeps only a bounded in-memory conversation preview. The agent CLIs retain their normal session histories.
-- No hosted Notify relay is added. The agents and explicitly requested Haiku descriptions communicate with their normal model providers; optional generic phone alerts use platform push services.
+- Mac-only and LAN use do not require a hosted Notify relay. Explicit internet mode uses an HTTPS relay with encrypted payloads and durable public trust/private push-routing metadata, not hosted conversations. The agents and explicitly requested Haiku descriptions communicate with their normal model providers; optional generic phone alerts use platform push services.
 - Phone keys, paired-device credentials, push subscriptions and bounded hashed notification identities stay in the private `mobile` subdirectory. Request snapshots are in memory, not saved there.
 - Browser-auth requests require completing the shown URL yourself before confirming. Secret/password prompts are not a supported floating-input workflow; authenticate in the original CLI first.
 - The panel is configured for other Spaces and full-screen apps, but secure desktops, locked screens, and individual full-screen app behavior are controlled by macOS.
-- Library/skill/plugin management, Claude control parity and historical pending-prompt recovery, internet request/reply relay access, and a full terminal emulator remain later work.
+- Library/skill/plugin management, full Claude control parity, Claude historical pending-prompt recovery and a full terminal emulator remain unsupported. Internet mode requires separate setup and approval; browser internet push is not implemented. Physical-phone background delivery, sound and vibration still need device verification.
 
 ## Checks
 
@@ -373,13 +379,13 @@ swift run NotifyTerminalChecks
 swift build --product NotifyTransportChecks
 bash scripts/check-ui.sh
 cd bridge
-npm test
-npm run check
-npm run test:integration
-npm run test:copilot
+NODE_TLS_REJECT_UNAUTHORIZED=1 npm test
+NODE_TLS_REJECT_UNAUTHORIZED=1 npm run check
+NODE_TLS_REJECT_UNAUTHORIZED=1 npm run test:integration
+NODE_TLS_REJECT_UNAUTHORIZED=1 npm run test:copilot
 python3 test/tui_runtime.py
-node dist/cli.js claude --doctor
-node dist/cli.js copilot --doctor
+NODE_TLS_REJECT_UNAUTHORIZED=1 node dist/cli.js claude --doctor
+NODE_TLS_REJECT_UNAUTHORIZED=1 node dist/cli.js copilot --doctor
 ```
 
 The doctor commands initialize the installed runtimes without sending a model prompt. Transport checks exercise actual Swift-to-Node permission and question replies. The Copilot checks hot-load the extension into an existing SDK-owned session and an original terminal UI, including extension consent and a native reply to the same session ID. Steering checks use a loopback-only synthetic OpenAI provider to exercise joined-session queue, interrupt and stop without paid model calls. Summary checks verify a real tool-free runtime setup with a substituted response. UI checks measure native scrolling, composer state, audit failures and mode resets. They use disposable fixtures and never manipulate real running terminals. Live provider output and individual full-screen app behavior still need a manual check.
