@@ -608,6 +608,7 @@ struct SettingsView: View {
             }
             Divider()
             MobileSettingsView(mobile: store.mobile)
+            InternetSettingsView(internet: store.internet)
             Divider()
             Toggle("Safe auto-yes", isOn: $store.autoYes)
             Text("Only explicitly identified reads of source or documentation files inside the current project qualify. Hidden paths, sensitive names, symlink escapes, commands, writes, and questions stay manual. Existing agent permission rules still apply.")

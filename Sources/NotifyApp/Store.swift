@@ -30,7 +30,7 @@ struct IdleCleanupAttempt: Identifiable {
 
 final class Store: ObservableObject {
     @Published private(set) var registry = SessionRegistry() {
-        didSet { mobile.workspaceChanged() }
+        didSet { mobile.workspaceChanged(); internet.workspaceChanged() }
     }
     @Published var selectedID: String?
     @Published var selectedRequestID: String?
@@ -45,7 +45,7 @@ final class Store: ObservableObject {
         agentErrors.merging(localSessionErrors) { _, local in local }
     }
     @Published private(set) var appearance = SessionAppearance() {
-        didSet { mobile.workspaceChanged() }
+        didSet { mobile.workspaceChanged(); internet.workspaceChanged() }
     }
     var attentionIDs = Set<String>()
     private var announcedIDs: [String] = []
@@ -80,7 +80,7 @@ final class Store: ObservableObject {
     @Published var audit: [AuditEntry] = []
     @Published var replyWorkspace = ReplyWorkspace()
     @Published var steeringWorkspace = SteeringWorkspace() {
-        didSet { mobile.workspaceChanged() }
+        didSet { mobile.workspaceChanged(); internet.workspaceChanged() }
     }
     @Published private(set) var automation = SessionAutomation()
     @Published var steeringSessionID: String?
@@ -102,9 +102,9 @@ final class Store: ObservableObject {
     let directory: URL
     let server: LocalServer
     let mobile: MobileConnection
-    private var mobileReplies: [String: MobileReply] = [:]
-    private var phoneWorkspace = MobileWorkspace()
-    private var phoneControls: [String: MobileControl] = [:]
+    let internet: MobileConnection
+    private var mobileReplies: [String: (reply: MobileReply, connection: MobileConnection)] = [:]
+    private var phoneControls: [String: (control: MobileControl, connection: MobileConnection)] = [:]
     private let defaults: UserDefaults
     private var snoozed = Set<String>()
     private var discoveryTimer: DispatchSourceTimer?
@@ -126,18 +126,37 @@ final class Store: ObservableObject {
         if welcomePending && seenWelcome == nil { defaults.set(false, forKey: "hasSeenWelcome") }
         server = LocalServer(directory: self.directory)
         mobile = MobileConnection(directory: self.directory.appendingPathComponent("mobile"), defaults: defaults, resources: mobileResources)
-        mobile.snapshot = { [weak self] in self?.phoneSnapshot() ?? [] }
-        mobile.onReply = { [weak self] reply in self?.replyFromPhone(reply) }
-        mobile.workspaceSnapshot = { [weak self] ids in try self?.phoneWorkspaceSnapshot(watching: ids) ?? [] }
-        mobile.onControl = { [weak self] control in self?.controlFromPhone(control) }
-        mobile.onUnavailable = { [weak self] in
-            guard let self else { return }
-            self.mobileReplies.removeAll()
-            for (commandID, control) in self.phoneControls {
-                self.steeringWorkspace.update(sessionID: control.sessionID, commandID: commandID, status: "unknown", text: "Phone connection unavailable. Check the session before retrying.")
+        internet = MobileConnection(directory: self.directory.appendingPathComponent("remote-mobile"), defaults: defaults,
+                                    resources: mobileResources, transport: .internet)
+        for connection in [mobile, internet] {
+            connection.snapshot = { [weak self, weak connection] in
+                guard let self, let connection else { return [] }
+                return self.phoneSnapshot(from: connection)
             }
-            self.phoneControls.removeAll()
-            self.phoneWorkspace.invalidate()
+            connection.onReply = { [weak self, weak connection] reply in
+                guard let connection else { return }
+                self?.replyFromPhone(reply, from: connection)
+            }
+            connection.workspaceSnapshot = { [weak self, weak connection] ids in
+                guard let self, let connection else { return [] }
+                return try self.phoneWorkspaceSnapshot(watching: ids, from: connection)
+            }
+            connection.onControl = { [weak self, weak connection] control in
+                guard let connection else { return }
+                self?.controlFromPhone(control, from: connection)
+            }
+            connection.onUnavailable = { [weak self, weak connection] in
+                guard let self, let connection else { return }
+                for (requestID, pending) in self.mobileReplies where pending.connection === connection {
+                    self.requestErrors[requestID] = "Phone connection unavailable; reply delivery is uncertain. Check the session before retrying."
+                    self.mobileReplies.removeValue(forKey: requestID)
+                }
+                for (commandID, pending) in self.phoneControls where pending.connection === connection {
+                    self.steeringWorkspace.update(sessionID: pending.control.sessionID, commandID: commandID,
+                        status: "unknown", text: "Phone connection unavailable. Check the session before retrying.")
+                    self.phoneControls.removeValue(forKey: commandID)
+                }
+            }
         }
         if let savedAppearance, AppearanceMode(rawValue: savedAppearance) == nil {
             error = "The saved appearance setting is not recognized. Notify is following the system; choose an appearance in Settings to reset it."
@@ -164,7 +183,7 @@ final class Store: ObservableObject {
             self.steeringWorkspace.disconnect(id)
             self.registry.disconnect(id)
             self.expirePhoneControls()
-            self.mobile.publish()
+            self.publishPhones()
             self.onAttentionChange?()
         }
     }
@@ -457,6 +476,7 @@ final class Store: ObservableObject {
     }
     func stop() {
         mobile.stop()
+        internet.setEnabled(false)
         for id in automation.activeIDs { disableSessionAutoYes(id, reason: "app closing") }
         discoveryTimer?.cancel(); descriptionRunner.cancel(); server.stop()
     }
@@ -645,10 +665,11 @@ final class Store: ObservableObject {
             if let id = packet.commandID, let status = packet.status {
                 let previous = steeringWorkspace.receipt(sessionID: packet.sessionID, commandID: id)
                 if let target = packet.agentID, target != previous?.agentID { return }
-                if let control = phoneControls[id] {
+                if let pending = phoneControls[id] {
+                    let control = pending.control
                     guard control.sessionID == packet.sessionID, previous?.agentID == control.agentID else { return }
                     guard let session = registry.sessions[packet.sessionID],
-                          previous?.workRevision == session.workRevision, phoneWorkspace.isCurrent(control, session: session) else {
+                          previous?.workRevision == session.workRevision, pending.connection.workspace.isCurrent(control, session: session) else {
                         finishPhoneControl(id, status: "unknown", detail: "The native session or target changed before acknowledgment.", error: "Stale control generation.")
                         return
                     }
@@ -685,7 +706,8 @@ final class Store: ObservableObject {
         // Older bridges echoed the incoming reply type after runtime acknowledgment.
         case "resolved", "reply":
             guard let id = packet.requestID else { return }
-            if let phone = mobileReplies[id], phone.sessionID == packet.sessionID {
+            if let pending = mobileReplies[id], pending.reply.sessionID == packet.sessionID {
+                let phone = pending.reply
                 let acknowledged = packet.cancelled != true && packet.automatic != true &&
                     packet.decision == phone.decision && packet.permissionOptionID == phone.permissionOptionID &&
                     (packet.answers ?? [:]) == (phone.answers ?? [:]) && packet.feedback == phone.feedback
@@ -723,7 +745,7 @@ final class Store: ObservableObject {
             }
         default: error = "Unsupported launcher event: \(packet.type)"
         }
-        if ["hello", "request", "resolved", "reply", "error", "state", "metadata"].contains(packet.type) { mobile.publish() }
+        if ["hello", "request", "resolved", "reply", "error", "state", "metadata"].contains(packet.type) { publishPhones() }
         expirePhoneControls()
         onAttentionChange?()
     }
@@ -770,7 +792,7 @@ final class Store: ObservableObject {
                 self.disableSessionAutoYes(id, reason: "reply acknowledgment timed out")
                 self.requestErrors[request.id] = "No acknowledgment yet. The reply may have arrived; check the terminal before retrying."
                 self.finishPhoneReply(request.id, sessionID: id, error: self.requestErrors[request.id])
-                self.mobile.publish()
+                self.publishPhones()
                 self.onAttentionChange?()
             }
             onAttentionChange?()
@@ -780,84 +802,91 @@ final class Store: ObservableObject {
             automaticallySending.remove(request.id)
             self.requestErrors[request.id] = "No approval sent: \(error.localizedDescription)"
         }
-        mobile.publish()
+        publishPhones()
     }
 
-    func phoneSnapshot() -> [MobileItem] {
-        pending.filter { !automaticallySending.contains($0.request.id) }.map { session, request in
+    private func publishPhones() { mobile.publish(); internet.publish() }
+
+    func phoneSnapshot(from source: MobileConnection? = nil) -> [MobileItem] {
+        let connection = source ?? mobile
+        return pending.filter { !automaticallySending.contains($0.request.id) }.map { session, request in
             MobileItem(sessionID: session.id, sessionName: session.name, project: session.projectLabel, agent: session.agent,
                 color: String(format: "#%06X", appearance.color(for: session)),
-                ticket: mobile.ticket(sessionID: session.id, request: request),
+                ticket: connection.ticket(sessionID: session.id, request: request),
                 notificationID: (session.sourceSessionID ?? session.id) + ":" + request.id,
                 request: request, fields: RequestContext.fields(from: request.detail, isQuestion: request.kind == "question").map(MobileField.init),
                 sending: sending.contains(request.id), error: requestErrors[request.id])
         }
     }
 
-    func phoneWorkspaceSnapshot(watching ids: [String]) throws -> [Data] {
+    func phoneWorkspaceSnapshot(watching ids: [String], from source: MobileConnection? = nil) throws -> [Data] {
+        let connection = source ?? mobile
         expirePhoneControls()
         let rows = sessions
         let colors = Dictionary(uniqueKeysWithValues: rows.prefix(256).map { ($0.id, String(format: "#%06X", appearance.color(for: $0))) })
-        var messages = [try phoneWorkspace.overview(sessions: rows, colors: colors)]
+        var messages = [try connection.workspace.overview(sessions: rows, colors: colors)]
         for id in ids.prefix(8) {
             guard let session = rows.prefix(256).first(where: { $0.id == id }) else { continue }
-            messages.append(try phoneWorkspace.detail(session: session, controls: steeringWorkspace.history[id] ?? [],
+            messages.append(try connection.workspace.detail(session: session, controls: steeringWorkspace.history[id] ?? [],
                                                      controlsTruncated: steeringWorkspace.truncatedHistory.contains(id)))
         }
         return messages
     }
 
-    func controlFromPhone(_ control: MobileControl) {
-        guard let session = registry.sessions[control.sessionID], phoneControls.count < 8 else {
-            mobile.completeControl(control.id, status: "failed", detail: "", error: "Session unavailable or too many phone controls pending.")
+    func controlFromPhone(_ control: MobileControl, from source: MobileConnection? = nil) {
+        let connection = source ?? mobile
+        guard connection.canReceiveCommands, let session = registry.sessions[control.sessionID], phoneControls.count < 8 else {
+            connection.completeControl(control.id, status: "failed", detail: "", error: "Session unavailable or too many phone controls pending.")
             return
         }
         do {
-            try phoneWorkspace.reserve(control, session: session)
+            try connection.workspace.reserve(control, session: session)
             // Audit metadata only: phone prompt contents remain ephemeral.
-            try record(session: session, action: "Phone requested \(control.action) for \(control.agentID.map { "subagent \($0)" } ?? "main agent")", automatic: false)
+            try record(session: session, action: "\(connection.transport == .internet ? "Internet phone" : "Phone") requested \(control.action) for \(control.agentID.map { "subagent \($0)" } ?? "main agent")", automatic: false)
             guard let commandID = steer(session.id, action: control.action, agentID: control.agentID, phoneText: control.text) else {
-                mobile.completeControl(control.id, status: "failed", detail: "", error: "Control could not be dispatched. Check the Mac.")
+                connection.completeControl(control.id, status: "failed", detail: "", error: "Control could not be dispatched. Check the Mac.")
                 return
             }
-            phoneControls[commandID] = control
+            phoneControls[commandID] = (control, connection)
         } catch {
-            mobile.completeControl(control.id, status: "failed", detail: "", error: "No control sent: session stale, unsupported, duplicate, or audit unavailable.")
+            connection.completeControl(control.id, status: "failed", detail: "", error: "No control sent: session stale, unsupported, duplicate, or audit unavailable.")
         }
     }
 
     private func finishPhoneControl(_ commandID: String, status: String, detail: String, error: String?) {
-        guard let control = phoneControls.removeValue(forKey: commandID) else { return }
-        mobile.completeControl(control.id, commandID: commandID, status: status, detail: detail, error: error)
+        guard let pending = phoneControls.removeValue(forKey: commandID) else { return }
+        pending.connection.completeControl(pending.control.id, commandID: commandID, status: status, detail: detail, error: error)
     }
 
     private func expirePhoneControls() {
-        for (commandID, control) in phoneControls {
-            guard let session = registry.sessions[control.sessionID], phoneWorkspace.isCurrent(control, session: session) else {
+        for (commandID, pending) in phoneControls {
+            let control = pending.control
+            guard let session = registry.sessions[control.sessionID], pending.connection.workspace.isCurrent(control, session: session) else {
                 finishPhoneControl(commandID, status: "unknown", detail: "Session generation or exact target changed. Check the Mac before retrying.", error: "Control acknowledgment is uncertain.")
                 continue
             }
         }
     }
 
-    func replyFromPhone(_ response: MobileReply) {
+    func replyFromPhone(_ response: MobileReply, from source: MobileConnection? = nil) {
+        let connection = source ?? mobile
         guard let session = registry.sessions[response.sessionID],
               let request = session.requests.first(where: { $0.id == response.requestID }),
-              mobile.accepts(response, request: request),
+              connection.accepts(response, request: request),
               !sending.contains(request.id),
-              !mobileReplies.values.contains(where: { $0.id == response.id }),
+              !mobileReplies.values.contains(where: { $0.connection === connection && $0.reply.id == response.id }),
               registry.canReply(sessionID: session.id, requestID: request.id, decision: response.decision,
                   answers: response.answers ?? [:], permissionOptionID: response.permissionOptionID, feedback: response.feedback) else {
-            mobile.complete(response.id, error: "This phone request expired or its answer is invalid. Refresh before replying.")
+            connection.complete(response.id, error: "This phone request expired or its answer is invalid. Refresh before replying.")
             return
         }
-        do { try record(session: session, action: "Phone requested: \(response.decision)", automatic: false) }
+        do { try record(session: session, action: "\(connection.transport == .internet ? "Internet phone" : "Phone") requested: \(response.decision)", automatic: false) }
         catch {
-            mobile.complete(response.id, error: "No reply sent: approval history could not be saved.")
+            connection.complete(response.id, error: "No reply sent: approval history could not be saved.")
             requestErrors[request.id] = "Phone reply blocked: \(error.localizedDescription)"
             return
         }
-        mobileReplies[request.id] = response
+        mobileReplies[request.id] = (response, connection)
         reply(session: session.id, request: request, decision: response.decision,
               answers: response.answers ?? [:], permissionOptionID: response.permissionOptionID, feedback: response.feedback)
         if !sending.contains(request.id) {
@@ -866,8 +895,8 @@ final class Store: ObservableObject {
     }
 
     private func finishPhoneReply(_ requestID: String, sessionID: String, error: String?) {
-        guard let reply = mobileReplies[requestID], reply.sessionID == sessionID else { return }
+        guard let pending = mobileReplies[requestID], pending.reply.sessionID == sessionID else { return }
         mobileReplies.removeValue(forKey: requestID)
-        mobile.complete(reply.id, error: error)
+        pending.connection.complete(pending.reply.id, error: error)
     }
 }

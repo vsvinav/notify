@@ -27,11 +27,11 @@ open ~/Applications/Notify.app
 
 This test build is ad-hoc signed, **not Developer ID signed or notarized**. If Apple's warning offers only **Move to Trash** or **Done**, click **Done**, then find Notify's **Open Anyway** button in **System Settings > Privacy & Security**. See [full Gatekeeper guidance](docs/guide.md#install-the-download). A checksum does not bypass this warning. The download does not include your accounts, settings, paired phones or sessions; connect agents separately on the other Mac.
 
-**Build from source instead:** you'll also need Apple's command-line tools. If missing, run `xcode-select --install` first.
+**Build this development branch from source:** you'll also need Apple's command-line tools and Rust 1.91 or later for the bundled encrypted channel. If Apple's tools are missing, run `xcode-select --install` first.
 
 ```sh
-git clone --branch feature/claude-code-parity https://github.com/vsvinav/notify.git
-git clone https://github.com/vsvinav/notify-mobile.git
+git clone --branch feature/remote-native-identity https://github.com/vsvinav/notify.git
+git clone --branch feature/remote-access https://github.com/vsvinav/notify-mobile.git
 cd notify
 
 (cd bridge && NODE_TLS_REJECT_UNAUTHORIZED=1 npm ci --ignore-scripts)
@@ -141,16 +141,37 @@ Alongside **Requests**, the phone's **Sessions** view now offers live main-agent
 
 **[iPhone installation](https://github.com/vsvinav/notify-mobile#install-on-iphone)** · **[Full phone setup guide](https://github.com/vsvinav/notify-mobile#quickstart)**
 
-Your Mac must be awake and reachable on the same network for request details and replies. Generic alerts use platform push services. Physical-phone certificate setup and lock-screen delivery still need real-device verification; there is no App Store release or hosted Notify relay.
+In LAN mode, your Mac must be awake and reachable on the same network for request details and replies. Generic alerts use platform push services. Physical-phone certificate setup and lock-screen delivery still need real-device verification; there is no App Store release.
 
-## Remote identity development
+## Internet access preview
 
-This branch adds saved, hardware-backed signing identities as groundwork for
-internet access. It does **not** enable internet access or change existing phone
-pairing. An identity is created only by an explicit caller; missing, unreadable or
+This branch includes a separate, default-off **Internet** connection in Settings.
+Deploy the matching mobile branch using its
+[free Render instructions](https://github.com/vsvinav/notify-mobile/blob/feature/remote-access/docs/render-hosting.md),
+then enter that service's exact HTTPS origin on the Mac. Scan the Mac's pairing
+code, sign in with a passkey on your phone, and compare the complete phone key
+before approving locally. Existing LAN pairing is unchanged. Original terminal
+sessions retain control; a phone action succeeds only after the exact native
+acknowledgment.
+
+The browser must remain open; internet push notifications are not connected.
+Free hosting can sleep and lose server accounts after redeployment. Ad-hoc app
+updates can also make a saved Mac key inaccessible. These cases fail closed:
+local identity/account recovery may be needed, and trust is never silently moved
+to a new account. Physical-phone and public-host acceptance are still required;
+repository checks are not a live-service or security guarantee.
+
+Mac signing uses the Secure Enclave; the browser uses an encrypted identity in
+IndexedDB and a fresh, pinned OpenMLS channel on each reconnect. No action is
+automatically replayed. An identity is created only by an explicit caller; missing, unreadable or
 mismatched saved identities are never silently replaced. Free ad-hoc app updates
 may require re-pairing. The file-based Keychain APIs used for this build emit
 deprecation warnings; provisioned signing and key-storage migration remain separate work.
+
+Browser channel assets are checked into the matching mobile branch. After changing
+`crypto/`, install the `wasm32-unknown-unknown` Rust target and
+`wasm-bindgen-cli` 0.2.130, then regenerate them with
+`NOTIFY_MOBILE_SOURCE=../notify-mobile bash scripts/build-remote-wasm.sh`.
 
 An opt-in check creates one uniquely named temporary Keychain item, verifies it
 across separate processes and changed app signatures, then deletes it and its
@@ -163,9 +184,9 @@ NODE_TLS_REJECT_UNAUTHORIZED=1 node scripts/check-remote-identity.mjs --temporar
 ```
 
 Deleting a saved identity does not revoke an already loaded signing object.
-Integration must close its channels and release that object before reporting
-remote access disabled. Account binding, peer enrollment and remote control
-remain unconnected.
+The helper closes its channels and releases that object when internet access
+stops. The opt-in Keychain check is separate from ordinary headless tests and
+must not be run without permission to create its temporary item.
 
 ---
 
