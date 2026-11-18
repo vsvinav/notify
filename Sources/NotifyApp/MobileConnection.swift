@@ -148,7 +148,7 @@ final class MobileConnection: ObservableObject {
         self.resources = resources
         self.transport = transport
         internetOrigin = defaults.string(forKey: "internetOrigin") ?? ""
-        enabled = transport == .lan && defaults.bool(forKey: "mobileEnabled")
+        enabled = defaults.bool(forKey: transport == .lan ? "mobileEnabled" : "internetEnabled")
     }
 
     static func isValidInternetOrigin(_ value: String) -> Bool {
@@ -177,7 +177,7 @@ final class MobileConnection: ObservableObject {
             return
         }
         enabled = value
-        if transport == .lan { defaults.set(value, forKey: "mobileEnabled") }
+        defaults.set(value, forKey: transport == .lan ? "mobileEnabled" : "internetEnabled")
         if value { start() } else { stop() }
     }
 

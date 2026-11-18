@@ -5,6 +5,7 @@ export NODE_TLS_REJECT_UNAUTHORIZED=1
 mkdir -p .build/internet-home .build/internet-tmp .build/internet-cache
 export HOME="$PWD/.build/internet-home"
 export CFFIXED_USER_HOME="$HOME" TMPDIR="$PWD/.build/internet-tmp"
+export COPILOT_HOME="$HOME/.copilot" CLAUDE_CONFIG_DIR="$HOME/.claude"
 export CLANG_MODULE_CACHE_PATH="$PWD/.build/internet-cache/clang" SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/internet-cache/swift"
 swift build --disable-automatic-resolution --cache-path .build/internet-cache --config-path .build/internet-config \
     --security-path .build/internet-security --quiet --product Notify

@@ -553,7 +553,7 @@ final class Store: ObservableObject {
     }
     func stop() {
         mobile.stop()
-        internet.setEnabled(false)
+        internet.stop()
         for id in automation.activeIDs { disableSessionAutoYes(id, reason: "app closing") }
         discoveryTimer?.cancel(); descriptionRunner.cancel(); server.stop()
     }
@@ -574,6 +574,7 @@ final class Store: ObservableObject {
         do { try server.start() }
         catch { self.error = "Could not start local listener: \(error.localizedDescription)" }
         mobile.start()
+        internet.start()
         let home = ProcessInfo.processInfo.environment["COPILOT_HOME"].map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".copilot")
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "notify.discovery", qos: .utility))

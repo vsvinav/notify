@@ -21,7 +21,7 @@ A native Mac companion for Copilot and Claude Code. Review requests, answer ques
 | **Phone on the same Wi-Fi** | The optional LAN web app, an awake Mac and manually verified local certificate trust. No hosted Notify backend. |
 | **Phone over the internet** | An explicitly enabled Mac connection, a compatible HTTPS Notify service, a passkey and local approval of the phone's full public key. An operator provisions Render/Firebase; users of an existing service do not each create a project. |
 
-Internet access is separate from LAN pairing and **off whenever Notify starts**. Keep the Mac awake, online and running Notify. Sending instructions can spend your agent's model credits.
+Internet access is separate from LAN pairing and **off until you enable it**. Notify remembers On or Off across restarts; when enabled, it reconnects using your existing pairing. Upgrading from a build that did not remember this choice? Enable it once after updating. Keep the Mac awake, online and running Notify. Sending instructions can spend your agent's model credits.
 
 ## Install on macOS
 
@@ -35,7 +35,7 @@ This beta is **ad-hoc signed, not Developer ID signed or notarized**. If Apple's
 
 Already installed? Run `open ~/Applications/Notify.app`. Downloads contain no personal accounts, settings, paired phones or session history. Connect agents and pair each Mac separately.
 
-**Release scope:** **[beta 6 / build 13](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.6)** adds immediate Send with explicit Queue and richer native Markdown, alongside pairing/reconnect recovery, Android session-management support and background-approval alert fixes. Use Android 0.3.3 or later for immediate Send and encrypted offline reading. A changed ad-hoc signer can require explicit phone re-pairing when replacing an older download; never reset pairing automatically. Check the selected release's notes rather than assuming an older download includes newer source features.
+**Release scope:** **[beta 7 / build 14](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.7)** remembers your Internet On/Off choice across restarts. It retains immediate Send with explicit Queue, richer native Markdown, pairing/reconnect recovery, Android session management and background-approval alerts. Use Android 0.3.3 or later for immediate Send and encrypted offline reading. A changed ad-hoc signer can require explicit phone re-pairing when replacing an older download; never reset pairing automatically. Check the selected release's notes rather than assuming an older download includes newer source features.
 
 **Release policy for Notify repositories:** publish client updates as versioned
 GitHub releases with installable artifacts and SHA-256 checksums: the Mac app ZIP

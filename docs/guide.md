@@ -138,7 +138,7 @@ notify demo
 
 Replacing the app does not remove settings or paired-phone data in `~/Library/Application Support/Notify/`. Session Auto-yes modes reset on restart. A repository-access error is not an installation success: obtain access before building.
 
-Internet access also starts off after an app restart. Re-enable it explicitly. Source rebuilds or arbitrary re-signing can make an existing hardware-backed identity inaccessible; preserve the supported nested signer and never silently delete/recreate keys to bypass a signing mismatch. [Internet recovery](remote-setup.md#8-revoke-rotate-and-recover-safely).
+Internet access is initially off. From Mac build 14, Notify remembers your explicit On or Off choice across restarts; On attempts to reconnect using existing trust, not automatically approve a new device. Enable it once after upgrading from an older build, which did not save this preference. Turning it Off keeps it off on later launches. Source rebuilds or arbitrary re-signing can make an existing hardware-backed identity inaccessible; preserve the supported nested signer and never silently delete/recreate keys to bypass a signing mismatch. [Internet recovery](remote-setup.md#8-revoke-rotate-and-recover-safely).
 
 ## Connect agents
 
