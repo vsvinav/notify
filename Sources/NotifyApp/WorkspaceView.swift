@@ -405,8 +405,51 @@ private struct ResponseBlockView: View {
                 }.font(WorkspaceType.text(13)).padding(.leading, CGFloat(depth) * 12)
             case .code(let language, let text, let closed):
                 ResponseCodeBlock(language: language, code: text, closed: closed)
+            case .quote(let text):
+                prose(text).font(WorkspaceType.text(13))
+                    .padding(.leading, 12)
+                    .overlay(alignment: .leading) { Rectangle().fill(Palette.line).frame(width: 1) }
+            case .rule:
+                Divider().padding(.vertical, 4).accessibilityHidden(true)
+            case .table(let headers, let alignments, let rows):
+                table(headers: headers, alignments: alignments, rows: rows)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func table(headers: [String], alignments: [ResponseTableAlignment], rows: [[String]]) -> some View {
+        let widths = headers.indices.map { column in
+            let longest = rows.reduce(headers[column].count) { max($0, $1[column].count) }
+            return CGFloat(min(240, max(96, longest * 7)))
+        }
+        return ScrollView(.horizontal) {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                tableRow(headers, widths: widths, alignments: alignments, isHeader: true)
+                    .background(Palette.surface)
+                Divider()
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    tableRow(row, widths: widths, alignments: alignments, isHeader: false)
+                    Divider()
+                }
+            }
+        }.frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .contain).accessibilityLabel("Table")
+    }
+
+    private func tableRow(_ cells: [String], widths: [CGFloat], alignments: [ResponseTableAlignment],
+                          isHeader: Bool) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            ForEach(Array(cells.enumerated()), id: \.offset) { column, text in
+                let alignment: Alignment = alignments[column] == .center ? .center
+                    : alignments[column] == .trailing ? .trailing : .leading
+                prose(text).font(WorkspaceType.text(13, strong: isHeader))
+                    .multilineTextAlignment(alignments[column] == .center ? .center
+                        : alignments[column] == .trailing ? .trailing : .leading)
+                    .frame(width: widths[column], alignment: alignment)
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .accessibilityAddTraits(isHeader ? .isHeader : [])
+            }
+        }
     }
 
     private func prose(_ source: String) -> some View {

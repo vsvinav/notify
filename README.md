@@ -64,6 +64,7 @@ Try a fictional request without an agent call or model credits:
 
 - **Answer precisely:** supported approvals, denials, choices and custom answers; the original terminal remains usable.
 - **Read and organize:** Markdown replies, copyable code, session colors, saved chats, light/dark appearance and exact iTerm2 navigation.
+
 - **See the team:** a main agent, running helpers and an expandable idle group; missing relationships are labeled, not invented.
 - **Steer supported Copilot sessions:** main/subagent messages, Interrupt, confirmed Stop and supported subagent creation/removal. Ended or unsupported targets remain read-only.
 - **Clean up carefully:** **Stop idle >10 min** requires confirmation and skips unknown idle ages or unsafe ancestry. It does not stop main agents or delete project files.
@@ -135,6 +136,20 @@ Durable Firestore preserves approved pairing across normal service restarts; acc
 Internet browser access needs an open page; internet browser push is not connected. Android alerts are opt-in, generic FCM nudges—not command transport. Mac build 11 can signal waiting work even when the phone's encrypted conversation is closed; deferred nudges are coalesced and retried for at most two minutes while work remains waiting. Opening an alert fetches fresh encrypted state from the Mac. Installed Mac build 11 and Android 0.3.1 passed one real-internet locked-phone delivery check with user-confirmed vibration. Sound and other device/network configurations remain unverified; provider acceptance alone is not delivery proof. Free Render can sleep or hit quotas, and no phone can control a sleeping/offline Mac.
 
 ## Screenshots
+
+**Upcoming Markdown update (build 12, not in beta 5):** response tables, quoted
+advice and dividers get native formatting alongside existing headings, lists
+and fenced code. Wide tables and long code scroll sideways without shrinking
+text. Unsupported tables wider than 16 columns stay as selectable source;
+**Copy response** always retains the original response.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/chat-markdown-dark.png">
+  <img src="docs/images/chat-markdown.png" alt="Fictional native response showing a quote, aligned table and copyable code">
+</picture>
+
+This is an offscreen capture of the actual native response component with
+fictional text, not a live conversation or a screenshot of the whole app.
 
 <p align="center">
   <img src="docs/images/notification.png" alt="Example floating request with exact resource and approval controls" width="360">

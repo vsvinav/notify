@@ -6,6 +6,11 @@ import Vision
 
 @main struct UIChecks {
     @MainActor static func main() throws {
+        if CommandLine.arguments.contains("--response-rendering") {
+            ResponseRenderingChecks.run()
+            try ResponseRenderingChecks.captureOffscreen()
+            return
+        }
         let previousApplication = NSWorkspace.shared.frontmostApplication
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.accessory)

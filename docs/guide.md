@@ -298,6 +298,13 @@ Select a raised agent tile to open its exact chat, or fold an individual branch.
 
 **Copy response**, **Copy message**, **Copy chat** and code-block **Copy** copy their full available text. Scrolling up pauses **Follow chat**; **Latest** returns to the newest message.
 
+The upcoming build 12 Markdown update also formats pipe tables, quoted advice,
+and horizontal dividers. Scroll a wide table or long code line sideways; text
+stays at its normal size. Tables wider than 16 columns, malformed table headers
+and unsupported extra cells remain readable source instead of disappearing.
+Code-block Copy retains the exact received code, including its whitespace.
+This update is not included in beta 5/build 11.
+
 Choose **Steer an Agent** from Notify's menu-bar menu, or **Send instruction** from session details. The floating panel stays available even when no permission is pending. Select the target chat, read its latest activity, and type a direction:
 
 - **Queue** submits the direction for the next turn.
