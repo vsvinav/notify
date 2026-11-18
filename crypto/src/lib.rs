@@ -8,15 +8,25 @@ use openmls_traits::{crypto::OpenMlsCrypto, OpenMlsProvider};
 use tls_codec::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "macos-hardware"))]
 mod hardware;
 
 const SUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMP256_AES128GCM_SHA256_P256;
 const LIMIT: usize = 1_048_576 + 16_384;
 
+/// Platform-owned P256 signing key. Return a DER SHA256withECDSA signature;
+/// private key material must stay with the platform.
+pub trait ExternalSigner: Send + Sync {
+    fn sign(&self, payload: &[u8]) -> Result<Vec<u8>, String>;
+}
+
 enum PeerSigner {
     Software(SignatureKeyPair),
-    #[cfg(target_os = "macos")]
+    External {
+        public: Vec<u8>,
+        signer: Box<dyn ExternalSigner>,
+    },
+    #[cfg(all(target_os = "macos", feature = "macos-hardware"))]
     Hardware(hardware::HardwareSigner),
 }
 
@@ -24,7 +34,8 @@ impl PeerSigner {
     fn public(&self) -> &[u8] {
         match self {
             Self::Software(signer) => signer.public(),
-            #[cfg(target_os = "macos")]
+            Self::External { public, .. } => public,
+            #[cfg(all(target_os = "macos", feature = "macos-hardware"))]
             Self::Hardware(signer) => signer.public(),
         }
     }
@@ -34,7 +45,23 @@ impl Signer for PeerSigner {
     fn sign(&self, payload: &[u8]) -> Result<Vec<u8>, SignerError> {
         match self {
             Self::Software(signer) => signer.sign(payload),
-            #[cfg(target_os = "macos")]
+            Self::External { public, signer } => {
+                if payload.len() > LIMIT {
+                    return Err(SignerError::SigningError);
+                }
+                let signature = signer
+                    .sign(payload)
+                    .map_err(|_| SignerError::SigningError)?;
+                if !(8..=72).contains(&signature.len()) {
+                    return Err(SignerError::SigningError);
+                }
+                OpenMlsRustCrypto::default()
+                    .crypto()
+                    .verify_signature(self.signature_scheme(), payload, public, &signature)
+                    .map_err(|_| SignerError::SigningError)?;
+                Ok(signature)
+            }
+            #[cfg(all(target_os = "macos", feature = "macos-hardware"))]
             Self::Hardware(signer) => signer.sign(payload),
         }
     }
@@ -82,17 +109,37 @@ impl Message {
 }
 
 impl Peer {
-    #[cfg(target_os = "macos")]
+    pub fn external(
+        label: &str,
+        public: &[u8],
+        signer: Box<dyn ExternalSigner>,
+    ) -> Result<Peer, String> {
+        if public.len() != 65 || public[0] != 4 {
+            return Err("Invalid external P256 public key".into());
+        }
+        let signer = PeerSigner::External {
+            public: public.to_vec(),
+            signer,
+        };
+        signer
+            .sign(b"Notify external identity check v1")
+            .map_err(|_| {
+                "External identity unavailable or does not match; no replacement was created"
+            })?;
+        Self::from_signer(label, signer)
+    }
+
+    #[cfg(all(target_os = "macos", feature = "macos-hardware"))]
     pub fn create_identity(id: &str) -> Result<Vec<u8>, String> {
         hardware::HardwareSigner::create_persisted(id)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "macos-hardware"))]
     pub fn delete_identity(id: &str) -> Result<(), String> {
         hardware::HardwareSigner::delete_persisted(id)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "macos-hardware"))]
     pub fn persistent(label: &str, id: &str, public: &[u8]) -> Result<Peer, String> {
         Self::from_signer(
             label,
@@ -109,7 +156,8 @@ impl Peer {
             PeerSigner::Software(key) => key
                 .store(provider.storage())
                 .map_err(|_| "Cannot store identity")?,
-            #[cfg(target_os = "macos")]
+            PeerSigner::External { .. } => {}
+            #[cfg(all(target_os = "macos", feature = "macos-hardware"))]
             PeerSigner::Hardware(_) => {}
         }
         let credential = CredentialWithKey {
@@ -124,7 +172,7 @@ impl Peer {
         })
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "macos-hardware"))]
     pub fn hardware(label: &str) -> Result<Peer, String> {
         Self::from_signer(
             label,
@@ -155,7 +203,8 @@ impl Peer {
             PeerSigner::Software(key) => key
                 .tls_serialize_detached()
                 .map_err(|_| "Cannot encode identity".into()),
-            #[cfg(target_os = "macos")]
+            PeerSigner::External { .. } => Err("External identities cannot be exported".into()),
+            #[cfg(all(target_os = "macos", feature = "macos-hardware"))]
             PeerSigner::Hardware(_) => Err("Hardware identities cannot be exported".into()),
         }
     }

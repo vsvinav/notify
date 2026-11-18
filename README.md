@@ -1,3 +1,5 @@
+<img src="docs/images/notify-icon.png" alt="Notify's amber lightning icon on warm charcoal" width="72">
+
 # Notify
 
 **Your terminal needs an answer. Stay where you are.**
@@ -33,7 +35,7 @@ This beta is **ad-hoc signed, not Developer ID signed or notarized**. If Apple's
 
 Already installed? Run `open ~/Applications/Notify.app`. Downloads contain no personal accounts, settings, paired phones or session history. Connect agents and pair each Mac separately.
 
-**Release scope:** beta 3 predates the Claude hooks and internet changes described on this development branch. Check the selected release's notes; a source feature is not a claim that an older download includes it.
+**Release scope:** the latest published download is **[beta 4 / build 6](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.4)**. This development branch also contains later pairing-recovery and reconnect fixes, plus the amber lightning icon matching Android. Check the selected release's notes; a source feature is not a claim that an older download includes it.
 
 ## Quickstart
 
@@ -74,6 +76,15 @@ Try a fictional request without an agent call or model credits:
 
 **Internet:** use **Settings > Internet**, enter your operator's exact HTTPS origin, enable access and choose **Pair an internet device**. Sign in with a passkey, then compare the **complete public key** on both devices before approving on the Mac. A short code is insufficient. The Android native client is separate from the LAN web app; use its versioned APK and release instructions supplied by your operator.
 
+**Native Android, current development build:** choose **Scan Mac QR**, grant camera
+permission when asked, and scan the Mac's invitation instead of entering technical
+fields. Passkey verification and explicit full-key approval on the Mac still apply.
+The phone has a searchable session drawer and **Chat / Decision / Agents** views,
+with the Mac's illustrated characters and warm light/dark palette. The matching
+lightning icons use amber on warm charcoal. Android 0.3.0 remains a development
+preview; these changes are not in the published 0.2.0 APK. Helper management and
+Dangerous Auto-yes controls on Android remain planned, not available.
+
 **Different account or stuck pairing:** try the original Notify passkey first. Build 7 adds **Start fresh internet setup** under **Pairing recovery**: turn internet off, wait for the helper to stop, and confirm the private backup before pairing again. It never resets automatically or changes terminal sessions, LAN pairing or Google passkeys. This recovery button is not included in the published beta 4/build 6. See [safe recovery](docs/remote-setup.md#8-revoke-rotate-and-recover-safely).
 
 [Complete setup: joining a service, Render, Firebase/Firestore, Android and alerts](docs/remote-setup.md).
@@ -94,7 +105,10 @@ Internet browser access needs an open page; internet browser push is not connect
   <img src="docs/images/visual-hierarchy.png" alt="Example main agent, running helper and expandable idle-subagent group">
 </picture>
 
-*Native app captures with example sessions, not private account screens.*
+*Existing native Mac app captures with fictional sessions, not private account
+screens. They are retained for the current workspace layout; the icon above is
+generated from the updated Mac icon source. Android's separately labeled browser
+design previews are not presented as native device screenshots.*
 
 ## Build from source
 

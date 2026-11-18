@@ -5,6 +5,10 @@ edition = "2021"
 rust-version = "1.91"
 publish = false
 
+[features]
+default = ["macos-hardware"]
+macos-hardware = []
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
@@ -12,6 +16,11 @@ path = "src/lib.rs"
 [[bin]]
 name = "notify-channel"
 path = "src/bin/native.rs"
+required-features = ["macos-hardware"]
+
+[[test]]
+name = "native"
+required-features = ["macos-hardware"]
 
 [dependencies]
 openmls = { version = "=0.9.2", features = ["js"] }
