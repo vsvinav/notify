@@ -37,6 +37,12 @@ Already installed? Run `open ~/Applications/Notify.app`. Downloads contain no pe
 
 **Release scope:** the latest published download is **[beta 4 / build 6](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.4)**. This development branch also contains later pairing-recovery and reconnect fixes, plus the amber lightning icon matching Android. Check the selected release's notes; a source feature is not a claim that an older download includes it.
 
+**Release policy for Notify repositories:** publish client updates as versioned
+GitHub releases with installable artifacts and SHA-256 checksums: the Mac app ZIP
+in this repository and the Android APK in its private repository. A source-only
+merge is not a release. Label previews and disclose remaining acceptance limits;
+never publish personal settings, identities or private local-build paths.
+
 ## Quickstart
 
 1. **Connect agents.** Review the setup and access notice in Notify. Accounts and login remain with your CLI.
@@ -72,8 +78,8 @@ Try a fictional request without an agent call or model credits:
 
 ## Use your phone
 
-**Unreleased session-parity source:** matching Mac 0.2.0 build 10/helper and Android 0.3.0
-development builds add **Session settings** on the phone: the Mac's named color
+**Session parity:** matching Mac 0.2.0 build 10 source/helper and Android 0.3.0
+beta builds add **Session settings** on the phone: the Mac's named color
 choices/custom RGB display and real **Reset automatic**, shared same-group
 **Move up/down**, confirmed **Remove from Notify**, and supported saved
 Copilot/Claude **Resume on Mac**. Colors and order follow the original session
@@ -108,10 +114,10 @@ permission when asked, and scan the Mac's invitation instead of entering technic
 fields. Passkey verification and explicit full-key approval on the Mac still apply.
 The phone has a searchable session drawer and **Chat / Decision / Agents** views,
 with the Mac's illustrated characters and warm light/dark palette. The matching
-lightning icons use amber on warm charcoal. Android 0.3.0 remains a development
-preview; these changes are not in the published 0.2.0 APK. Matching unpublished
+lightning icons use amber on warm charcoal. Android 0.3.0 is a prerelease;
+these changes are not in the older 0.2.0 APK. Matching updated Mac/helper
 builds also support live-catalog helper creation, ended-helper removal, and
-confirmed idle cleanup. Unpublished matching Mac/helper/Android source builds support
+confirmed idle cleanup. Matching Mac/helper builds and Android 0.3.0 support
 Dangerous Auto-yes control of the same Mac-owned session policy: high-risk enable
 confirmation, red acknowledged On state, and direct Off. Phone disconnect leaves
 it enabled; stale state never claims Off, and toggles are never replayed. Older
