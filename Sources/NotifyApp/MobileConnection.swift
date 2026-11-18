@@ -115,6 +115,7 @@ final class MobileConnection: ObservableObject {
         transport == .internet && !enabled && process == nil && retiringProcesses.isEmpty
     }
     var snapshot: (() -> [MobileItem])?
+    var attentionSnapshot: (() -> Set<String>)?
     var onReply: ((MobileReply) -> Void)?
     var onControl: ((MobileControl) -> Void)?
     var workspaceSnapshot: (([String]) throws -> [Data])?
@@ -136,6 +137,7 @@ final class MobileConnection: ObservableObject {
     private var sleeping = false
     private var observers: [NSObjectProtocol] = []
     private var tickets: [String: (request: AgentRequest, token: String)] = [:]
+    private var waitingAttention: Set<String> = []
     private var watchedSessions: [String] = []
     private var workspacePending = false
     private var lastWorkspace: [Data] = []
@@ -272,6 +274,7 @@ final class MobileConnection: ObservableObject {
             child.terminate()
         }
         invalidateAuthority()
+        waitingAttention.removeAll()
         status = nil
         internetStatus = nil
         pairings.removeAll()
@@ -362,6 +365,12 @@ final class MobileConnection: ObservableObject {
     }
 
     func publish(heartbeat: Bool = false) {
+        if transport == .internet, enabled, !sleeping, process?.isRunning == true,
+           let waiting = attentionSnapshot?() {
+            let changed = !waiting.subtracting(waitingAttention).isEmpty
+            waitingAttention = waiting
+            send(["type": "attention", "waiting": !waiting.isEmpty, "changed": changed])
+        }
         guard canReceiveCommands else {
             if heartbeat, transport == .internet { send(["type": "heartbeat"]) }
             return
