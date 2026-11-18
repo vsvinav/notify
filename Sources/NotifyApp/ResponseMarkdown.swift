@@ -73,9 +73,12 @@ enum ResponseMarkdown {
                 }
                 continue
             }
+            let hashes = trimmed.prefix(while: { $0 == "#" }).count
+            let isHeading = indent <= 3 && (1...6).contains(hashes) &&
+                (trimmed.count == hashes || trimmed.dropFirst(hashes).first?.isWhitespace == true)
             if !tableHeaders.isEmpty {
                 if let cells = tableCells(trimmed), cells.count <= tableHeaders.count,
-                   !trimmed.hasPrefix(">"), !trimmed.hasPrefix("#"),
+                   !trimmed.hasPrefix(">"), !isHeading,
                    !trimmed.hasPrefix("```"), !trimmed.hasPrefix("~~~") {
                     tableRows.append(cells + Array(repeating: "", count: tableHeaders.count - cells.count))
                     continue
@@ -131,9 +134,7 @@ enum ResponseMarkdown {
                 continuesList = false
                 continue
             }
-            let hashes = trimmed.prefix(while: { $0 == "#" }).count
-            if indent <= 3 && (1...6).contains(hashes),
-               trimmed.count == hashes || trimmed.dropFirst(hashes).first?.isWhitespace == true {
+            if isHeading {
                 flushParagraph()
                 let text = String(trimmed.dropFirst(hashes)).trimmingCharacters(in: .whitespaces)
                     .replacingOccurrences(of: #"\s+#+\s*$"#, with: "", options: .regularExpression)

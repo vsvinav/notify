@@ -82,6 +82,10 @@ enum ResponseRenderingChecks {
         precondition(ResponseMarkdown.blocks("| One | Two |\n| --- | nope |\n") == [
             .paragraph("| One | Two |\n| --- | nope |")
         ], "Incomplete streamed table separators remain readable source")
+        precondition(ResponseMarkdown.blocks("Ref | Result\n--- | ---\n#42 | done\n# Heading | outside") == [
+            .table(headers: ["Ref", "Result"], alignments: [.leading, .leading], rows: [["#42", "done"]]),
+            .heading(level: 1, text: "Heading | outside")
+        ], "Hash-prefixed table data is not a heading, but an actual heading ends the table")
         let wideHeader = Array(repeating: "Column", count: 17).joined(separator: " | ")
         let wideRule = Array(repeating: "---", count: 17).joined(separator: " | ")
         precondition(ResponseMarkdown.blocks(wideHeader + "\n" + wideRule) == [
