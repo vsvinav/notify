@@ -35,7 +35,7 @@ This beta is **ad-hoc signed, not Developer ID signed or notarized**. If Apple's
 
 Already installed? Run `open ~/Applications/Notify.app`. Downloads contain no personal accounts, settings, paired phones or session history. Connect agents and pair each Mac separately.
 
-**Release scope:** the latest published download is **[beta 4 / build 6](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.4)**. This development branch also contains later pairing-recovery and reconnect fixes, plus the amber lightning icon matching Android. Check the selected release's notes; a source feature is not a claim that an older download includes it.
+**Release scope:** **[beta 5 / build 11](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.5)** includes pairing/reconnect recovery, Android session-management support, the matching amber lightning icon and background-approval alert fixes. Use Android 0.3.1 or later for the corresponding receiver and draft fixes. A changed ad-hoc signer can require explicit phone re-pairing when replacing an older download; never reset pairing automatically. Check the selected release's notes rather than assuming an older download includes newer source features.
 
 **Release policy for Notify repositories:** publish client updates as versioned
 GitHub releases with installable artifacts and SHA-256 checksums: the Mac app ZIP
@@ -122,15 +122,17 @@ Dangerous Auto-yes control of the same Mac-owned session policy: high-risk enabl
 confirmation, red acknowledged On state, and direct Off. Phone disconnect leaves
 it enabled; stale state never claims Off, and toggles are never replayed. Older
 builds show unsupported. Native fictional layout checks passed; real policy
-activation, camera, keyboard and alert delivery remain separate acceptance checks.
+activation, camera and physical keyboard interaction remain separate acceptance checks.
+Android 0.3.1 additionally keeps drafts editable during connection changes or
+uncertain delivery without relaxing Send or approval guards.
 
-**Different account or stuck pairing:** try the original Notify passkey first. Build 7 adds **Start fresh internet setup** under **Pairing recovery**: turn internet off, wait for the helper to stop, and confirm the private backup before pairing again. It never resets automatically or changes terminal sessions, LAN pairing or Google passkeys. This recovery button is not included in the published beta 4/build 6. See [safe recovery](docs/remote-setup.md#8-revoke-rotate-and-recover-safely).
+**Different account or stuck pairing:** try the original Notify passkey first. Build 7 adds **Start fresh internet setup** under **Pairing recovery**: turn internet off, wait for the helper to stop, and confirm the private backup before pairing again. It never resets automatically or changes terminal sessions, LAN pairing or Google passkeys. This recovery button requires beta 5/build 11 or a corresponding development build. See [safe recovery](docs/remote-setup.md#8-revoke-rotate-and-recover-safely).
 
 [Complete setup: joining a service, Render, Firebase/Firestore, Android and alerts](docs/remote-setup.md).
 
 Durable Firestore preserves approved pairing across normal service restarts; account sessions and routing grants are short-lived, so sign-in can be required again. Records already lost by an older memory-only service cannot be reconstructed: one explicit new enrollment may be necessary. Never delete or silently import trust to repair it.
 
-Internet browser access needs an open page; internet browser push is not connected. Android alerts are opt-in, generic FCM nudges—not command transport. Opening an alert fetches fresh encrypted state from the Mac. Provider acceptance does not prove phone delivery, sound or vibration; those still need physical-device verification. Free Render can sleep or hit quotas, and no phone can control a sleeping/offline Mac.
+Internet browser access needs an open page; internet browser push is not connected. Android alerts are opt-in, generic FCM nudges—not command transport. Mac build 11 can signal waiting work even when the phone's encrypted conversation is closed; deferred nudges are coalesced and retried for at most two minutes while work remains waiting. Opening an alert fetches fresh encrypted state from the Mac. Installed Mac build 11 and Android 0.3.1 passed one real-internet locked-phone delivery check with user-confirmed vibration. Sound and other device/network configurations remain unverified; provider acceptance alone is not delivery proof. Free Render can sleep or hit quotas, and no phone can control a sleeping/offline Mac.
 
 ## Screenshots
 

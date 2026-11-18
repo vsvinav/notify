@@ -145,6 +145,12 @@ final class Store: ObservableObject {
         internet = MobileConnection(directory: self.directory.appendingPathComponent("remote-mobile"), defaults: defaults,
                                     resources: mobileResources, transport: .internet)
         for connection in [mobile, internet] {
+            connection.attentionSnapshot = { [weak self] in
+                guard let self else { return [] }
+                return Set(self.pending.filter {
+                    !self.automaticallySending.contains($0.request.id) && !self.sending.contains($0.request.id)
+                }.map { $0.session.id + "\0" + $0.request.id })
+            }
             connection.snapshot = { [weak self, weak connection] in
                 guard let self, let connection else { return [] }
                 return self.phoneSnapshot(from: connection)

@@ -117,6 +117,16 @@ private final class MemoryDefaults: UserDefaults {
         precondition(!store.internet.canReceiveCommands)
         precondition(try events(store.internet).filter { $0["type"] as? String == "snapshot" }.isEmpty,
                      "Connecting must not publish private snapshots")
+        store.internet.publish()
+        try wait { try events(store.internet).contains { $0["type"] as? String == "attention" } }
+        let backgroundAttention = try events(store.internet).first { $0["type"] as? String == "attention" }!
+        precondition(Set(backgroundAttention.keys) == Set(["type", "waiting", "changed"]) &&
+                     backgroundAttention["waiting"] as? Bool == true && backgroundAttention["changed"] as? Bool == true,
+                     "A background phone needs a generic alert without private request data or an active channel")
+        store.internet.publish()
+        try wait { try events(store.internet).filter { $0["type"] as? String == "attention" }.count >= 2 }
+        precondition(try events(store.internet).last { $0["type"] as? String == "attention" }?["changed"] as? Bool == false,
+                     "An unchanged waiting request must not become a new alert on every heartbeat")
         try emit(store.internet, [remoteStatus("connected")])
         wait { store.internet.canReceiveCommands }
         try wait { try events(store.internet).contains { $0["type"] as? String == "snapshot" } }
