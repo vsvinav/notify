@@ -153,13 +153,32 @@ public struct SessionAutomation {
     public private(set) var enabled = Set<String>()
     public private(set) var dangerous = Set<String>()
     public var activeIDs: Set<String> { enabled.union(dangerous) }
+    private var policyTickets: [String: (work: UUID, connected: Bool, capable: Bool, ticket: String, offTicket: String, revision: Int, refresh: Bool)] = [:]
+    private var policyRevision = 0
     public init() {}
+    public mutating func policy(for session: SessionRecord) -> MobileAutomationPolicy {
+        let old = policyTickets[session.id]
+        let sameConnection = old?.work == session.workRevision && old?.connected == session.connected && old?.capable == session.canAutoYes
+        if let old, sameConnection, !old.refresh {
+            return MobileAutomationPolicy(ticket: old.ticket, offTicket: old.offTicket, revision: old.revision, enabled: dangerous.contains(session.id), normalEnabled: enabled.contains(session.id))
+        }
+        let ticket = UUID().uuidString
+        // UUIDv8 is reserved for Off epochs, so retired IDs cannot be repurposed as ordinary controls.
+        var offID = UUID().uuid
+        offID.6 = (offID.6 & 0x0F) | 0x80
+        let offTicket = sameConnection ? old!.offTicket : UUID(uuid: offID).uuidString
+        policyRevision += 1
+        policyTickets[session.id] = (session.workRevision, session.connected, session.canAutoYes, ticket, offTicket, policyRevision, false)
+        return MobileAutomationPolicy(ticket: ticket, offTicket: offTicket, revision: policyRevision, enabled: dangerous.contains(session.id), normalEnabled: enabled.contains(session.id))
+    }
     public mutating func setEnabled(_ value: Bool, for session: SessionRecord) throws {
         if value {
             guard session.connected, session.canAutoYes else { throw ProtocolError.invalid }
             dangerous.remove(session.id)
             enabled.insert(session.id)
         } else { enabled.remove(session.id) }
+        if value { policyTickets[session.id]?.refresh = true }
+        else { policyTickets.removeValue(forKey: session.id) }
     }
     public mutating func setDangerousEnabled(_ value: Bool, for session: SessionRecord) throws {
         if value {
@@ -167,10 +186,13 @@ public struct SessionAutomation {
             enabled.remove(session.id)
             dangerous.insert(session.id)
         } else { dangerous.remove(session.id) }
+        if value { policyTickets[session.id]?.refresh = true }
+        else { policyTickets.removeValue(forKey: session.id) }
     }
     public mutating func disable(_ id: String) {
         enabled.remove(id)
         dangerous.remove(id)
+        policyTickets.removeValue(forKey: id)
     }
     public func scope(for request: AgentRequest, session: SessionRecord, safeEnabled: Bool, muted: Bool) -> String? {
         guard session.connected, request.kind == "permission" else { return nil }

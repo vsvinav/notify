@@ -406,6 +406,7 @@ final class Store: ObservableObject {
         }
     }
     func setSessionAutoYes(_ id: String, enabled: Bool) {
+        defer { mobile.workspaceChanged(); internet.workspaceChanged() }
         guard let session = registry.sessions[id] else { error = "This session is no longer available."; return }
         if !enabled { automation.disable(id) }
         do {
@@ -416,16 +417,20 @@ final class Store: ObservableObject {
         } catch { self.error = "Could not change Auto-yes: \(error.localizedDescription)" }
     }
     private func disableSessionAutoYes(_ id: String, reason: String) {
-        guard automation.activeIDs.contains(id) else { return }
+        defer { mobile.workspaceChanged(); internet.workspaceChanged() }
+        let wasActive = automation.activeIDs.contains(id)
         let mode = automation.dangerous.contains(id) ? "Dangerous Auto-yes" : "session Auto-yes"
         automation.disable(id)
+        guard wasActive else { return }
         if let session = registry.sessions[id] {
             do { try record(session: session, action: "Disabled \(mode): \(reason)", automatic: false) }
             catch { self.error = "Auto-yes is off, but its audit entry could not be saved: \(error.localizedDescription)" }
         }
     }
-    func setSessionDangerousAutoYes(_ id: String, enabled: Bool) {
-        guard let session = registry.sessions[id] else { error = "This session is no longer available."; return }
+    @discardableResult
+    func setSessionDangerousAutoYes(_ id: String, enabled: Bool) -> String? {
+        defer { mobile.workspaceChanged(); internet.workspaceChanged() }
+        guard let session = registry.sessions[id] else { error = "This session is no longer available."; return error }
         if !enabled { automation.disable(id) }
         do {
             var next = automation
@@ -439,10 +444,15 @@ final class Store: ObservableObject {
                         reply(session: id, request: request, decision: "allow", automatic: true, approvalScope: "session")
                     }
                 }
+                if !automation.dangerous.contains(id) {
+                    return error ?? "Dangerous Auto-yes was disabled because a waiting approval could not be dispatched."
+                }
             }
+            return nil
         } catch {
             self.error = enabled ? "Could not enable Dangerous Auto-yes: \(error.localizedDescription)" :
                 "Dangerous Auto-yes is off, but its audit entry could not be saved: \(error.localizedDescription)"
+            return self.error
         }
     }
     func description(for session: SessionRecord) -> SessionDescription? {
@@ -824,7 +834,8 @@ final class Store: ObservableObject {
         expirePhoneControls()
         let rows = sessions
         let colors = Dictionary(uniqueKeysWithValues: rows.prefix(256).map { ($0.id, String(format: "#%06X", appearance.color(for: $0))) })
-        var messages = [try connection.workspace.overview(sessions: rows, colors: colors)]
+        let policies = Dictionary(uniqueKeysWithValues: rows.prefix(256).map { ($0.id, automation.policy(for: $0)) })
+        var messages = [try connection.workspace.overview(sessions: rows, colors: colors, policies: policies)]
         for id in ids.prefix(8) {
             guard let session = rows.prefix(256).first(where: { $0.id == id }) else { continue }
             messages.append(try connection.workspace.detail(session: session, controls: steeringWorkspace.history[id] ?? [],
@@ -835,12 +846,19 @@ final class Store: ObservableObject {
 
     func controlFromPhone(_ control: MobileControl, from source: MobileConnection? = nil) {
         let connection = source ?? mobile
-        guard connection.canReceiveCommands, let session = registry.sessions[control.sessionID], phoneControls.count < 8 else {
+        guard connection.canReceiveCommands, let session = registry.sessions[control.sessionID], control.isPolicy || phoneControls.count < 8 else {
             connection.completeControl(control.id, status: "failed", detail: "", error: "Session unavailable or too many phone controls pending.")
             return
         }
         do {
-            try connection.workspace.reserve(control, session: session)
+            try connection.workspace.reserve(control, session: session, policy: automation.policy(for: session))
+            if control.isPolicy {
+                let failure = setSessionDangerousAutoYes(session.id, enabled: control.enabled == true)
+                connection.completeControl(control.id, commandID: control.id, status: failure == nil ? "applied" : "failed",
+                    detail: failure ?? (control.enabled == true ? "Dangerous Auto-yes enabled for this session." : "Dangerous Auto-yes is off."),
+                    error: failure, policy: automation.policy(for: session))
+                return
+            }
             // Audit metadata only: phone prompt contents remain ephemeral.
             try record(session: session, action: "\(connection.transport == .internet ? "Internet phone" : "Phone") requested \(control.action) for \(control.agentID.map { "subagent \($0)" } ?? "main agent")", automatic: false)
             guard let commandID = steer(session.id, action: control.action, agentID: control.agentID, phoneText: control.text) else {

@@ -398,11 +398,14 @@ final class MobileConnection: ObservableObject {
             lastWorkspace = messages
         } catch { fail("Could not encode phone workspace: \(error.localizedDescription)") }
     }
-    func completeControl(_ id: String, commandID: String? = nil, status: String, detail: String, error: String? = nil) {
+    func completeControl(_ id: String, commandID: String? = nil, status: String, detail: String, error: String? = nil, policy: MobileAutomationPolicy? = nil) {
         var result: [String: Any] = ["type": "control_result", "id": id, "ok": error == nil,
                                      "status": status, "detail": detail]
         if let commandID { result["commandID"] = commandID }
         if let error { result["error"] = error }
+        if let policy {
+            result["dangerousAutoYes"] = ["ticket": policy.ticket, "offTicket": policy.offTicket, "revision": policy.revision, "enabled": policy.enabled, "normalEnabled": policy.normalEnabled]
+        }
         send(result)
     }
 

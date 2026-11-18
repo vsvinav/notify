@@ -1,5 +1,13 @@
 import Foundation
 
+public struct MobileAutomationPolicy: Codable, Equatable {
+    public let ticket: String
+    public let offTicket: String
+    public let revision: Int
+    public let enabled: Bool
+    public let normalEnabled: Bool
+}
+
 public struct MobileControl: Decodable {
     public let id: String
     public let sessionID: String
@@ -7,10 +15,21 @@ public struct MobileControl: Decodable {
     public let action: String
     public let text: String
     public let agentID: String?
+    public let enabled: Bool?
+    public let policyTicket: String?
+    public let offTicket: String?
+    public var isPolicy: Bool { action == "dangerous_auto_yes" }
+    public var isPolicyOff: Bool { isPolicy && enabled == false }
+    private var isOffID: Bool { id.dropFirst(14).first == "8" }
     public var isValid: Bool {
         UUID(uuidString: id) != nil && !sessionID.isEmpty && sessionID.count <= 128 &&
-        !ticket.isEmpty && ticket.count <= 256 && ["queue", "interrupt", "stop"].contains(action) &&
-        text.utf16.count <= 16000 && (action == "stop" ? text.isEmpty : !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) &&
+        !ticket.isEmpty && ticket.count <= 256 &&
+        (isPolicy ? enabled != nil && policyTicket.map { !$0.isEmpty && $0.count <= 256 } == true && agentID == nil &&
+            offTicket.map { UUID(uuidString: $0) != nil && $0.dropFirst(14).first == "8" } == true &&
+            (isPolicyOff ? isOffID && offTicket?.lowercased() == id.lowercased() : !isOffID) :
+            ["queue", "interrupt", "stop"].contains(action) && enabled == nil && policyTicket == nil && offTicket == nil) &&
+        (isPolicyOff || !isOffID) &&
+        text.utf16.count <= 16000 && (action == "stop" || isPolicy ? text.isEmpty : !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) &&
         (agentID.map { !$0.isEmpty && $0.count <= 128 } ?? true)
     }
 }
@@ -25,9 +44,10 @@ public struct MobileWorkspace {
     }
     private var generations: [String: (value: Generation, ticket: String)] = [:]
     private var seen: [String: (sessionID: String, ticket: String)] = [:]
+    private var offSeen: [String: (id: String, offTicket: String)] = [:]
     public init() {}
 
-    public mutating func invalidate() { generations.removeAll(); seen.removeAll() }
+    public mutating func invalidate() { generations.removeAll(); seen.removeAll(); offSeen.removeAll() }
     public mutating func ticket(for session: SessionRecord) -> String {
         guard generations[session.id] != nil || generations.count < 256 else { return "" }
         let value = Generation(revision: session.workRevision, connected: session.connected,
@@ -35,27 +55,39 @@ public struct MobileWorkspace {
         if generations[session.id]?.value != value {
             generations[session.id] = (value, UUID().uuidString)
             seen = seen.filter { $0.value.sessionID != session.id }
+            offSeen.removeValue(forKey: session.id)
         }
         return generations[session.id]!.ticket
     }
     public mutating func isCurrent(_ control: MobileControl, session: SessionRecord) -> Bool {
         control.isValid && control.sessionID == session.id && session.connected && control.ticket == ticket(for: session)
     }
-    public mutating func accepts(_ control: MobileControl, session: SessionRecord) -> Bool {
+    public mutating func accepts(_ control: MobileControl, session: SessionRecord, policy: MobileAutomationPolicy? = nil) -> Bool {
         isCurrent(control, session: session) && session.agent == "copilot" &&
-            SteeringWorkspace().unavailableReason(session: session, agentID: control.agentID, action: control.action) == nil
+            (control.isPolicy ? session.canAutoYes && policy != nil &&
+                policy?.offTicket == control.offTicket && (control.isPolicyOff || policy?.ticket == control.policyTicket) :
+                SteeringWorkspace().unavailableReason(session: session, agentID: control.agentID, action: control.action) == nil)
     }
-    public mutating func reserve(_ control: MobileControl, session: SessionRecord) throws {
-        guard accepts(control, session: session), seen[control.id] == nil else { throw ProtocolError.stale }
+    public mutating func reserve(_ control: MobileControl, session: SessionRecord, policy: MobileAutomationPolicy? = nil) throws {
+        let id = control.id.lowercased()
+        guard accepts(control, session: session, policy: policy), seen[id] == nil,
+              !offSeen.values.contains(where: { $0.id == id }) else { throw ProtocolError.stale }
+        if control.isPolicyOff {
+            // A consumed Off epoch cannot authorize work again, even after its single record is retired.
+            guard offSeen[session.id]?.offTicket != control.offTicket else { throw ProtocolError.stale }
+            offSeen[session.id] = (id, control.offTicket!)
+            return
+        }
         guard seen.count < 256 else { throw ProtocolError.oversized }
-        seen[control.id] = (session.id, control.ticket)
+        seen[id] = (session.id, control.ticket)
     }
-    public mutating func overview(sessions: [SessionRecord], colors: [String: String]) throws -> Data {
-        struct Capabilities: Encodable { let steering: Bool; let subagentChat: Bool; let subagentStop: Bool }
+    public mutating func overview(sessions: [SessionRecord], colors: [String: String], policies: [String: MobileAutomationPolicy] = [:]) throws -> Data {
+        struct Capabilities: Encodable { let steering: Bool; let subagentChat: Bool; let subagentStop: Bool; let dangerousAutoYes: Bool }
         struct Row: Encodable {
             let id: String; let name: String; let project: String; let agent: String; let color: String
             let state: String; let connected: Bool; let ticket: String; let capabilities: Capabilities
             let runningCount: Int; let idleCount: Int
+            let dangerousAutoYes: MobileAutomationPolicy?
         }
         struct Snapshot: Encodable {
             let type = "workspace"
@@ -66,13 +98,15 @@ public struct MobileWorkspace {
         let retained = Set(sessions.prefix(256).map(\.id))
         generations = generations.filter { retained.contains($0.key) }
         seen = seen.filter { retained.contains($0.value.sessionID) }
+        offSeen = offSeen.filter { retained.contains($0.key) }
         var snapshot = Snapshot(sessions: sessions.prefix(256).map { session in
             Row(id: session.id, name: session.name, project: session.projectLabel, agent: session.agent,
                 color: colors[session.id] ?? "#777777", state: session.state, connected: session.connected,
                 ticket: ticket(for: session), capabilities: Capabilities(
                     steering: session.connected && session.canSteer, subagentChat: session.connected && session.canChatWithSubagents,
-                    subagentStop: session.connected && session.canStopSubagents),
-                runningCount: session.team?.runningCount ?? 0, idleCount: session.team?.idleCount ?? 0)
+                    subagentStop: session.connected && session.canStopSubagents,
+                    dangerousAutoYes: session.connected && session.agent == "copilot" && session.canAutoYes && policies[session.id] != nil),
+                runningCount: session.team?.runningCount ?? 0, idleCount: session.team?.idleCount ?? 0, dangerousAutoYes: policies[session.id])
         }, total: sessions.count, truncated: sessions.count > 256)
         while true {
             let data = try Self.encoder().encode(snapshot)

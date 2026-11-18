@@ -68,13 +68,13 @@ Try a fictional request without an agent call or model credits:
 
 **Keyboard priority:** while a floating request is visible, Up/Down and Return go to Notify—even from another app. Return can activate an approval or Deny. Hide or snooze the panel to return those keys.
 
-**Dangerous Auto-yes is optional and dangerous.** It may approve destructive commands and external actions. It is session-specific, requires explicit confirmation, resets on disconnect/restart, and never bypasses runtime restrictions. [Limits and Off controls](docs/guide.md#dangerous-auto-yes).
+**Dangerous Auto-yes is optional and dangerous.** It may approve destructive commands and external actions. It is session-specific, requires explicit confirmation, resets on provider disconnect/restart (not phone disconnect), and never bypasses runtime restrictions. [Limits and Off controls](docs/guide.md#dangerous-auto-yes).
 
 ## Use your phone
 
 **Same Wi-Fi:** enable **Settings > Phone connections > Allow phone connections**, choose **Pair a phone**, and follow the [iPhone/Android web-app setup](https://github.com/vsvinav/notify-mobile/tree/feature/remote-access#quickstart). Verify the local certificate independently before trusting it; compare pairing codes locally. No App Store install is required. Internet mode does not require this local CA.
 
-**Internet:** use **Settings > Internet**, enter your operator's exact HTTPS origin, enable access and choose **Pair an internet device**. Sign in with a passkey, then compare the **complete public key** on both devices before approving on the Mac. A short code is insufficient. The Android native client is separate from the LAN web app; use its versioned APK and release instructions supplied by your operator.
+**Internet:** use **Settings > Internet**, enter your operator's exact HTTPS origin and enable access. The updated helper prepares a fresh pairing QR automatically; use **Pair an internet device** to retry or replace an expired invitation. Sign in with a passkey, then compare the **complete public key** on both devices before approving on the Mac. A short code is insufficient. The Android native client is separate from the LAN web app; use its versioned APK and release instructions supplied by your operator.
 
 **Native Android, current development build:** choose **Scan Mac QR**, grant camera
 permission when asked, and scan the Mac's invitation instead of entering technical
@@ -82,8 +82,12 @@ fields. Passkey verification and explicit full-key approval on the Mac still app
 The phone has a searchable session drawer and **Chat / Decision / Agents** views,
 with the Mac's illustrated characters and warm light/dark palette. The matching
 lightning icons use amber on warm charcoal. Android 0.3.0 remains a development
-preview; these changes are not in the published 0.2.0 APK. Helper management and
-Dangerous Auto-yes controls on Android remain planned, not available.
+preview; these changes are not in the published 0.2.0 APK. Helper management remains
+planned. Unpublished matching Mac/helper/Android source builds now support
+Dangerous Auto-yes control of the same Mac-owned session policy: high-risk enable
+confirmation, red acknowledged On state, and direct Off. Phone disconnect leaves
+it enabled; stale state never claims Off, and toggles are never replayed. Older
+builds show unsupported. Physical-device acceptance remains pending.
 
 **Different account or stuck pairing:** try the original Notify passkey first. Build 7 adds **Start fresh internet setup** under **Pairing recovery**: turn internet off, wait for the helper to stop, and confirm the private backup before pairing again. It never resets automatically or changes terminal sessions, LAN pairing or Google passkeys. This recovery button is not included in the published beta 4/build 6. See [safe recovery](docs/remote-setup.md#8-revoke-rotate-and-recover-safely).
 

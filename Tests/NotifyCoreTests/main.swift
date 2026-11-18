@@ -607,6 +607,133 @@ phoneChat.update(sessionID: controlled.id, commandID: phoneStop, status: "receiv
 check(phoneChat.receipt(sessionID: controlled.id, commandID: phoneStop)?.status == "sending", "Stop requires a genuine stopped ACK")
 
 var phoneWorkspace = MobileWorkspace()
+let newPolicyControl = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+    "id": UUID().uuidString, "sessionID": controlled.id, "ticket": "workspace",
+    "action": "dangerous_auto_yes", "text": "", "enabled": true, "policyTicket": "policy",
+    "offTicket": "00000000-0000-8000-8000-000000000001"
+]))
+check(newPolicyControl.isValid, "Phone Dangerous Auto-yes must be a typed session policy operation")
+let legacyPolicyControl = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+    "id": UUID().uuidString, "sessionID": controlled.id, "ticket": "workspace",
+    "action": "dangerous_auto_yes", "text": "", "enabled": true, "policyTicket": "policy"
+]))
+check(!legacyPolicyControl.isValid, "Legacy clients must not enable without bounded Off authority")
+var policyAuthority = SessionAutomation()
+var policyWorkspace = MobileWorkspace()
+var policySession = controlled
+policySession.canSteer = false
+policySession.canAutoYes = true
+let chatGeneration = policyWorkspace.ticket(for: policySession)
+let firstPolicy = policyAuthority.policy(for: policySession)
+func policyRequest(_ ticket: String, enabled: Bool = true, target: String? = nil, id: String = UUID().uuidString) throws -> MobileControl {
+    var value: [String: Any] = ["id": id, "sessionID": policySession.id, "ticket": chatGeneration,
+                              "action": "dangerous_auto_yes", "text": "", "enabled": enabled, "policyTicket": ticket,
+                              "offTicket": firstPolicy.offTicket]
+    if let target { value["agentID"] = target }
+    return try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: value))
+}
+let delayedEnable = try policyRequest(firstPolicy.ticket)
+check(policyWorkspace.accepts(delayedEnable, session: policySession, policy: firstPolicy), "Native auto capability must not require steering")
+let helperPolicyRequest = try policyRequest(firstPolicy.ticket, target: "helper")
+check(!policyWorkspace.accepts(helperPolicyRequest, session: policySession, policy: firstPolicy), "Session policy must reject helper targets")
+check(!policyWorkspace.accepts(delayedEnable, session: otherControlled, policy: firstPolicy), "Policy cannot cross sessions")
+try policyWorkspace.reserve(delayedEnable, session: policySession, policy: firstPolicy)
+do {
+    try policyWorkspace.reserve(try policyRequest(firstPolicy.ticket, enabled: false, id: delayedEnable.id.lowercased()), session: policySession, policy: firstPolicy)
+    check(false, "Policy UUID cannot be reused with changed payload or case")
+} catch {}
+policyAuthority.disable(policySession.id)
+let newerOff = policyAuthority.policy(for: policySession)
+check(newerOff.ticket != firstPolicy.ticket && newerOff.revision > firstPolicy.revision, "Even already-Off must retire reviewed enables")
+check(!policyWorkspace.accepts(delayedEnable, session: policySession, policy: newerOff), "Delayed enable must not reactivate after newer Mac Off")
+check(policyWorkspace.ticket(for: policySession) == chatGeneration, "Policy revisions must preserve ordinary chat tickets and drafts")
+try policyAuthority.setDangerousEnabled(true, for: policySession)
+policyWorkspace.invalidate()
+check(policyAuthority.dangerous.contains(policySession.id), "Phone transport disconnect must not disable the Mac-owned policy")
+let onPolicy = policyAuthority.policy(for: policySession)
+var urgentWorkspace = MobileWorkspace()
+let urgentTicket = urgentWorkspace.ticket(for: policySession)
+let urgentOffData = try JSONSerialization.data(withJSONObject: [
+    "id": newerOff.offTicket, "sessionID": policySession.id, "ticket": urgentTicket, "action": "dangerous_auto_yes",
+    "enabled": false, "policyTicket": firstPolicy.ticket, "offTicket": newerOff.offTicket, "text": ""
+])
+let currentOff = try JSONDecoder().decode(MobileControl.self, from: urgentOffData)
+check(urgentWorkspace.accepts(currentOff, session: policySession, policy: onPolicy), "Fresh exact-session Off must supersede an enable without waiting for its policy ticket")
+try policyAuthority.setEnabled(true, for: policySession)
+let normalPolicy = policyAuthority.policy(for: policySession)
+check(!normalPolicy.enabled && normalPolicy.normalEnabled && normalPolicy.ticket != onPolicy.ticket, "Normal Auto-yes replaces and invalidates Dangerous mode")
+var fullPolicyWorkspace = MobileWorkspace()
+var fullPolicyAuthority = SessionAutomation()
+var fullPolicySession = controlled
+fullPolicySession.canSteer = true
+fullPolicySession.canAutoYes = true
+let fullPolicyWorkspaceTicket = fullPolicyWorkspace.ticket(for: fullPolicySession)
+for _ in 0..<255 {
+    let command = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+        "id": UUID().uuidString, "sessionID": fullPolicySession.id, "ticket": fullPolicyWorkspaceTicket, "action": "queue", "text": "synthetic"
+    ]))
+    try fullPolicyWorkspace.reserve(command, session: fullPolicySession)
+}
+let fullPolicyBeforeOn = fullPolicyAuthority.policy(for: fullPolicySession)
+let fullPolicyEnable = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+    "id": UUID().uuidString, "sessionID": fullPolicySession.id, "ticket": fullPolicyWorkspaceTicket,
+    "action": "dangerous_auto_yes", "text": "", "enabled": true, "policyTicket": fullPolicyBeforeOn.ticket, "offTicket": fullPolicyBeforeOn.offTicket
+]))
+try fullPolicyWorkspace.reserve(fullPolicyEnable, session: fullPolicySession, policy: fullPolicyBeforeOn)
+try fullPolicyAuthority.setDangerousEnabled(true, for: fullPolicySession)
+let fullPolicyOn = fullPolicyAuthority.policy(for: fullPolicySession)
+let fullPolicyOff = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+    "id": fullPolicyOn.offTicket, "sessionID": fullPolicySession.id, "ticket": fullPolicyWorkspaceTicket,
+    "action": "dangerous_auto_yes", "text": "", "enabled": false, "policyTicket": fullPolicyOn.ticket, "offTicket": fullPolicyOn.offTicket
+]))
+do {
+    try fullPolicyWorkspace.reserve(fullPolicyOff, session: fullPolicySession, policy: fullPolicyOn)
+} catch {
+    check(false, "Full native ordinary history must not strand urgent Off")
+}
+fullPolicyAuthority.disable(fullPolicySession.id)
+for _ in 0..<300 {
+    try fullPolicyAuthority.setDangerousEnabled(true, for: fullPolicySession)
+    let active = fullPolicyAuthority.policy(for: fullPolicySession)
+    let stop = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+        "id": active.offTicket, "sessionID": fullPolicySession.id, "ticket": fullPolicyWorkspaceTicket,
+        "action": "dangerous_auto_yes", "text": "", "enabled": false, "policyTicket": active.ticket, "offTicket": active.offTicket
+    ]))
+    try fullPolicyWorkspace.reserve(stop, session: fullPolicySession, policy: active)
+    do {
+        try fullPolicyWorkspace.reserve(stop, session: fullPolicySession, policy: active)
+        check(false, "One Off epoch must never dispatch twice")
+    } catch {}
+    fullPolicyAuthority.disable(fullPolicySession.id)
+}
+let lastOffPolicy = fullPolicyAuthority.policy(for: fullPolicySession)
+check(!fullPolicyWorkspace.accepts(fullPolicyOff, session: fullPolicySession, policy: lastOffPolicy),
+      "Retired native Off payload must stay invalid after hundreds of epochs")
+let reusedOffID = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+    "id": fullPolicyOff.id, "sessionID": fullPolicySession.id, "ticket": fullPolicyWorkspaceTicket, "action": "queue", "text": "changed"
+]))
+check(!reusedOffID.isValid, "Retired Off UUID cannot change into an ordinary command")
+let mismatchedOffID = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+    "id": fullPolicyOff.id, "sessionID": fullPolicySession.id, "ticket": fullPolicyWorkspaceTicket,
+    "action": "dangerous_auto_yes", "text": "", "enabled": false, "policyTicket": lastOffPolicy.ticket, "offTicket": lastOffPolicy.offTicket
+]))
+check(!mismatchedOffID.isValid, "Retired Off UUID cannot acquire a fresh epoch by changing its payload")
+var unsupportedOffSession = fullPolicySession
+unsupportedOffSession.canAutoYes = false
+check(!fullPolicyWorkspace.accepts(fullPolicyOff, session: unsupportedOffSession, policy: fullPolicyOn),
+      "Dedicated Off never bypasses native capability loss")
+unsupportedOffSession = fullPolicySession
+unsupportedOffSession.connected = false
+check(!fullPolicyWorkspace.accepts(fullPolicyOff, session: unsupportedOffSession, policy: fullPolicyOn),
+      "Dedicated Off never bypasses provider disconnect")
+let normalStillFull = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+    "id": UUID().uuidString, "sessionID": fullPolicySession.id, "ticket": fullPolicyWorkspaceTicket, "action": "queue", "text": "synthetic"
+]))
+do {
+    try fullPolicyWorkspace.reserve(normalStillFull, session: fullPolicySession)
+    check(false, "Off must not evict ordinary UUID history")
+} catch {}
+check(fullPolicyWorkspace.ticket(for: fullPolicySession) == fullPolicyWorkspaceTicket, "Off epochs never rotate chat/draft tickets")
 let phoneTicket = phoneWorkspace.ticket(for: controlled)
 check(phoneWorkspace.ticket(for: controlled) == phoneTicket, "Unchanged workspace retains its generation")
 controlled.workRevision = UUID()

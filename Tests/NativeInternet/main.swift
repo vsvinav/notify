@@ -181,6 +181,115 @@ private final class MemoryDefaults: UserDefaults {
         try packet(["type": "control_status", "commandID": receipt.id, "status": "queued"])
         precondition(try !result(store.internet, "uncertain", true), "Disconnected commands must never replay results after reconnect")
         precondition(try !events(store.internet).contains { $0["id"] as? String == uncertainControl.id }, "Late control ACK must not reach new channel")
+        try packet(["type": "capabilities", "sessionAutoYes": true, "steering": false])
+        func policyRow(_ sessionID: String = "fixture") throws -> [String: Any] {
+            let overview = try JSONSerialization.jsonObject(with: store.phoneWorkspaceSnapshot(watching: [], from: store.internet).first!) as! [String: Any]
+            return (overview["sessions"] as! [[String: Any]]).first { $0["id"] as? String == sessionID }!
+        }
+        func policyControl(_ enabled: Bool, sessionID: String = "fixture") throws -> MobileControl {
+            let row = try policyRow(sessionID)
+            var value: [String: Any] = [
+                "id": UUID().uuidString, "sessionID": sessionID, "ticket": row["ticket"]!,
+                "action": "dangerous_auto_yes", "text": "", "enabled": enabled,
+                "policyTicket": (row["dangerousAutoYes"] as! [String: Any])["ticket"]!,
+                "offTicket": (row["dangerousAutoYes"] as! [String: Any])["offTicket"]!
+            ]
+            if !enabled {
+                value["id"] = value["offTicket"]
+            }
+            return try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: value))
+        }
+        func policyResult(_ control: MobileControl) throws -> [String: Any]? {
+            try events(store.internet).last { $0["type"] as? String == "control_result" && $0["id"] as? String == control.id }
+        }
+        let reviewedBeforeOff = try policyControl(true)
+        store.setSessionDangerousAutoYes("fixture", enabled: false)
+        store.controlFromPhone(reviewedBeforeOff, from: store.internet)
+        try wait { try policyResult(reviewedBeforeOff)?["ok"] as? Bool == false }
+        precondition(store.automation.activeIDs.isEmpty, "Newer Mac Off must invalidate delayed phone enable")
+        let reviewedBeforeStop = try policyControl(true)
+        try packet(["type": "error", "text": "Synthetic safety reset while already off"])
+        store.controlFromPhone(reviewedBeforeStop, from: store.internet)
+        try wait { try policyResult(reviewedBeforeStop)?["ok"] as? Bool == false }
+        precondition(store.automation.activeIDs.isEmpty, "Safety reset must invalidate queued enables even when already off")
+        store.steeringWorkspace.setDraft("Preserve native draft", sessionID: "fixture")
+        let reviewedOffBeforeOn = try policyControl(false)
+        let policyOn = try policyControl(true)
+        store.controlFromPhone(policyOn, from: store.internet)
+        try wait { try policyResult(policyOn)?["status"] as? String == "applied" }
+        precondition(store.automation.dangerous.contains("fixture"), "Phone must control the existing native policy without steering")
+        precondition(try policyRow()["ticket"] as? String == policyOn.ticket, "Policy change must preserve workspace tickets")
+        precondition(store.steeringWorkspace.draft(sessionID: "fixture") == "Preserve native draft")
+        store.controlFromPhone(reviewedOffBeforeOn, from: store.internet)
+        try wait { try policyResult(reviewedOffBeforeOn)?["ok"] as? Bool == true }
+        precondition(store.automation.activeIDs.isEmpty, "Direct Off must supersede an enable without waiting for its new ticket")
+        let resumedOn = try policyControl(true)
+        store.controlFromPhone(resumedOn, from: store.internet)
+        try wait { try policyResult(resumedOn)?["ok"] as? Bool == true }
+        try emit(store.internet, [remoteStatus("paused")])
+        precondition(store.automation.dangerous.contains("fixture"), "PHONE disconnect must retain enabled policy")
+        try emit(store.internet, [remoteStatus("connected")])
+        for (id, kind, eligible) in [("eligible-tool", "permission", true), ("ineligible-tool", "permission", false),
+                                     ("manual-question", "question", true)] {
+            try packet(["type": "request", "request": ["id": id, "kind": kind, "title": "Synthetic only", "detail": "",
+                "autoEligible": false, "sessionAutoEligible": eligible,
+                "questions": kind == "question" ? [["id": "q", "text": "Choose", "multiple": false, "allowFreeform": true, "options": []]] : []]])
+        }
+        precondition(store.sending.contains("eligible-tool") && !store.sending.contains("ineligible-tool") &&
+            !store.sending.contains("manual-question"), "Future permissions must use native eligibility; questions remain manual")
+        try packet(["type": "resolved", "requestID": "eligible-tool", "decision": "allow"])
+        let offAudit = try policyControl(false)
+        let history = store.directory.appendingPathComponent("history.json")
+        try FileManager.default.removeItem(at: history)
+        try FileManager.default.createDirectory(at: history, withIntermediateDirectories: false)
+        store.controlFromPhone(offAudit, from: store.internet)
+        try wait { try policyResult(offAudit)?["ok"] as? Bool == false }
+        precondition(store.automation.activeIDs.isEmpty, "Off must disable before its audit write")
+        let offAck = try policyResult(offAudit)!
+        precondition((offAck["dangerousAutoYes"] as? [String: Any])?["enabled"] as? Bool == false &&
+            (offAck["error"] as? String)?.contains("audit") == true, "Failed audit must report actual Off and its error")
+        let failedOn = try policyControl(true)
+        store.controlFromPhone(failedOn, from: store.internet)
+        try wait { try policyResult(failedOn)?["ok"] as? Bool == false }
+        precondition(store.automation.activeIDs.isEmpty, "Failed enable audit must never enable")
+        try FileManager.default.removeItem(at: history)
+        try packet(["type": "request", "request": ["id": "waiting-tool", "kind": "permission", "title": "Synthetic only",
+            "detail": "", "autoEligible": false, "sessionAutoEligible": true, "questions": []]])
+        precondition(!store.sending.contains("waiting-tool"))
+        let waitingOn = try policyControl(true)
+        store.controlFromPhone(waitingOn, from: store.internet)
+        try wait { try policyResult(waitingOn)?["ok"] as? Bool == true }
+        precondition(store.sending.contains("waiting-tool") && !store.sending.contains("manual-question") &&
+            !store.sending.contains("ineligible-tool"), "Phone enable dispatches waiting eligible tools through native approval only")
+        try packet(["type": "resolved", "requestID": "waiting-tool", "decision": "allow"])
+        try packet(["type": "capabilities", "sessionAutoYes": false])
+        precondition(store.automation.activeIDs.isEmpty, "Capability loss must retain the native reset")
+        try packet(["type": "capabilities", "sessionAutoYes": true, "steering": true])
+        store.setSessionDangerousAutoYes("fixture", enabled: true)
+        _ = store.steer("fixture", action: "stop")
+        precondition(store.automation.activeIDs.isEmpty, "Stop must retain the native reset")
+        store.setSessionDangerousAutoYes("fixture", enabled: true)
+        try packet(["type": "error", "text": "Synthetic failed runtime acknowledgment"])
+        precondition(store.automation.activeIDs.isEmpty, "Failed runtime acknowledgment must reset policy")
+        store.setSessionDangerousAutoYes("fixture", enabled: true)
+        for value: [String: Any] in [
+            ["type": "hello", "sessionID": "no-socket", "agent": "copilot", "cwd": "/synthetic"],
+            ["type": "capabilities", "sessionID": "no-socket", "sessionAutoYes": true],
+            ["type": "request", "sessionID": "no-socket", "request": ["id": "cannot-dispatch", "kind": "permission",
+                "title": "Synthetic disconnected transport", "detail": "", "autoEligible": false, "sessionAutoEligible": true, "questions": []]]
+        ] {
+            store.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: JSONSerialization.data(withJSONObject: value)))
+        }
+        let failedDispatch = try policyControl(true, sessionID: "no-socket")
+        store.controlFromPhone(failedDispatch, from: store.internet)
+        try wait { try policyResult(failedDispatch)?["ok"] as? Bool == false }
+        precondition(!store.automation.dangerous.contains("no-socket") && store.automation.dangerous.contains("fixture"),
+            "Dispatch failure must reset exactly the failed session, not another enabled session")
+        precondition((try policyResult(failedDispatch)?["dangerousAutoYes"] as? [String: Any])?["enabled"] as? Bool == false)
+        store.server.onDisconnect("fixture")
+        precondition(store.automation.activeIDs.isEmpty, "Provider disconnect must retain the native reset")
+        try packet(["type": "hello", "agent": "copilot", "cwd": "/fixture"])
+        try packet(["type": "capabilities", "sessionAutoYes": true, "steering": true])
         try emit(store.internet, [["type": "status", "status": [
             "state": "pairing", "url": "https://example.com", "devices": [], "pendingPairingIDs": ["pair"]
         ]], ["type": "pairing", "id": "pair", "name": "Verified fixture", "code": "123456"]])
@@ -282,7 +391,11 @@ private final class MemoryDefaults: UserDefaults {
             let uiConnection = MobileConnection(directory: uiDirectory, defaults: defaults, resources: resources, transport: .internet)
             try recoveryUI(uiConnection, directory: uiDirectory)
         }
-        print("Native internet checks passed: opt-in, isolated commands, safe recovery/backup, helper-exit gating and confirmation when requested; no installed-app changes or Keychain access.")
+        store.setSessionDangerousAutoYes("fixture", enabled: true)
+        precondition(store.automation.dangerous.contains("fixture"))
+        store.stop()
+        precondition(store.automation.activeIDs.isEmpty, "App shutdown must retain the native reset")
+        print("Native internet checks passed: isolated commands, Dangerous Auto-yes policy/ACK/races/resets, safe recovery/backup; no installed-app changes or Keychain access.")
     }
 
     @MainActor static func recoveryUI(_ connection: MobileConnection, directory: URL) throws {

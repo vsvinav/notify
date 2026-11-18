@@ -331,7 +331,14 @@ For a capable attached Copilot session, open its **Settings** tab and enable the
 
 Both session modes use the same adapter-advertised eligibility and runtime-policy checks. Dangerous mode does not invent question answers, complete browser actions, bypass restrictions, grant remembered scopes, or make unsupported integrations available. Questions and restricted requests can still interrupt unattended work.
 
-Opt-in and each automatic dispatch are audited before sending. Audit/delivery failure stops further automatic approvals. **Turn off** works even if the audit cannot be saved. Disconnect, restart, Stop, lost capability and agent/steering errors reset the mode. Already-sent approvals cannot be recalled. Approval hotkeys pause while a native confirmation sheet or modal is open.
+Opt-in and each automatic dispatch are audited before sending. Audit/delivery failure stops further automatic approvals. **Turn off** works even if the audit cannot be saved. Provider disconnect, restart, Stop, lost capability and agent/steering errors reset the mode. Already-sent approvals cannot be recalled. Approval hotkeys pause while a native confirmation sheet or modal is open.
+
+Matching unpublished Mac/helper/native Android source builds also expose this same
+session policy on the phone, with explicit high-risk confirmation, a red On
+indicator and direct Off. **Phone disconnect does not disable Dangerous Auto-yes.**
+Offline state shows last-known On/unknown, never a successful Off; toggles are not
+replayed. Older builds show unsupported. No separate phone approval engine is used,
+and phone policy changes do not replace chat drafts or conversation positions.
 
 ## Phone connections
 
