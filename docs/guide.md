@@ -258,13 +258,25 @@ The SDK's existing permission rules can resolve operations before Notify sees th
 
 In the control center, choose **Chat** to message the main agent. **Send** queues your message if it is busy. **Interrupt** confirms before interrupting the main turn and sending your draft; **Stop main** confirms before stopping current work and clearing queued main prompts.
 
-Click a subagent in **Your team** to select that helper. Its composer has its own draft and delivery receipts. **Send** steers a running helper or wakes an idle supported helper; **Stop subagent** confirms before cancelling its work. The runtime may also stop its descendants; the main agent and unrelated helpers are not stopped. Existing edits are not undone. Ended, unavailable and unsupported helpers remain read-only. Some runtime task types reject messaging even while listed; that failure is shown rather than redirecting your message. Creating a new helper or restarting an ended one remains in the original terminal.
+Click a subagent in **Your team** to select that helper. Its composer has its own draft and delivery receipts. **Send** steers a running helper or wakes an idle supported helper; **Stop subagent** confirms before cancelling its work. The runtime may also stop its descendants; the main agent and unrelated helpers are not stopped. Existing edits are not undone. Ended, unavailable and unsupported helpers remain read-only. Some runtime task types reject messaging even while listed; that failure is shown rather than redirecting your message. Supported updated Copilot sessions can create helpers using Notify’s live-catalog creation form described below. Restarting an ended helper still requires the original terminal.
 
 The larger main agent wears a hat. Helper chats use a mini portrait, the helper's name and a tinted **Subagent chat** header, with the selected helper highlighted in the team. **Stop main** and **Stop subagent** are filled red buttons and still require confirmation.
 
 ### Stopping idle subagents
 
 Choose **Stop idle >10 min** in the Control Center sidebar. Review the notice, then choose **Stop idle subagents**. This is a manual cleanup across **all connected supported sessions**, not just the selected chat. It never runs on a schedule.
+
+The matching **native Android source preview** also offers **Add subagent**,
+ended-only **Remove from list**, and **Stop idle >10 min** in **Agents**. Unlike
+the Mac sidebar loop, phone cleanup targets **only the selected session** after
+confirmation. Creation offers live type/model IDs or **Configured default**,
+warns about credits and permission rules, and never sends a main-chat prompt
+instead. Native validation, audit and actual runtime acknowledgments remain
+authoritative. Catalog changes invalidate reviewed management actions without
+resetting chat drafts; rejected/unknown creation preserves form values. Unknown
+delivery is not automatically retried. Old Mac/helper builds and Claude do not
+advertise dispatchable management. This is unreleased source functionality,
+not a change to the installed Android app or the LAN web app.
 
 Copilot must load the updated Notify extension. Idle observation starts when the extension connects; an old creation date does not prove that a helper has been idle. New activity resets that observation. Helpers must have been continuously observed idle for **more than ten minutes**. Missing timing or unsafe/unknown ancestry is skipped. Claude hooks cannot stop subagents, so Claude sessions are explicitly skipped.
 
@@ -360,7 +372,7 @@ The phone's **Sessions** view shows live session status and on-demand recent con
 
 **Send**, main-agent **Interrupt**, and confirmed **Stop** use the connection's supported controls. Stopping a helper can also stop its descendants. Unsupported or ended targets remain read-only, never redirected to another agent. Sending instructions can spend model credits. Queued means accepted into the queue, not completed; uncertainty is explicit and no instruction is automatically retried.
 
-The chart shows running helpers plus one expandable **+N idle subagents** tile. Ended helpers are grouped separately. **Fit** and **100%** support wide/deep teams; missing parent relationships are labeled rather than inferred. Recent activity and team snapshots are bounded, with visible notices when incomplete. Subagent creation/removal and automation controls remain Mac-only.
+The chart shows running helpers plus one expandable **+N idle subagents** tile. Ended helpers are grouped separately. **Fit** and **100%** support wide/deep teams; missing parent relationships are labeled rather than inferred. Recent activity and team snapshots are bounded, with visible notices when incomplete. This LAN web app has no subagent creation/removal or automation controls; use the Mac or the matching native Android source preview.
 
 After updating Notify on the Mac, close and reopen the installed phone web app on the same network. Pairing remains if the HTTPS address is unchanged. Existing older Mac apps can still serve approvals but cannot supply the new workspace.
 

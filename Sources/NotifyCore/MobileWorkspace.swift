@@ -1,5 +1,13 @@
 import Foundation
 
+struct MobilePayloadKey: CodingKey {
+    let stringValue: String
+    var intValue: Int? { nil }
+    init(_ value: String) { stringValue = value }
+    init?(stringValue: String) { self.init(stringValue) }
+    init?(intValue: Int) { return nil }
+}
+
 public struct MobileAutomationPolicy: Codable, Equatable {
     public let ticket: String
     public let offTicket: String
@@ -18,6 +26,37 @@ public struct MobileControl: Decodable {
     public let enabled: Bool?
     public let policyTicket: String?
     public let offTicket: String?
+    public let managementTicket: String?
+    public let creation: SubagentCreation?
+    public var isManagement: Bool { ["create_subagent", "remove_subagent", "stop_idle_subagents"].contains(action) }
+    public var successStatuses: [String] {
+        switch action {
+        case "create_subagent": return ["created"]
+        case "remove_subagent": return ["removed"]
+        case "stop_idle_subagents": return ["cleaned"]
+        case "stop": return ["stopped"]
+        case "dangerous_auto_yes": return ["applied"]
+        default: return ["queued", "received"]
+        }
+    }
+    public init(from decoder: Decoder) throws {
+        let keys = try decoder.container(keyedBy: MobilePayloadKey.self)
+        guard Set(keys.allKeys.map(\.stringValue)).isSubset(of: [
+            "type", "id", "sessionID", "ticket", "action", "text", "agentID", "enabled", "policyTicket", "offTicket", "managementTicket", "creation"
+        ]) else { throw ProtocolError.invalid }
+        if keys.contains(.init("type")), try keys.decode(String.self, forKey: .init("type")) != "control" { throw ProtocolError.invalid }
+        id = try keys.decode(String.self, forKey: .init("id"))
+        sessionID = try keys.decode(String.self, forKey: .init("sessionID"))
+        ticket = try keys.decode(String.self, forKey: .init("ticket"))
+        action = try keys.decode(String.self, forKey: .init("action"))
+        text = try keys.decode(String.self, forKey: .init("text"))
+        agentID = keys.contains(.init("agentID")) ? try keys.decode(String.self, forKey: .init("agentID")) : nil
+        enabled = keys.contains(.init("enabled")) ? try keys.decode(Bool.self, forKey: .init("enabled")) : nil
+        policyTicket = keys.contains(.init("policyTicket")) ? try keys.decode(String.self, forKey: .init("policyTicket")) : nil
+        offTicket = keys.contains(.init("offTicket")) ? try keys.decode(String.self, forKey: .init("offTicket")) : nil
+        managementTicket = keys.contains(.init("managementTicket")) ? try keys.decode(String.self, forKey: .init("managementTicket")) : nil
+        creation = keys.contains(.init("creation")) ? try keys.decode(SubagentCreation.self, forKey: .init("creation")) : nil
+    }
     public var isPolicy: Bool { action == "dangerous_auto_yes" }
     public var isPolicyOff: Bool { isPolicy && enabled == false }
     private var isOffID: Bool { id.dropFirst(14).first == "8" }
@@ -27,9 +66,12 @@ public struct MobileControl: Decodable {
         (isPolicy ? enabled != nil && policyTicket.map { !$0.isEmpty && $0.count <= 256 } == true && agentID == nil &&
             offTicket.map { UUID(uuidString: $0) != nil && $0.dropFirst(14).first == "8" } == true &&
             (isPolicyOff ? isOffID && offTicket?.lowercased() == id.lowercased() : !isOffID) :
-            ["queue", "interrupt", "stop"].contains(action) && enabled == nil && policyTicket == nil && offTicket == nil) &&
+            (["queue", "interrupt", "stop"].contains(action) || isManagement) && enabled == nil && policyTicket == nil && offTicket == nil) &&
+        (isManagement ? id.dropFirst(14).first == "4" && managementTicket.map { !$0.isEmpty && $0.utf16.count <= 256 } == true &&
+            (action == "create_subagent" ? creation?.isValid == true && agentID == nil : creation == nil &&
+                (action == "remove_subagent" ? agentID != nil : agentID == nil)) : managementTicket == nil && creation == nil) &&
         (isPolicyOff || !isOffID) &&
-        text.utf16.count <= 16000 && (action == "stop" || isPolicy ? text.isEmpty : !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) &&
+        text.utf16.count <= 16000 && (action == "stop" || isPolicy || isManagement ? text.isEmpty : !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) &&
         (agentID.map { !$0.isEmpty && $0.count <= 128 } ?? true)
     }
 }
@@ -43,11 +85,26 @@ public struct MobileWorkspace {
         let stop: Bool
     }
     private var generations: [String: (value: Generation, ticket: String)] = [:]
+    private struct ManagementGeneration: Equatable {
+        let revision: UUID; let connected: Bool; let create: Bool; let remove: Bool; let cleanup: Bool
+        let types: [String]; let models: [String]
+    }
+    private var managementGenerations: [String: (value: ManagementGeneration, ticket: String)] = [:]
     private var seen: [String: (sessionID: String, ticket: String)] = [:]
     private var offSeen: [String: (id: String, offTicket: String)] = [:]
     public init() {}
 
-    public mutating func invalidate() { generations.removeAll(); seen.removeAll(); offSeen.removeAll() }
+    public mutating func invalidate() { generations.removeAll(); managementGenerations.removeAll(); seen.removeAll(); offSeen.removeAll() }
+    public mutating func managementTicket(for session: SessionRecord) -> String {
+        guard managementGenerations[session.id] != nil || managementGenerations.count < 256 else { return "" }
+        let value = ManagementGeneration(revision: session.workRevision, connected: session.connected,
+            create: session.canCreateSubagents, remove: session.canRemoveSubagents, cleanup: session.canCleanupIdleSubagents,
+            types: session.subagentTypes.sorted(), models: session.subagentModels.sorted())
+        if managementGenerations[session.id]?.value != value {
+            managementGenerations[session.id] = (value, UUID().uuidString)
+        }
+        return managementGenerations[session.id]!.ticket
+    }
     public mutating func ticket(for session: SessionRecord) -> String {
         guard generations[session.id] != nil || generations.count < 256 else { return "" }
         let value = Generation(revision: session.workRevision, connected: session.connected,
@@ -64,9 +121,13 @@ public struct MobileWorkspace {
     }
     public mutating func accepts(_ control: MobileControl, session: SessionRecord, policy: MobileAutomationPolicy? = nil) -> Bool {
         isCurrent(control, session: session) && session.agent == "copilot" &&
+            // Catalog changes fence new dispatch, not an already-dispatched operation's exact runtime result.
+            (!control.isManagement || control.managementTicket == managementTicket(for: session)) &&
             (control.isPolicy ? session.canAutoYes && policy != nil &&
                 policy?.offTicket == control.offTicket && (control.isPolicyOff || policy?.ticket == control.policyTicket) :
-                SteeringWorkspace().unavailableReason(session: session, agentID: control.agentID, action: control.action) == nil)
+                SteeringWorkspace().unavailableReason(session: session, agentID: control.agentID, action: control.action) == nil &&
+                    (control.creation.map { session.subagentTypes.contains($0.agentType) &&
+                        ($0.model.map { session.subagentModels.contains($0) } ?? true) } ?? true))
     }
     public mutating func reserve(_ control: MobileControl, session: SessionRecord, policy: MobileAutomationPolicy? = nil) throws {
         let id = control.id.lowercased()
@@ -82,12 +143,16 @@ public struct MobileWorkspace {
         seen[id] = (session.id, control.ticket)
     }
     public mutating func overview(sessions: [SessionRecord], colors: [String: String], policies: [String: MobileAutomationPolicy] = [:]) throws -> Data {
-        struct Capabilities: Encodable { let steering: Bool; let subagentChat: Bool; let subagentStop: Bool; let dangerousAutoYes: Bool }
+        struct Capabilities: Encodable {
+            let steering: Bool; let subagentChat: Bool; let subagentStop: Bool; let dangerousAutoYes: Bool
+            let subagentCreate: Bool; let subagentRemove: Bool; let subagentCleanup: Bool
+        }
         struct Row: Encodable {
             let id: String; let name: String; let project: String; let agent: String; let color: String
             let state: String; let connected: Bool; let ticket: String; let capabilities: Capabilities
             let runningCount: Int; let idleCount: Int
             let dangerousAutoYes: MobileAutomationPolicy?
+            let managementTicket: String; let subagentTypes: [String]; let subagentModels: [String]
         }
         struct Snapshot: Encodable {
             let type = "workspace"
@@ -97,6 +162,7 @@ public struct MobileWorkspace {
         }
         let retained = Set(sessions.prefix(256).map(\.id))
         generations = generations.filter { retained.contains($0.key) }
+        managementGenerations = managementGenerations.filter { retained.contains($0.key) }
         seen = seen.filter { retained.contains($0.value.sessionID) }
         offSeen = offSeen.filter { retained.contains($0.key) }
         var snapshot = Snapshot(sessions: sessions.prefix(256).map { session in
@@ -105,8 +171,12 @@ public struct MobileWorkspace {
                 ticket: ticket(for: session), capabilities: Capabilities(
                     steering: session.connected && session.canSteer, subagentChat: session.connected && session.canChatWithSubagents,
                     subagentStop: session.connected && session.canStopSubagents,
-                    dangerousAutoYes: session.connected && session.agent == "copilot" && session.canAutoYes && policies[session.id] != nil),
-                runningCount: session.team?.runningCount ?? 0, idleCount: session.team?.idleCount ?? 0, dangerousAutoYes: policies[session.id])
+                    dangerousAutoYes: session.connected && session.agent == "copilot" && session.canAutoYes && policies[session.id] != nil,
+                    subagentCreate: session.connected && session.agent == "copilot" && session.canCreateSubagents && !session.subagentTypes.isEmpty,
+                    subagentRemove: session.connected && session.agent == "copilot" && session.canRemoveSubagents,
+                    subagentCleanup: session.connected && session.agent == "copilot" && session.canCleanupIdleSubagents),
+                runningCount: session.team?.runningCount ?? 0, idleCount: session.team?.idleCount ?? 0, dangerousAutoYes: policies[session.id],
+                managementTicket: managementTicket(for: session), subagentTypes: session.subagentTypes, subagentModels: session.subagentModels)
         }, total: sessions.count, truncated: sessions.count > 256)
         while true {
             let data = try Self.encoder().encode(snapshot)

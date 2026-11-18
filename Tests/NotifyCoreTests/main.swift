@@ -819,6 +819,32 @@ check(management.receipt(sessionID: controlled.id, commandID: created)?.status =
       management.draft(sessionID: controlled.id) == "Keep main draft",
       "Creation needs its own ACK and must preserve the main draft")
 controlled.subagentModels = ["account-model"]
+var mobileManagement = MobileWorkspace()
+let managementOverview = try JSONSerialization.jsonObject(with: mobileManagement.overview(sessions: [controlled], colors: [:])) as! [String: Any]
+let managementRow = (managementOverview["sessions"] as! [[String: Any]])[0]
+check(managementRow["managementTicket"] as? String != nil, "Phone needs live management authority separate from chat")
+let mobileCreationData: [String: Any] = ["id": UUID().uuidString, "sessionID": controlled.id,
+    "ticket": managementRow["ticket"]!, "managementTicket": managementRow["managementTicket"] ?? "",
+    "action": "create_subagent", "text": "", "creation": [
+        "name": "Reviewer", "agentType": "general-purpose", "prompt": "Review exactly", "model": "account-model"]]
+let mobileCreation = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: mobileCreationData))
+check(mobileManagement.accepts(mobileCreation, session: controlled), "Phone must route a typed live creation")
+try mobileManagement.reserve(mobileCreation, session: controlled)
+do { try mobileManagement.reserve(mobileCreation, session: controlled); preconditionFailure("Duplicate create must reject") }
+catch ProtocolError.stale {}
+let chatTicketBeforeCatalogChange = mobileManagement.ticket(for: controlled)
+controlled.subagentModels = []
+check(!mobileManagement.accepts(mobileCreation, session: controlled), "Changed catalogs invalidate reviewed creation")
+check(mobileManagement.isCurrent(mobileCreation, session: controlled), "Changed catalogs must not invalidate a pending exact runtime result")
+check(mobileManagement.ticket(for: controlled) == chatTicketBeforeCatalogChange, "Catalog refresh must not reset chat drafts or policy epochs")
+var replacedManagementWorkspace = mobileManagement
+var replacedManagementSession = controlled
+replacedManagementSession.workRevision = UUID()
+check(!replacedManagementWorkspace.isCurrent(mobileCreation, session: replacedManagementSession), "Replacement work still invalidates management correlation")
+replacedManagementSession = controlled
+replacedManagementSession.connected = false
+check(!mobileManagement.isCurrent(mobileCreation, session: replacedManagementSession), "Disconnected management cannot correlate a result")
+controlled.subagentModels = ["account-model"]
 let selectedModel = try management.begin(session: controlled, action: "create_subagent",
     creation: SubagentCreation(name: "Model helper", agentType: "general-purpose", prompt: "Review", model: "account-model"))
 check(management.receipt(sessionID: controlled.id, commandID: selectedModel)?.model == "account-model",

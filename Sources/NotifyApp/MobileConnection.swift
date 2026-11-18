@@ -398,12 +398,15 @@ final class MobileConnection: ObservableObject {
             lastWorkspace = messages
         } catch { fail("Could not encode phone workspace: \(error.localizedDescription)") }
     }
-    func completeControl(_ id: String, commandID: String? = nil, status: String, detail: String, error: String? = nil, policy: MobileAutomationPolicy? = nil) {
-        var result: [String: Any] = ["type": "control_result", "id": id, "ok": error == nil,
-                                     "status": status, "detail": detail]
+    func completeControl(_ control: MobileControl, commandID: String? = nil, status: String, detail: String, error: String? = nil, policy: MobileAutomationPolicy? = nil) {
+        let confirmed = error == nil && commandID.map { !$0.isEmpty && $0.utf16.count <= 128 } == true &&
+            control.successStatuses.contains(status) && (!control.isPolicy || policy != nil)
+        let validStatus = confirmed || ["failed", "unknown", "cancelled"].contains(status)
+        var result: [String: Any] = ["type": "control_result", "id": control.id, "ok": confirmed,
+                                     "status": validStatus ? status : "unknown", "detail": detail]
         if let commandID { result["commandID"] = commandID }
-        if let error { result["error"] = error }
-        if let policy {
+        if !confirmed { result["error"] = error ?? "Runtime did not confirm this exact action." }
+        if control.isPolicy, let policy {
             result["dangerousAutoYes"] = ["ticket": policy.ticket, "offTicket": policy.offTicket, "revision": policy.revision, "enabled": policy.enabled, "normalEnabled": policy.normalEnabled]
         }
         send(result)

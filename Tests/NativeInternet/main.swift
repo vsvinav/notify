@@ -181,6 +181,135 @@ private final class MemoryDefaults: UserDefaults {
         try packet(["type": "control_status", "commandID": receipt.id, "status": "queued"])
         precondition(try !result(store.internet, "uncertain", true), "Disconnected commands must never replay results after reconnect")
         precondition(try !events(store.internet).contains { $0["id"] as? String == uncertainControl.id }, "Late control ACK must not reach new channel")
+        try packet(["type": "capabilities", "steering": true, "subagentCreate": true, "subagentRemove": true,
+                    "subagentStop": true, "idleSubagentCleanup": true, "subagentTypes": ["reviewer"], "subagentModels": ["live-model"]])
+        try packet(["type": "team", "team": ["agents": [
+            ["id": "ended", "name": "Ended helper", "task": "", "status": "completed", "parentKnown": true],
+            ["id": "idle", "name": "Idle helper", "task": "", "status": "idle", "parentKnown": true]
+        ], "runningCount": 0, "idleCount": 1, "truncated": false]])
+        func managementCommand(_ action: String, model: String? = "live-model") throws -> [String: Any] {
+            let overview = try JSONSerialization.jsonObject(with: store.phoneWorkspaceSnapshot(watching: ["fixture"], from: store.internet).first!) as! [String: Any]
+            let row = (overview["sessions"] as! [[String: Any]])[0]
+            var value: [String: Any] = ["type": "control", "id": UUID().uuidString, "sessionID": "fixture",
+                "ticket": row["ticket"]!, "managementTicket": row["managementTicket"]!, "action": action, "text": ""]
+            if action == "create_subagent" {
+                var creation = ["name": "Phone reviewer", "agentType": "reviewer", "prompt": "  Exact creation instructions\n"]
+                if let model { creation["model"] = model }
+                value["creation"] = creation
+            }
+            if action == "remove_subagent" { value["agentID"] = "ended" }
+            return value
+        }
+        func runtimePackets() throws -> [[String: Any]] {
+            let text = try String(contentsOf: store.directory.appendingPathComponent("mobile/agent.jsonl"), encoding: .utf8)
+            return try text.split(separator: "\n").map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }
+        }
+        store.steeringWorkspace.setDraft("Native main draft", sessionID: "fixture")
+        store.steeringWorkspace.setDraft("Native helper draft", sessionID: "fixture", agentID: "idle")
+        for (action, ack) in [("create_subagent", "created"), ("remove_subagent", "removed"), ("stop_idle_subagents", "cleaned")] {
+            var input = try managementCommand(action)
+            // The helper stdin -> MobileConnection -> Store -> actual runtime socket route.
+            try emit(store.internet, [input])
+            let commandID = store.steeringWorkspace.history["fixture"]!.last!.id
+            try wait { try runtimePackets().contains { $0["commandID"] as? String == commandID } }
+            let sent = try runtimePackets().first { $0["commandID"] as? String == commandID }!
+            precondition(sent["action"] as? String == action, "Expected \(action); got \(sent); native: \(store.error ?? "none")")
+            precondition((sent["agentID"] as? String) == (action == "remove_subagent" ? "ended" : nil))
+            if action == "create_subagent" {
+                precondition(sent["text"] as? String == "  Exact creation instructions\n" &&
+                    sent["agentName"] as? String == "Phone reviewer" && sent["agentType"] as? String == "reviewer" &&
+                    sent["model"] as? String == "live-model")
+            } else { precondition(sent["text"] as? String == "") }
+            try packet(["type": "control_status", "commandID": commandID, "status": "received"])
+            precondition(store.steeringWorkspace.history["fixture"]!.last!.status == "sending", "Chat ACK cannot complete management")
+            let id = input["id"] as! String
+            precondition(try !events(store.internet).contains { $0["id"] as? String == id })
+            try packet(["type": "control_status", "commandID": commandID, "status": ack,
+                "text": "Cancelled 2; skipped 1; failed 0; uncertain 0"])
+            try wait { try events(store.internet).contains { $0["id"] as? String == id && $0["ok"] as? Bool == true && $0["status"] as? String == ack } }
+            if action == "create_subagent" {
+                var changed = input["creation"] as! [String: String]
+                changed["prompt"] = "Do not echo"
+                input["creation"] = changed
+            }
+            try emit(store.internet, [input])
+            precondition(store.steeringWorkspace.history["fixture"]!.last!.id == commandID)
+        }
+        precondition(store.steeringWorkspace.draft(sessionID: "fixture") == "Native main draft" &&
+            store.steeringWorkspace.draft(sessionID: "fixture", agentID: "idle") == "Native helper draft")
+        for (action, status) in [("stop_idle_subagents", "failed"), ("stop_idle_subagents", "unknown"),
+                                 ("create_subagent", "failed"), ("create_subagent", "created"), ("remove_subagent", "removed")] {
+            try packet(["type": "capabilities", "steering": true, "subagentCreate": true, "subagentRemove": true,
+                        "subagentStop": true, "idleSubagentCleanup": true, "subagentTypes": ["reviewer"], "subagentModels": ["live-model"]])
+            try packet(["type": "team", "team": ["agents": [
+                ["id": "ended", "name": "Ended helper", "task": "", "status": "completed", "parentKnown": true]
+            ], "runningCount": 0, "idleCount": 0, "truncated": false]])
+            let input = try managementCommand(action)
+            let inputID = input["id"] as! String
+            try emit(store.internet, [input])
+            let commandID = store.steeringWorkspace.history["fixture"]!.last!.id
+            try wait { try runtimePackets().contains { $0["commandID"] as? String == commandID } }
+            // Cleanup may publish unavailable before returning partial counts; catalogs/removals have the same ordering.
+            try packet(["type": "capabilities", "steering": true, "subagentCreate": true, "subagentRemove": false,
+                        "subagentStop": true, "idleSubagentCleanup": false, "subagentTypes": ["reviewer"], "subagentModels": []])
+            try packet(["type": "team", "team": ["agents": [], "runningCount": 0, "idleCount": 0, "truncated": false]])
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            precondition(try !events(store.internet).contains { $0["id"] as? String == inputID },
+                         "Admission change must not settle the dispatched \(action) before its actual runtime result")
+            let reviewed = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: input))
+            precondition(!store.internet.workspace.accepts(reviewed, session: store.registry.sessions["fixture"]!),
+                         "The previous management ticket must still reject newly reviewed work")
+            let counts = action == "stop_idle_subagents"
+                ? "Cancelled 2; skipped 3; failed 0; uncertain \(status == "unknown" ? 1 : 0). Later runtime observation failed. Main agent was not targeted."
+                : action == "create_subagent"
+                    ? (status == "created" ? "Created subagent “Phone reviewer”. Requested model: live-model."
+                        : "This model is no longer available in the live session catalog.")
+                    : "Ended subagent removed from the list. No files were deleted."
+            try packet(["type": "control_status", "commandID": commandID, "status": status, "text": counts])
+            let ok = ["created", "removed"].contains(status)
+            try wait { try events(store.internet).contains {
+                $0["id"] as? String == inputID && $0["status"] as? String == status &&
+                $0["ok"] as? Bool == ok && $0["detail"] as? String == counts
+            } }
+        }
+        try packet(["type": "capabilities", "steering": true, "subagentCreate": true, "subagentRemove": true,
+                    "subagentStop": true, "idleSubagentCleanup": true, "subagentTypes": ["reviewer"], "subagentModels": ["live-model"]])
+        let supersededCleanup = try managementCommand("stop_idle_subagents")
+        let supersededID = supersededCleanup["id"] as! String
+        try emit(store.internet, [supersededCleanup])
+        let supersededReceipt = store.steeringWorkspace.history["fixture"]!.last!.id
+        try wait { try runtimePackets().contains { $0["commandID"] as? String == supersededReceipt } }
+        try packet(["type": "activity", "activity": ["id": "superseding-main-work", "kind": "user",
+            "title": "Synthetic new work", "detail": "A different main turn", "status": "complete",
+            "timestamp": "2026-11-18T00:00:00Z"]])
+        try wait { try events(store.internet).contains { $0["id"] as? String == supersededID && $0["status"] as? String == "unknown" } }
+        try packet(["type": "control_status", "commandID": supersededReceipt, "status": "failed", "text": "Late obsolete counts"])
+        precondition(try !events(store.internet).contains { $0["id"] as? String == supersededID && $0["detail"] as? String == "Late obsolete counts" },
+                     "A replaced work generation must not accept late management results")
+        let auditPath = store.directory.appendingPathComponent("history.json")
+        try FileManager.default.removeItem(at: auditPath)
+        try FileManager.default.createDirectory(at: auditPath, withIntermediateDirectories: false)
+        let blockedCreation = try managementCommand("create_subagent")
+        let beforeBlocked = try runtimePackets().count
+        try emit(store.internet, [blockedCreation])
+        try wait { try events(store.internet).contains { $0["id"] as? String == blockedCreation["id"] as? String && $0["ok"] as? Bool == false } }
+        precondition(try runtimePackets().count == beforeBlocked, "Audit failure must not dispatch creation")
+        try FileManager.default.removeItem(at: auditPath)
+        let timedOutCreation = try managementCommand("create_subagent", model: nil)
+        try emit(store.internet, [timedOutCreation])
+        let timedOutReceipt = store.steeringWorkspace.history["fixture"]!.last!.id
+        precondition(store.steeringWorkspace.history["fixture"]!.last!.action == "create_subagent")
+        RunLoop.current.run(until: Date().addingTimeInterval(10.2))
+        try wait { try events(store.internet).contains {
+            $0["id"] as? String == timedOutCreation["id"] as? String && $0["status"] as? String == "unknown" && $0["ok"] as? Bool == false
+        } }
+        let beforeReplay = try runtimePackets().count
+        try emit(store.internet, [timedOutCreation])
+        precondition(try runtimePackets().count == beforeReplay, "Timed-out creation must not be dispatched twice")
+        try packet(["type": "control_status", "commandID": timedOutReceipt, "status": "created", "text": "Late runtime creation"])
+        precondition(try !events(store.internet).contains {
+            $0["id"] as? String == timedOutCreation["id"] as? String && $0["ok"] as? Bool == true
+        }, "Late ACK must not rewrite the settled unknown phone outcome")
         try packet(["type": "capabilities", "sessionAutoYes": true, "steering": false])
         func policyRow(_ sessionID: String = "fixture") throws -> [String: Any] {
             let overview = try JSONSerialization.jsonObject(with: store.phoneWorkspaceSnapshot(watching: [], from: store.internet).first!) as! [String: Any]

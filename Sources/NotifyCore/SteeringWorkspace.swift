@@ -1,6 +1,6 @@
 import Foundation
 
-public struct SubagentCreation {
+public struct SubagentCreation: Codable, Equatable {
     public let name: String
     public let agentType: String
     public let prompt: String
@@ -10,6 +10,15 @@ public struct SubagentCreation {
         self.agentType = agentType
         self.prompt = prompt
         self.model = model
+    }
+    public init(from decoder: Decoder) throws {
+        let keys = try decoder.container(keyedBy: MobilePayloadKey.self)
+        guard Set(keys.allKeys.map(\.stringValue)).isSubset(of: ["name", "agentType", "prompt", "model"]) else { throw ProtocolError.invalid }
+        name = try keys.decode(String.self, forKey: .init("name"))
+        agentType = try keys.decode(String.self, forKey: .init("agentType"))
+        prompt = try keys.decode(String.self, forKey: .init("prompt"))
+        model = keys.contains(.init("model")) ? try keys.decode(String.self, forKey: .init("model")) : nil
+        guard isValid else { throw ProtocolError.invalid }
     }
     public var isValid: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.utf16.count <= 160 &&

@@ -687,7 +687,8 @@ final class Store: ObservableObject {
                 steeringWorkspace.update(sessionID: packet.sessionID, commandID: id, status: status, text: packet.text ?? "")
                 if let receipt = steeringWorkspace.receipt(sessionID: packet.sessionID, commandID: id),
                    receipt.status == status, receipt.status != previous?.status {
-                    let accepted = receipt.action == "stop" ? status == "stopped" : ["queued", "received"].contains(status)
+                    let accepted = phoneControls[id]?.control.successStatuses.contains(status) ??
+                        (receipt.action == "stop" ? status == "stopped" : ["queued", "received"].contains(status))
                     finishPhoneControl(id, status: status, detail: receipt.detail,
                                        error: accepted ? nil : "Runtime did not accept this control: \(status).")
                 }
@@ -847,33 +848,34 @@ final class Store: ObservableObject {
     func controlFromPhone(_ control: MobileControl, from source: MobileConnection? = nil) {
         let connection = source ?? mobile
         guard connection.canReceiveCommands, let session = registry.sessions[control.sessionID], control.isPolicy || phoneControls.count < 8 else {
-            connection.completeControl(control.id, status: "failed", detail: "", error: "Session unavailable or too many phone controls pending.")
+            connection.completeControl(control, status: "failed", detail: "", error: "Session unavailable or too many phone controls pending.")
             return
         }
         do {
             try connection.workspace.reserve(control, session: session, policy: automation.policy(for: session))
             if control.isPolicy {
                 let failure = setSessionDangerousAutoYes(session.id, enabled: control.enabled == true)
-                connection.completeControl(control.id, commandID: control.id, status: failure == nil ? "applied" : "failed",
+                connection.completeControl(control, commandID: control.id, status: failure == nil ? "applied" : "failed",
                     detail: failure ?? (control.enabled == true ? "Dangerous Auto-yes enabled for this session." : "Dangerous Auto-yes is off."),
                     error: failure, policy: automation.policy(for: session))
                 return
             }
             // Audit metadata only: phone prompt contents remain ephemeral.
             try record(session: session, action: "\(connection.transport == .internet ? "Internet phone" : "Phone") requested \(control.action) for \(control.agentID.map { "subagent \($0)" } ?? "main agent")", automatic: false)
-            guard let commandID = steer(session.id, action: control.action, agentID: control.agentID, phoneText: control.text) else {
-                connection.completeControl(control.id, status: "failed", detail: "", error: "Control could not be dispatched. Check the Mac.")
+            guard let commandID = steer(session.id, action: control.action, agentID: control.agentID,
+                                        creation: control.creation, phoneText: control.isManagement ? nil : control.text) else {
+                connection.completeControl(control, status: "failed", detail: "", error: "Control could not be dispatched. Check the Mac.")
                 return
             }
             phoneControls[commandID] = (control, connection)
         } catch {
-            connection.completeControl(control.id, status: "failed", detail: "", error: "No control sent: session stale, unsupported, duplicate, or audit unavailable.")
+            connection.completeControl(control, status: "failed", detail: "", error: "No control sent: session stale, unsupported, duplicate, or audit unavailable.")
         }
     }
 
     private func finishPhoneControl(_ commandID: String, status: String, detail: String, error: String?) {
         guard let pending = phoneControls.removeValue(forKey: commandID) else { return }
-        pending.connection.completeControl(pending.control.id, commandID: commandID, status: status, detail: detail, error: error)
+        pending.connection.completeControl(pending.control, commandID: commandID, status: status, detail: detail, error: error)
     }
 
     private func expirePhoneControls() {
