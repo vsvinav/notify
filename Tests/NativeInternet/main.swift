@@ -28,7 +28,6 @@ private final class MemoryDefaults: UserDefaults {
             try? FileManager.default.removeItem(at: root)
         }
         defaults.set(true, forKey: "mobileEnabled")
-        defaults.set(true, forKey: "internetEnabled")
         defaults.set(false, forKey: "autoYes")
         let resources = root.appendingPathComponent("resources")
         let scripts = resources.appendingPathComponent("mobile/src")
@@ -37,6 +36,7 @@ private final class MemoryDefaults: UserDefaults {
             try FileManager.default.copyItem(at: URL(fileURLWithPath: "Tests/NativeInternet/helper.mjs"),
                                             to: scripts.appendingPathComponent(name))
         }
+        try rememberedInternet(root: root, resources: resources)
         var launchedSessions: [SessionRecord] = []
         var owner: Int32?
         var pauseOwner = false
@@ -53,7 +53,7 @@ private final class MemoryDefaults: UserDefaults {
             connectionTimeout: 0.6)
         let store = Store(directory: root.appendingPathComponent("store"), defaults: defaults, mobileResources: resources, terminal: terminal)
         defer { store.stop() }
-        precondition(store.mobile.enabled && !store.internet.enabled, "Persisted LAN/internet preferences must not authorize internet access")
+        precondition(store.mobile.enabled && !store.internet.enabled, "LAN opt-in must not enable internet access")
         store.internet.start()
         precondition(!store.internet.starting && store.internet.internetStatus == nil)
         for origin in ["http://example.com", "https://user@example.com", "https://example.com/", "https://example.com/path",
@@ -814,7 +814,71 @@ private final class MemoryDefaults: UserDefaults {
         precondition(store.automation.dangerous.contains("fixture"))
         store.stop()
         precondition(store.automation.activeIDs.isEmpty, "App shutdown must retain the native reset")
-        print("Native internet checks passed: isolated commands, Dangerous Auto-yes policy/ACK/races/resets, safe recovery/backup; no installed-app changes or Keychain access.")
+        print("Native internet checks passed: remembered Internet opt-in/startup/shutdown, isolated commands, Dangerous Auto-yes policy/ACK/races/resets, safe recovery/backup; no installed-app changes or Keychain access.")
+    }
+
+    @MainActor static func rememberedInternet(root: URL, resources: URL) throws {
+        func require(_ condition: Bool, _ message: String) throws {
+            guard condition else {
+                throw NSError(domain: "InternetPreference", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+            }
+        }
+        func wait(_ predicate: () -> Bool) throws {
+            let deadline = Date().addingTimeInterval(8)
+            while !predicate(), Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+            try require(predicate(), "Remembered Internet startup did not reach the synthetic helper")
+        }
+        let home = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/internet-home")
+        try require(ProcessInfo.processInfo.environment["COPILOT_HOME"] == home.appendingPathComponent(".copilot").path &&
+                    ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"] == home.appendingPathComponent(".claude").path,
+                    "Full startup checks require isolated agent homes; run Tests/NativeInternet/check.sh")
+        let suite = "app.notify.internet-check." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: "autoYes")
+        let directory = root.appendingPathComponent("remembered")
+        let first = Store(directory: directory, defaults: defaults, mobileResources: resources)
+        defer { first.stop() }
+        first.start()
+        try require(!first.internet.enabled && !first.internet.starting && first.internet.internetStatus == nil,
+                    "First launch must leave internet Off")
+        first.internet.setInternetOrigin("https://example.com/")
+        first.internet.setEnabled(true)
+        try require(!first.internet.enabled && first.internet.error != nil && !defaults.bool(forKey: "internetEnabled"),
+                    "An invalid origin must not persist an opt-in")
+        first.internet.setInternetOrigin("https://example.com")
+        first.internet.setEnabled(true)
+        try wait { first.internet.internetStatus?.state == .connecting }
+        first.stop()
+        try require(defaults.bool(forKey: "internetEnabled"), "App shutdown must remember explicit Internet On")
+        try require(!first.internet.canReceiveCommands, "Remembering On must not keep shutdown authority alive")
+
+        let restarted = Store(directory: directory, defaults: UserDefaults(suiteName: suite)!, mobileResources: resources)
+        defer { restarted.stop() }
+        try require(restarted.internet.enabled && !restarted.mobile.enabled, "Internet opt-in must survive reconstruction without enabling LAN")
+        restarted.start()
+        try wait { restarted.internet.internetStatus?.state == .connecting }
+        try require(!restarted.internet.canReceiveCommands, "Startup must still require an authenticated connected phone")
+        restarted.internet.setEnabled(false)
+        restarted.stop()
+        let disabled = Store(directory: directory, defaults: UserDefaults(suiteName: suite)!, mobileResources: resources)
+        defer { disabled.stop() }
+        disabled.start()
+        try require(!disabled.internet.enabled && !disabled.internet.starting && disabled.internet.internetStatus == nil,
+                    "Explicit Off must survive shutdown and prevent automatic startup")
+        disabled.stop()
+
+        defaults.set(true, forKey: "internetEnabled")
+        for origin in ["", "http://example.com", "https://example.com"] {
+            defaults.set(origin, forKey: "internetOrigin")
+            let failed = MobileConnection(directory: root.appendingPathComponent("missing-preference-helper"),
+                                          defaults: UserDefaults(suiteName: suite)!, resources: root, transport: .internet)
+            failed.start()
+            try require(failed.enabled && failed.error != nil && !failed.starting && !failed.canReceiveCommands &&
+                        failed.internetStatus == nil && defaults.bool(forKey: "internetEnabled"),
+                        "Invalid saved origins or missing helpers must fail visibly without forgetting intent or granting access")
+            failed.stop()
+        }
     }
 
     @MainActor static func recoveryUI(_ connection: MobileConnection, directory: URL) throws {

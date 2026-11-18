@@ -16,7 +16,7 @@ struct InternetSettingsView: View {
             Text("Use an exact origin, such as https://notify.example.com, without a trailing slash or path.")
                 .font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
             Toggle("Enable internet", isOn: Binding(get: { internet.enabled }, set: { internet.setEnabled($0) }))
-            Text("Off every time Notify starts. Internet devices require separate approval; Wi-Fi pairing does not grant internet access. Sending instructions can use model credits.")
+            Text("Off until you enable it. Notify remembers your choice and reconnects on launch when enabled. Internet devices still require separate approval; Wi-Fi pairing does not grant internet access. Sending instructions can use model credits.")
                 .font(WorkspaceType.text(12)).foregroundStyle(Palette.muted)
             HStack(spacing: 8) {
                 Image(systemName: "network").foregroundStyle(Palette.accent)
