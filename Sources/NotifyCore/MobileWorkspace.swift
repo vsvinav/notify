@@ -92,6 +92,7 @@ public struct MobileControl: Decodable {
         case "stop_idle_subagents": return ["cleaned"]
         case "stop": return ["stopped"]
         case "dangerous_auto_yes": return ["applied"]
+        case "send": return ["submitted", "received"]
         default: return ["queued", "received"]
         }
     }
@@ -138,7 +139,8 @@ public struct MobileControl: Decodable {
         (isPolicy ? enabled != nil && policyTicket.map { !$0.isEmpty && $0.count <= 256 } == true && agentID == nil &&
             offTicket.map { UUID(uuidString: $0) != nil && $0.dropFirst(14).first == "8" } == true &&
             (isPolicyOff ? isOffID && offTicket?.lowercased() == id.lowercased() : !isOffID) :
-            (["queue", "interrupt", "stop"].contains(action) || isManagement) && enabled == nil && policyTicket == nil && offTicket == nil) &&
+            (["send", "queue", "interrupt", "stop"].contains(action) || isManagement) && enabled == nil && policyTicket == nil && offTicket == nil) &&
+        (action != "send" || agentID == nil) &&
         (isManagement ? id.dropFirst(14).first == "4" && managementTicket.map { !$0.isEmpty && $0.utf16.count <= 256 } == true &&
             (action == "create_subagent" ? creation?.isValid == true && agentID == nil : creation == nil &&
                 (action == "remove_subagent" ? agentID != nil : agentID == nil)) : managementTicket == nil && creation == nil) &&
@@ -153,6 +155,7 @@ public struct MobileWorkspace {
         let revision: UUID
         let connected: Bool
         let steering: Bool
+        let steeringImmediate: Bool
         let chat: Bool
         let stop: Bool
     }
@@ -206,7 +209,8 @@ public struct MobileWorkspace {
     public mutating func ticket(for session: SessionRecord) -> String {
         guard generations[session.id] != nil || generations.count < 256 else { return "" }
         let value = Generation(revision: session.workRevision, connected: session.connected,
-                               steering: session.canSteer, chat: session.canChatWithSubagents, stop: session.canStopSubagents)
+                               steering: session.canSteer, steeringImmediate: session.canSendImmediately,
+                               chat: session.canChatWithSubagents, stop: session.canStopSubagents)
         if generations[session.id]?.value != value {
             generations[session.id] = (value, UUID().uuidString)
             seen = seen.filter { $0.value.sessionID != session.id }
@@ -243,7 +247,7 @@ public struct MobileWorkspace {
     public mutating func overview(sessions: [SessionRecord], colors: [String: String], policies: [String: MobileAutomationPolicy] = [:],
                                  sessionActions: [String: MobileSessionActions] = [:]) throws -> Data {
         struct Capabilities: Encodable {
-            let steering: Bool; let subagentChat: Bool; let subagentStop: Bool; let dangerousAutoYes: Bool
+            let steering: Bool; let steeringImmediate: Bool; let subagentChat: Bool; let subagentStop: Bool; let dangerousAutoYes: Bool
             let subagentCreate: Bool; let subagentRemove: Bool; let subagentCleanup: Bool
         }
         struct Row: Encodable {
@@ -270,7 +274,9 @@ public struct MobileWorkspace {
             Row(id: session.id, name: session.name, project: session.projectLabel, agent: session.agent,
                 color: colors[session.id] ?? "#777777", state: session.state, connected: session.connected,
                 ticket: ticket(for: session), capabilities: Capabilities(
-                    steering: session.connected && session.canSteer, subagentChat: session.connected && session.canChatWithSubagents,
+                    steering: session.connected && session.canSteer,
+                    steeringImmediate: session.connected && session.canSteer && session.canSendImmediately,
+                    subagentChat: session.connected && session.canChatWithSubagents,
                     subagentStop: session.connected && session.canStopSubagents,
                     dangerousAutoYes: session.connected && session.agent == "copilot" && session.canAutoYes && policies[session.id] != nil,
                     subagentCreate: session.connected && session.agent == "copilot" && session.canCreateSubagents && !session.subagentTypes.isEmpty,

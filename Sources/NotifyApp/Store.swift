@@ -751,7 +751,8 @@ final class Store: ObservableObject {
             }
         case "capabilities":
             registry.capabilities(packet.sessionID, steering: packet.steering == true, autoYes: packet.sessionAutoYes == true,
-                                  subagentChat: packet.subagentChat == true, subagentStop: packet.subagentStop == true)
+                                  subagentChat: packet.subagentChat == true, subagentStop: packet.subagentStop == true,
+                                  steeringImmediate: packet.steeringImmediate == true)
             if registry.sessions[packet.sessionID]?.agent == "copilot" {
                 do {
                     try registry.managementCapabilities(packet.sessionID, create: packet.subagentCreate == true,
@@ -797,7 +798,8 @@ final class Store: ObservableObject {
                 if let receipt = steeringWorkspace.receipt(sessionID: packet.sessionID, commandID: id),
                    receipt.status == status, receipt.status != previous?.status {
                     let accepted = phoneControls[id]?.control.successStatuses.contains(status) ??
-                        (receipt.action == "stop" ? status == "stopped" : ["queued", "received"].contains(status))
+                        (receipt.action == "stop" ? status == "stopped" :
+                            (receipt.action == "send" ? ["submitted", "received"] : ["queued", "received"]).contains(status))
                     finishPhoneControl(id, status: status, detail: receipt.detail,
                                        error: accepted ? nil : "Runtime did not accept this control: \(status).")
                 }

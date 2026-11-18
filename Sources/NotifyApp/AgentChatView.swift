@@ -12,6 +12,7 @@ struct AgentChatView: View {
         return session.team?.agents.first { $0.id == agentID }?.name ?? "Unavailable subagent"
     }
     private var draft: String { store.steeringWorkspace.draft(sessionID: session.id, agentID: agentID) }
+    private var sendAction: String { agentID == nil && session.canSendImmediately ? "send" : "queue" }
     private var unavailable: String? { store.steeringWorkspace.unavailableReason(session: session, agentID: agentID) }
     private var commands: [ControlReceipt] {
         (store.steeringWorkspace.history[session.id] ?? []).filter { $0.agentID == agentID && !$0.isManagement }
@@ -101,9 +102,15 @@ struct AgentChatView: View {
                 Text("Shorten your message to 16,000 characters.").font(WorkspaceType.text(11)).foregroundStyle(Palette.error)
             }
             HStack(spacing: 10) {
-                Button("Send") { store.steer(session.id, action: "queue", agentID: agentID) }
+                Button(agentID != nil || sendAction == "send" ? "Send" : "Queue") {
+                    store.steer(session.id, action: sendAction, agentID: agentID)
+                }
                     .buttonStyle(ReplyButtonStyle(primary: true)).disabled(unavailable != nil || sending || !valid)
                 if agentID == nil {
+                    if session.canSendImmediately {
+                        Button("Queue") { store.steer(session.id, action: "queue") }
+                            .buttonStyle(ReplyButtonStyle(primary: false)).disabled(unavailable != nil || sending || !valid)
+                    }
                     Button("Interrupt") { confirmAction = "interrupt" }.buttonStyle(ReplyButtonStyle(primary: false))
                         .disabled(unavailable != nil || sending || !valid)
                 }
@@ -112,7 +119,9 @@ struct AgentChatView: View {
                     .buttonStyle(ReplyButtonStyle(primary: true, destructive: true))
                     .disabled(sending || store.steeringWorkspace.unavailableReason(session: session, agentID: agentID, action: "stop") != nil)
             }
-            Text(agentID == nil ? "Send queues your message if the main agent is busy." :
+            Text(agentID == nil ? (session.canSendImmediately
+                ? "Send steers before the next model request without stopping work. Queue waits for the next turn."
+                : "Queue waits for the next turn. Reload this terminal's updated Notify extension to enable immediate Send.") :
                 "Send steers this helper only. Other agents keep working.")
                 .font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
         }.alert(confirmAction == "stop" ? "Stop \(targetName)?" : "Interrupt the main agent?",

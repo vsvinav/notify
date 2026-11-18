@@ -11,6 +11,13 @@ enum ResponseBlock: Equatable {
     case heading(level: Int, text: String)
     case listItem(marker: String, depth: Int, text: String)
     case code(language: String, text: String, closed: Bool)
+    case quote(String)
+    case rule
+    case table(headers: [String], alignments: [ResponseTableAlignment], rows: [[String]])
+}
+
+enum ResponseTableAlignment: Equatable {
+    case leading, center, trailing
 }
 
 enum ResponseMarkdown {
@@ -21,11 +28,31 @@ enum ResponseMarkdown {
         var fence: (marker: Character, count: Int, language: String)?
         var code = ""
         var continuesList = false
+        var quote: [String] = []
+        var tableHeaders: [String] = []
+        var tableAlignments: [ResponseTableAlignment] = []
+        var tableRows: [[String]] = []
 
         func flushParagraph() {
             if !paragraph.isEmpty {
                 result.append(.paragraph(paragraph.joined(separator: "\n")))
                 paragraph.removeAll()
+            }
+        }
+
+        func flushQuote() {
+            if !quote.isEmpty {
+                result.append(.quote(quote.joined(separator: "\n")))
+                quote.removeAll()
+            }
+        }
+
+        func flushTable() {
+            if !tableHeaders.isEmpty {
+                result.append(.table(headers: tableHeaders, alignments: tableAlignments, rows: tableRows))
+                tableHeaders.removeAll()
+                tableAlignments.removeAll()
+                tableRows.removeAll()
             }
         }
 
@@ -46,6 +73,26 @@ enum ResponseMarkdown {
                 }
                 continue
             }
+            let hashes = trimmed.prefix(while: { $0 == "#" }).count
+            let isHeading = indent <= 3 && (1...6).contains(hashes) &&
+                (trimmed.count == hashes || trimmed.dropFirst(hashes).first?.isWhitespace == true)
+            if !tableHeaders.isEmpty {
+                if let cells = tableCells(trimmed), cells.count <= tableHeaders.count,
+                   !trimmed.hasPrefix(">"), !isHeading,
+                   !trimmed.hasPrefix("```"), !trimmed.hasPrefix("~~~") {
+                    tableRows.append(cells + Array(repeating: "", count: tableHeaders.count - cells.count))
+                    continue
+                }
+                flushTable()
+            }
+            if indent <= 3 && trimmed.hasPrefix(">") {
+                flushParagraph()
+                let content = trimmed.dropFirst()
+                quote.append(String(content.first == " " ? content.dropFirst() : content))
+                continuesList = false
+                continue
+            }
+            flushQuote()
             if indent <= 3, let marker = trimmed.first, marker == "`" || marker == "~" {
                 let count = trimmed.prefix(while: { $0 == marker }).count
                 let info = trimmed.dropFirst(count).trimmingCharacters(in: .whitespaces)
@@ -68,9 +115,26 @@ enum ResponseMarkdown {
                 continuesList = false
                 continue
             }
-            let hashes = trimmed.prefix(while: { $0 == "#" }).count
-            if indent <= 3 && (1...6).contains(hashes),
-               trimmed.count == hashes || trimmed.dropFirst(hashes).first?.isWhitespace == true {
+            // Wider tables stay as selectable source to bound native layout work.
+            if indent <= 3, paragraph.count == 1,
+               let headers = tableCells(paragraph[0]), let separators = tableCells(trimmed),
+               headers.count == separators.count, headers.count <= 16,
+               let alignments = columnAlignments(separators) {
+                tableHeaders = headers
+                tableAlignments = alignments
+                paragraph.removeAll()
+                continuesList = false
+                continue
+            }
+            let rule = trimmed.filter { !$0.isWhitespace }
+            if indent <= 3, rule.count >= 3, let marker = rule.first,
+               ["-", "*", "_"].contains(marker), rule.allSatisfy({ $0 == marker }) {
+                flushParagraph()
+                result.append(.rule)
+                continuesList = false
+                continue
+            }
+            if isHeading {
                 flushParagraph()
                 let text = String(trimmed.dropFirst(hashes)).trimmingCharacters(in: .whitespaces)
                     .replacingOccurrences(of: #"\s+#+\s*$"#, with: "", options: .regularExpression)
@@ -94,6 +158,8 @@ enum ResponseMarkdown {
             paragraph.append(line)
         }
         if let fence { result.append(.code(language: fence.language, text: code, closed: false)) }
+        flushTable()
+        flushQuote()
         flushParagraph()
         return result
     }
@@ -108,6 +174,51 @@ enum ResponseMarkdown {
             }
         }
         return text
+    }
+
+    private static func tableCells(_ source: String) -> [String]? {
+        let text = Array(source.trimmingCharacters(in: .whitespaces))
+        var cells: [String] = []
+        var cell = ""
+        var index = 0
+        var lastWasSeparator = false
+        while index < text.count {
+            let character = text[index]
+            if character == "\\", index + 1 < text.count {
+                let next = text[index + 1]
+                if next != "|" { cell.append(character) }
+                cell.append(next)
+                index += 2
+                lastWasSeparator = false
+                continue
+            }
+            if character == "|" {
+                cells.append(cell.trimmingCharacters(in: .whitespaces))
+                cell = ""
+            } else {
+                cell.append(character)
+            }
+            lastWasSeparator = character == "|"
+            index += 1
+        }
+        guard !cells.isEmpty else { return nil }
+        if !lastWasSeparator { cells.append(cell.trimmingCharacters(in: .whitespaces)) }
+        if text.first == "|" { cells.removeFirst() }
+        return cells.isEmpty ? nil : cells
+    }
+
+    private static func columnAlignments(_ cells: [String]) -> [ResponseTableAlignment]? {
+        var result: [ResponseTableAlignment] = []
+        for cell in cells {
+            var marker = cell[...]
+            let left = marker.first == ":"
+            let right = marker.last == ":"
+            if left { marker = marker.dropFirst() }
+            if right { marker = marker.dropLast() }
+            guard marker.count >= 3, marker.allSatisfy({ $0 == "-" }) else { return nil }
+            result.append(left && right ? .center : right ? .trailing : .leading)
+        }
+        return result
     }
 
     private static func listMarker(_ text: String) -> (label: String, length: Int)? {

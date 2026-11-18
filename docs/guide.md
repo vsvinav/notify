@@ -256,7 +256,7 @@ The SDK's existing permission rules can resolve operations before Notify sees th
 
 ## Steer an attached Copilot session
 
-In the control center, choose **Chat** to message the main agent. **Send** queues your message if it is busy. **Interrupt** confirms before interrupting the main turn and sending your draft; **Stop main** confirms before stopping current work and clearing queued main prompts.
+In the control center, choose **Chat** to message the main agent. With beta 6/build 13 and its updated Copilot extension, **Send** steers before the next model request without stopping current work, like Enter in Copilot. **Queue** explicitly waits for the next turn. Older extensions offer **Queue** and reload guidance instead of promising immediate Send. **Interrupt** confirms before interrupting the main turn and sending your draft; **Stop main** confirms before stopping current work and clearing queued main prompts.
 
 Click a subagent in **Your team** to select that helper. Its composer has its own draft and delivery receipts. **Send** steers a running helper or wakes an idle supported helper; **Stop subagent** confirms before cancelling its work. The runtime may also stop its descendants; the main agent and unrelated helpers are not stopped. Existing edits are not undone. Ended, unavailable and unsupported helpers remain read-only. Some runtime task types reject messaging even while listed; that failure is shown rather than redirecting your message. Supported updated Copilot sessions can create helpers using Notify’s live-catalog creation form described below. Restarting an ended helper still requires the original terminal.
 
@@ -298,13 +298,21 @@ Select a raised agent tile to open its exact chat, or fold an individual branch.
 
 **Copy response**, **Copy message**, **Copy chat** and code-block **Copy** copy their full available text. Scrolling up pauses **Follow chat**; **Latest** returns to the newest message.
 
+The beta 6/build 13 chat update also formats pipe tables, quoted advice,
+and horizontal dividers. Scroll a wide table or long code line sideways; text
+stays at its normal size. Tables wider than 16 columns, malformed table headers
+and unsupported extra cells remain readable source instead of disappearing.
+Code-block Copy retains the exact received code, including its whitespace.
+This update is not included in beta 5/build 11.
+
 Choose **Steer an Agent** from Notify's menu-bar menu, or **Send instruction** from session details. The floating panel stays available even when no permission is pending. Select the target chat, read its latest activity, and type a direction:
 
+- **Send** steers before the next model request without interrupting or clearing queued input; it requires the updated extension.
 - **Queue** submits the direction for the next turn.
 - **Interrupt** asks for confirmation, interrupts the main turn while preserving queued prompts/background work, then submits the new direction.
 - **Stop** asks for confirmation and aborts current work, clearing queued prompts (including prompts queued in the terminal). It does not undo changes or close the terminal; external processes may continue.
 
-Queue acceptance and a matching runtime **Received** event are separate receipts. Agent activity is shown separately rather than pretending an unrelated response answers your message. Drafts stay with their session. An unknown delivery is never retried automatically: check the terminal before resending.
+**Submitted** means Send was accepted; **Queued** means explicit Queue was accepted. Neither means the model consumed it: **Received** requires a matching runtime message event. Agent activity is shown separately rather than pretending an unrelated response answers your message. Drafts stay with their session. An unknown delivery is never retried automatically: check the terminal before resending.
 
 These controls require the updated Notify extension in an original Copilot terminal. Existing loaded extensions must be reloaded in that terminal to acquire the new capabilities; ask Copilot to reload its extensions. Notify does not restart the terminal to do this. SDK launchers and Claude remote steering are not supported, and unavailable controls are disabled.
 
@@ -370,7 +378,7 @@ Phone replies use the same exact choices, custom-answer restrictions and permiss
 
 The phone's **Sessions** view shows live session status and on-demand recent conversations. Select the main agent or an exact helper in **Chat with**, or choose its tile in **Hierarchy**. Tools and reported thinking stay separate from chat. Phone drafts do not overwrite Mac drafts; reloading the phone page clears its unsent drafts.
 
-**Send**, main-agent **Interrupt**, and confirmed **Stop** use the connection's supported controls. Stopping a helper can also stop its descendants. Unsupported or ended targets remain read-only, never redirected to another agent. Sending instructions can spend model credits. Queued means accepted into the queue, not completed; uncertainty is explicit and no instruction is automatically retried.
+The LAN browser's main-agent **Send** continues to queue. The updated native Android app offers immediate **Send** plus explicit **Queue** when both the Mac and extension support it; older connections visibly offer Queue. Main-agent **Interrupt** and **Stop** remain confirmed actions. Stopping a helper can also stop its descendants. Unsupported or ended targets remain read-only, never redirected to another agent. Sending instructions can spend model credits. Accepted means neither consumed nor completed; uncertainty is explicit and no instruction is automatically retried.
 
 The chart shows running helpers plus one expandable **+N idle subagents** tile. Ended helpers are grouped separately. **Fit** and **100%** support wide/deep teams; missing parent relationships are labeled rather than inferred. Recent activity and team snapshots are bounded, with visible notices when incomplete. This LAN web app has no subagent creation/removal or automation controls; use the Mac or the matching native Android source preview.
 

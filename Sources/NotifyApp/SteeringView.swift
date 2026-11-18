@@ -155,14 +155,20 @@ struct SteeringEditor: View {
                 .disabled(!session.connected || !session.canSteer)
             if draft.utf16.count > 16000 { Text("Shorten your message to 16,000 characters.").font(.system(size: 10)).foregroundStyle(Palette.amber) }
             HStack(spacing: 8) {
+                if session.canSendImmediately {
+                    Button("Send") { store.steer(session.id, action: "send") }
+                        .buttonStyle(ReplyButtonStyle(primary: true)).disabled(!enabled || !validText)
+                }
                 Button("Queue") { store.steer(session.id, action: "queue") }
-                    .buttonStyle(ReplyButtonStyle(primary: true)).disabled(!enabled || !validText)
+                    .buttonStyle(ReplyButtonStyle(primary: !session.canSendImmediately)).disabled(!enabled || !validText)
                 Button("Interrupt") { confirmAction = "interrupt" }
                     .buttonStyle(ReplyButtonStyle(primary: false)).disabled(!enabled || !validText)
                 Button("Stop") { confirmAction = "stop" }
                     .buttonStyle(ReplyButtonStyle(primary: false)).disabled(!enabled)
             }
-            Text("Queue: next turn. Interrupt: redirect the main turn now.")
+            Text(session.canSendImmediately
+                 ? "Send: steer before the next model request. Queue: next turn. Interrupt: stop and redirect."
+                 : "Queue: next turn. Reload the updated Notify extension for immediate Send. Interrupt remains separate.")
                 .font(.system(size: 9)).foregroundStyle(secondary)
         }
         .alert(confirmAction == "stop" ? "Stop this session's work?" : "Interrupt and send this direction?",

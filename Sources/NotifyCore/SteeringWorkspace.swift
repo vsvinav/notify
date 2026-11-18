@@ -65,6 +65,9 @@ public struct SteeringWorkspace {
     }
     public func unavailableReason(session: SessionRecord, agentID: String?, action: String = "queue") -> String? {
         guard session.connected else { return "Reconnect this session to send messages." }
+        if action == "send" && (agentID != nil || session.agent != "copilot" || !session.canSteer || !session.canSendImmediately) {
+            return "Immediate Send requires the updated main-agent Notify extension. Reload it explicitly or choose Queue."
+        }
         if action == "stop_idle_subagents" {
             guard agentID == nil, session.agent == "copilot", session.canCleanupIdleSubagents else {
                 return "Idle cleanup is unavailable. Copilot needs the updated Notify extension; Claude hooks do not support stopping."
@@ -101,7 +104,7 @@ public struct SteeringWorkspace {
         return nil
     }
     public mutating func begin(session: SessionRecord, action: String, agentID: String? = nil, creation: SubagentCreation? = nil, phoneText: String? = nil) throws -> String {
-        if phoneText != nil && (!["queue", "interrupt", "stop"].contains(action) || creation != nil) { throw ProtocolError.invalid }
+        if phoneText != nil && (!["send", "queue", "interrupt", "stop"].contains(action) || creation != nil) { throw ProtocolError.invalid }
         if action == "create_subagent" {
             guard let creation, creation.isValid, session.subagentTypes.contains(creation.agentType), agentID == nil else {
                 throw ProtocolError.invalid
@@ -111,7 +114,7 @@ public struct SteeringWorkspace {
         let emptyMessage = ["stop", "remove_subagent", "stop_idle_subagents"].contains(action)
         let text = phoneText ?? creation?.prompt ?? (emptyMessage ? "" : draft(sessionID: session.id, agentID: agentID))
         guard unavailableReason(session: session, agentID: agentID, action: action) == nil,
-              ["queue", "interrupt", "stop", "create_subagent", "remove_subagent", "stop_idle_subagents"].contains(action),
+              ["send", "queue", "interrupt", "stop", "create_subagent", "remove_subagent", "stop_idle_subagents"].contains(action),
               !(history[session.id] ?? []).contains(where: { $0.status == "sending" }), text.utf16.count <= 16000,
               emptyMessage || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ProtocolError.invalid }
         // Keep unresolved deliveries so a delayed ACK never lands on a different message.
@@ -135,7 +138,8 @@ public struct SteeringWorkspace {
     public mutating func update(sessionID: String, commandID: String, status: String, text: String) {
         guard let index = history[sessionID]?.firstIndex(where: { $0.id == commandID }),
               var receipt = history[sessionID]?[index],
-              ["queued", "received", "stopped", "cancelled", "failed", "unknown", "created", "removed", "cleaned"].contains(status) else { return }
+              ["submitted", "queued", "received", "stopped", "cancelled", "failed", "unknown", "created", "removed", "cleaned"].contains(status) else { return }
+        if receipt.action == "send" ? status == "queued" : status == "submitted" { return }
         if ["received", "stopped", "cancelled", "failed", "created", "removed", "cleaned"].contains(receipt.status) { return }
         if receipt.isManagement {
             let completed = receipt.action == "create_subagent" ? "created" : receipt.action == "remove_subagent" ? "removed" : "cleaned"
@@ -147,12 +151,12 @@ public struct SteeringWorkspace {
         receipt.detail = String(text.prefix(2000))
         history[sessionID]?[index] = receipt
         if receipts[sessionID]?.id == commandID { receipts[sessionID] = receipt }
-        if !receipt.preservesDraft, ["queued", "received"].contains(status), draft(sessionID: sessionID, agentID: receipt.agentID) == receipt.message {
+        if !receipt.preservesDraft, ["submitted", "queued", "received"].contains(status), draft(sessionID: sessionID, agentID: receipt.agentID) == receipt.message {
             setDraft("", sessionID: sessionID, agentID: receipt.agentID)
         }
     }
     public mutating func disconnect(_ id: String) {
-        for receipt in history[id] ?? [] where ["sending", "queued"].contains(receipt.status) {
+        for receipt in history[id] ?? [] where ["sending", "submitted", "queued"].contains(receipt.status) {
             update(sessionID: id, commandID: receipt.id, status: "unknown", text: "Connection lost. Check the session before resending; delivery may already have occurred.")
         }
     }
