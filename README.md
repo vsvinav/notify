@@ -72,6 +72,33 @@ Try a fictional request without an agent call or model credits:
 
 ## Use your phone
 
+**Unreleased session-parity source:** matching Mac 0.2.0 build 10/helper and Android 0.3.0
+development builds add **Session settings** on the phone: the Mac's named color
+choices/custom RGB display and real **Reset automatic**, shared same-group
+**Move up/down**, confirmed **Remove from Notify**, and supported saved
+Copilot/Claude **Resume on Mac**. Colors and order follow the original session
+identity across reconnects; failures are shown rather than saved optimistically.
+These are not claims about older downloads or installed builds.
+
+Removal deletes only a disconnected cached row from Notify—not CLI history or
+project files—and never stops an owner or unpairs a phone. Discovery may restore
+the row. Resume uses only native registry/history and the original installed CLI
+with iTerm2; live owners and pending launches block duplicates. Confirmation
+explains possible Mac sign-in/Automation prompts and saved CLI permissions
+(including prior allow-all). It sends no approvals or connection consent and
+does not enable session Auto-yes. **Launch is not connection:** the Mac reports
+launching/awaiting connection separately from a detected owner or matching
+connected session, with a 30-second no-owner warning. Failure or uncertainty is
+never retried automatically. A new explicit resume review can become available
+after the Mac observes the original owner and its return to Saved, even if it
+never connected to Notify. That authorization survives later phones' completed
+launches and missed updates, but not replacement of its Mac/session/project
+scope. Stale reviews rejected before dispatch show a failed
+receipt; refresh and review a new action rather than replaying the old command.
+Android's **System / Light / Dark** appearance
+choice affects that phone only. Source checks are headless; real-device and
+real-terminal acceptance remain separate.
+
 **Same Wi-Fi:** enable **Settings > Phone connections > Allow phone connections**, choose **Pair a phone**, and follow the [iPhone/Android web-app setup](https://github.com/vsvinav/notify-mobile/tree/feature/remote-access#quickstart). Verify the local certificate independently before trusting it; compare pairing codes locally. No App Store install is required. Internet mode does not require this local CA.
 
 **Internet:** use **Settings > Internet**, enter your operator's exact HTTPS origin and enable access. The updated helper prepares a fresh pairing QR automatically; use **Pair an internet device** to retry or replace an expired invitation. Sign in with a passkey, then compare the **complete public key** on both devices before approving on the Mac. A short code is insufficient. The Android native client is separate from the LAN web app; use its versioned APK and release instructions supplied by your operator.
@@ -82,8 +109,9 @@ fields. Passkey verification and explicit full-key approval on the Mac still app
 The phone has a searchable session drawer and **Chat / Decision / Agents** views,
 with the Mac's illustrated characters and warm light/dark palette. The matching
 lightning icons use amber on warm charcoal. Android 0.3.0 remains a development
-preview; these changes are not in the published 0.2.0 APK. Helper management remains
-planned. Unpublished matching Mac/helper/Android source builds now support
+preview; these changes are not in the published 0.2.0 APK. Matching unpublished
+builds also support live-catalog helper creation, ended-helper removal, and
+confirmed idle cleanup. Unpublished matching Mac/helper/Android source builds support
 Dangerous Auto-yes control of the same Mac-owned session policy: high-risk enable
 confirmation, red acknowledged On state, and direct Off. Phone disconnect leaves
 it enabled; stale state never claims Off, and toggles are never replayed. Older

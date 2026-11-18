@@ -405,6 +405,11 @@ final class MobileConnection: ObservableObject {
         var result: [String: Any] = ["type": "control_result", "id": control.id, "ok": confirmed,
                                      "status": validStatus ? status : "unknown", "detail": detail]
         if let commandID { result["commandID"] = commandID }
+        if control.isSessionAction {
+            result["sessionID"] = control.sessionID
+            result["action"] = control.action
+            result["sessionTicket"] = control.sessionTicket
+        }
         if !confirmed { result["error"] = error ?? "Runtime did not confirm this exact action." }
         if control.isPolicy, let policy {
             result["dangerousAutoYes"] = ["ticket": policy.ticket, "offTicket": policy.offTicket, "revision": policy.revision, "enabled": policy.enabled, "normalEnabled": policy.normalEnabled]

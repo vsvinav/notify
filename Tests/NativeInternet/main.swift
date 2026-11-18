@@ -37,7 +37,21 @@ private final class MemoryDefaults: UserDefaults {
             try FileManager.default.copyItem(at: URL(fileURLWithPath: "Tests/NativeInternet/helper.mjs"),
                                             to: scripts.appendingPathComponent(name))
         }
-        let store = Store(directory: root.appendingPathComponent("store"), defaults: defaults, mobileResources: resources)
+        var launchedSessions: [SessionRecord] = []
+        var owner: Int32?
+        var pauseOwner = false
+        var ownerContinuation: CheckedContinuation<Int32?, Error>?
+        var launchContinuation: CheckedContinuation<Void, Error>?
+        let terminal = SessionTerminal(unavailable: { _ in nil }, owner: { _ in
+            if pauseOwner { return try await withCheckedThrowingContinuation { ownerContinuation = $0 } }
+            return owner
+        },
+            launch: { session in
+                launchedSessions.append(session)
+                try await withCheckedThrowingContinuation { launchContinuation = $0 }
+            }, focus: { _ in preconditionFailure("Synthetic phone resume must never focus a terminal") },
+            connectionTimeout: 0.6)
+        let store = Store(directory: root.appendingPathComponent("store"), defaults: defaults, mobileResources: resources, terminal: terminal)
         defer { store.stop() }
         precondition(store.mobile.enabled && !store.internet.enabled, "Persisted LAN/internet preferences must not authorize internet access")
         store.internet.start()
@@ -109,6 +123,270 @@ private final class MemoryDefaults: UserDefaults {
         let start = try events(store.internet).first!
         precondition(start["origin"] as? String == "https://example.com" &&
                      start["directory"] as? String == store.directory.appendingPathComponent("remote-mobile").path)
+        let parityOverview = try JSONSerialization.jsonObject(with: store.phoneWorkspaceSnapshot(watching: [], from: store.internet)[0]) as! [String: Any]
+        let parityRow = (parityOverview["sessions"] as! [[String: Any]]).first { $0["id"] as? String == "fixture" }!
+        precondition(parityRow["sessionActions"] is [String: Any],
+                     "Actual Store workspace must expose native-authoritative session appearance/order/removal/resume metadata")
+        func row(_ id: String, _ connection: MobileConnection? = nil) throws -> [String: Any] {
+            let overview = try JSONSerialization.jsonObject(with: store.phoneWorkspaceSnapshot(watching: [], from: connection ?? store.internet)[0]) as! [String: Any]
+            return (overview["sessions"] as! [[String: Any]]).first { $0["id"] as? String == id }!
+        }
+        func sessionCommand(_ id: String, _ action: String, extra: [String: Any] = [:],
+                            connection: MobileConnection? = nil) throws -> [String: Any] {
+            let current = try row(id, connection)
+            return ["type": "control", "id": UUID().uuidString, "sessionID": id, "ticket": current["ticket"]!,
+                "action": action, "text": "", "sessionTicket": (current["sessionActions"] as! [String: Any])["ticket"]!]
+                .merging(extra) { _, value in value }
+        }
+        func sessionResult(_ command: [String: Any], status: String, connection: MobileConnection? = nil) throws {
+            try wait { try events(connection ?? store.internet).contains {
+                $0["type"] as? String == "control_result" && $0["id"] as? String == command["id"] as? String && $0["status"] as? String == status
+            } }
+        }
+        let originalColor = store.appearance.color(for: store.registry.sessions["fixture"]!)
+        let colorCommand = try sessionCommand("fixture", "set_session_color", extra: ["rgb": 0x010203])
+        try emit(store.internet, [colorCommand])
+        try sessionResult(colorCommand, status: "color_saved")
+        precondition(try SessionAppearance.load(from: store.directory).color(for: store.registry.sessions["fixture"]!) == 0x010203)
+        let coloredRow = try row("fixture")
+        precondition(coloredRow["ticket"] as? String == parityRow["ticket"] as? String, "Color must not change runtime/management authority")
+        let colorMetadata = coloredRow["sessionActions"] as! [String: Any]
+        precondition(colorMetadata["rgb"] as? Int == 0x010203 && colorMetadata["overridden"] as? Bool == true)
+        precondition((colorMetadata["colors"] as! [[String: Any]]).count == 20, "Use the actual native palette")
+        let reset = try sessionCommand("fixture", "reset_session_color")
+        try emit(store.internet, [reset]); try sessionResult(reset, status: "color_reset")
+        precondition(store.appearance.color(for: store.registry.sessions["fixture"]!) == originalColor)
+        let failedColor = try sessionCommand("fixture", "set_session_color", extra: ["rgb": 0x987654])
+        let colorPath = store.directory.appendingPathComponent("session-colors.json")
+        try FileManager.default.removeItem(at: colorPath)
+        try FileManager.default.createDirectory(at: colorPath, withIntermediateDirectories: false)
+        try emit(store.internet, [failedColor]); try sessionResult(failedColor, status: "failed")
+        precondition(store.appearance.color(for: store.registry.sessions["fixture"]!) == originalColor, "Failed persistence must not change visible color")
+        try FileManager.default.removeItem(at: colorPath)
+
+        let savedID = "11111111-1111-4111-8111-111111111111"
+        let peerID = "22222222-2222-4222-8222-222222222222"
+        let savedHistory = root.appendingPathComponent("synthetic-history")
+        for id in [savedID, peerID] {
+            let directory = savedHistory.appendingPathComponent(id)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("name: Synthetic saved chat\ncwd: \(root.path)\n".utf8).write(to: directory.appendingPathComponent("workspace.yaml"))
+        }
+        let catalog = try CopilotDiscovery.catalog(in: savedHistory, livePIDs: [])
+        store.updateCatalog(catalog)
+        let canonicalOrder = store.orderedSessions.map { $0.sourceSessionID ?? $0.id }
+        for message: [String: Any] in [
+            ["type": "hello", "sessionID": "z-peer-alias", "agent": "copilot", "cwd": root.path],
+            ["type": "metadata", "sessionID": "z-peer-alias", "title": "Peer alias", "sourceSessionID": peerID]
+        ] {
+            store.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: JSONSerialization.data(withJSONObject: message)))
+        }
+        precondition(store.orderedSessions.map { $0.sourceSessionID ?? $0.id } == canonicalOrder,
+                     "Reconnect aliases must retain canonical order even before the first manual move")
+        store.server.onDisconnect("z-peer-alias")
+        _ = store.removeDisconnected("z-peer-alias")
+        store.updateCatalog(catalog)
+        let move = try sessionCommand(savedID, "move_session", extra: ["targetID": peerID,
+            "targetTicket": (try row(peerID)["sessionActions"] as! [String: Any])["ticket"]!])
+        try emit(store.internet, [move]); try sessionResult(move, status: "session_moved")
+        precondition(store.sessionOrder.prefix(2) == [peerID, savedID])
+        let rejectedMove = try sessionCommand(savedID, "move_session", extra: ["targetID": "fixture",
+            "targetTicket": (try row("fixture")["sessionActions"] as! [String: Any])["ticket"]!])
+        try emit(store.internet, [rejectedMove]); try sessionResult(rejectedMove, status: "failed")
+        let remove = try sessionCommand(peerID, "remove_session")
+        store.select("fixture")
+        try emit(store.internet, [remove]); try sessionResult(remove, status: "session_removed")
+        precondition(store.registry.sessions[peerID] == nil && store.selectedID == "fixture")
+        precondition(FileManager.default.fileExists(atPath: savedHistory.appendingPathComponent(peerID + "/workspace.yaml").path))
+        store.updateCatalog(catalog)
+        precondition(store.registry.sessions[peerID]?.isSaved == true, "Discovery may restore an unchanged history row")
+        let reconnectedRemove = try sessionCommand(peerID, "remove_session")
+        store.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: JSONSerialization.data(withJSONObject: [
+            "type": "hello", "sessionID": peerID, "agent": "copilot", "cwd": root.path])))
+        try emit(store.internet, [reconnectedRemove]); try sessionResult(reconnectedRemove, status: "failed")
+        precondition(store.registry.sessions[peerID]?.connected == true)
+        let savedColor = try sessionCommand(savedID, "set_session_color", extra: ["rgb": 0x234567])
+        try emit(store.internet, [savedColor]); try sessionResult(savedColor, status: "color_saved")
+        let savedResumeAuthority = (try row(savedID)["sessionActions"] as! [String: Any])["resumeAuthority"] as! [String: Any]
+        let resume = try sessionCommand(savedID, "resume_session")
+        let secondPhone = try sessionCommand(savedID, "resume_session", connection: store.mobile)
+        try emit(store.internet, [resume])
+        wait { launchedSessions.count == 1 && launchContinuation != nil }
+        precondition(launchedSessions[0].id == savedID && launchedSessions[0].cwd == root.path && launchedSessions[0].agent == "copilot")
+        try emit(store.mobile, [secondPhone]); try sessionResult(secondPhone, status: "failed", connection: store.mobile)
+        precondition(launchedSessions.count == 1, "Two phones must not duplicate an in-flight launch")
+        precondition((try row(savedID)["sessionActions"] as! [String: Any])["resumeStatus"] as? String == "launching")
+        launchContinuation?.resume(); launchContinuation = nil
+        try sessionResult(resume, status: "launched")
+        precondition(store.registry.sessions[savedID]?.connected == false, "AppleScript completion is not agent connection")
+        wait { store.resumeResults["copilot:" + savedID]?.status == "unconfirmed" }
+        let repeatResume = try sessionCommand(savedID, "resume_session")
+        try emit(store.internet, [repeatResume]); try sessionResult(repeatResume, status: "failed")
+        precondition(launchedSessions.count == 1, "An unconfirmed launch must not replay")
+        for message: [String: Any] in [
+            ["type": "hello", "sessionID": "resumed-alias", "agent": "copilot", "cwd": root.path],
+            ["type": "metadata", "sessionID": "resumed-alias", "title": "Resumed", "sourceSessionID": savedID]
+        ] {
+            store.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: JSONSerialization.data(withJSONObject: message)))
+        }
+        let aliasMetadata = try row("resumed-alias")["sessionActions"] as! [String: Any]
+        precondition(aliasMetadata["resumeStatus"] as? String == "connected" && aliasMetadata["sourceID"] as? String == savedID)
+        precondition(aliasMetadata["rgb"] as? Int == 0x234567 && store.sessionOrder.contains(savedID) && !store.sessionOrder.contains("resumed-alias"),
+                     "A matching connected alias must inherit canonical color and order without inventing a connection from launch")
+        store.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: JSONSerialization.data(withJSONObject: [
+            "type": "state", "sessionID": "resumed-alias", "state": "working"])))
+        let workingAuthority = (try row("resumed-alias")["sessionActions"] as! [String: Any])["resumeAuthority"] as! [String: Any]
+        precondition(NSDictionary(dictionary: workingAuthority).isEqual(to: savedResumeAuthority),
+                     "Connected aliases and ordinary new work cannot invent a retirement or discard its canonical scope")
+        store.server.onDisconnect("resumed-alias")
+        store.updateCatalog(catalog)
+        precondition((try row("resumed-alias")["sessionActions"] as! [String: Any])["resumable"] as? Bool == true,
+                     "After the matching owner actually connected and later ended, a fresh explicit saved-session launch must be possible")
+        let claudeID = "33333333-3333-4333-8333-333333333333"
+        store.updateClaudeCatalog([SavedClaude(id: claudeID, title: "Synthetic Claude", cwd: root.path, lastActivity: nil)])
+        owner = 123
+        let ownedResume = try sessionCommand(claudeID, "resume_session")
+        try emit(store.internet, [ownedResume]); try sessionResult(ownedResume, status: "failed")
+        precondition(launchedSessions.count == 1, "An undiscovered live owner still blocks phone launch without focusing")
+        owner = nil
+        let failureID = "44444444-4444-4444-8444-444444444444"
+        store.updateClaudeCatalog([SavedClaude(id: failureID, title: "Synthetic failure", cwd: root.path, lastActivity: nil)])
+        let failureResume = try sessionCommand(failureID, "resume_session")
+        try emit(store.internet, [failureResume]); wait { launchContinuation != nil }
+        precondition(launchedSessions.last?.agent == "claude" && launchedSessions.last?.id == failureID)
+        launchContinuation?.resume(throwing: TerminalSessionError.timedOut); launchContinuation = nil
+        try sessionResult(failureResume, status: "unknown")
+        precondition((try row(failureID)["sessionActions"] as! [String: Any])["resumable"] as? Bool == false)
+        let failedReset = try sessionCommand(failureID, "reset_session_color")
+        try emit(store.internet, [failedReset]); try sessionResult(failedReset, status: "color_reset")
+        let uncertainMetadata = try row(failureID)["sessionActions"] as! [String: Any]
+        precondition(uncertainMetadata["resumable"] as? Bool == false &&
+            (uncertainMetadata["resumeAuthority"] as? [String: Any])?["retired"] as? Int == 0,
+                     "Color changes cannot authorize an unobserved uncertain launch")
+        let lateID = "55555555-5555-4555-8555-555555555555"
+        store.updateClaudeCatalog([SavedClaude(id: lateID, title: "Late synthetic launch", cwd: root.path, lastActivity: nil)])
+        let lateResume = try sessionCommand(lateID, "resume_session")
+        try emit(store.internet, [lateResume]); wait { launchContinuation != nil }
+        try emit(store.internet, [remoteStatus("paused")])
+        launchContinuation?.resume(); launchContinuation = nil
+        wait { store.resumeResults["claude:" + lateID]?.status == "awaiting_connection" }
+        try emit(store.internet, [remoteStatus("connected")])
+        precondition(try !events(store.internet).contains { $0["id"] as? String == lateResume["id"] as? String },
+                     "A late launch result must not enter a replacement phone channel")
+        let warningID = "66666666-6666-4666-8666-666666666666"
+        let warningSaved = SavedClaude(id: warningID, title: "Repeated synthetic launch", cwd: root.path, lastActivity: nil)
+        store.updateClaudeCatalog([warningSaved])
+        let firstLaunch = try sessionCommand(warningID, "resume_session")
+        try emit(store.internet, [firstLaunch]); wait { launchContinuation != nil }
+        let firstLaunchTime = Date()
+        launchContinuation?.resume(); launchContinuation = nil
+        try sessionResult(firstLaunch, status: "launched")
+        store.server.onPacket(try JSONDecoder().decode(AgentPacket.self, from: JSONSerialization.data(withJSONObject: [
+            "type": "hello", "sessionID": warningID, "agent": "claude", "cwd": root.path])))
+        RunLoop.current.run(until: firstLaunchTime.addingTimeInterval(0.3))
+        store.server.onDisconnect(warningID)
+        store.updateClaudeCatalog([warningSaved])
+        let laterLaunch = try sessionCommand(warningID, "resume_session")
+        try emit(store.internet, [laterLaunch]); wait { launchContinuation != nil }
+        launchContinuation?.resume(); launchContinuation = nil
+        try sessionResult(laterLaunch, status: "launched")
+        RunLoop.current.run(until: firstLaunchTime.addingTimeInterval(0.7))
+        precondition(store.resumeResults["claude:" + warningID]?.status == "awaiting_connection",
+                     "A previous launch warning must not expire a later explicitly authorized launch")
+        let unbridgedID = "77777777-7777-4777-8777-777777777777"
+        let unbridgedSaved = SavedClaude(id: unbridgedID, title: "Owner without Notify", cwd: root.path, lastActivity: nil)
+        store.updateClaudeCatalog([unbridgedSaved])
+        let beforeUnbridged = try row(unbridgedID)["sessionActions"] as! [String: Any]
+        let unbridgedLaunch = try sessionCommand(unbridgedID, "resume_session")
+        try emit(store.internet, [unbridgedLaunch]); wait { launchContinuation != nil }
+        launchContinuation?.resume(); launchContinuation = nil
+        try sessionResult(unbridgedLaunch, status: "launched")
+        store.updateClaudeCatalog([SavedClaude(id: unbridgedID, title: "Owner without Notify", cwd: root.path, lastActivity: nil, pid: 123)])
+        let ownerOnly = try row(unbridgedID)
+        precondition(ownerOnly["ticket"] as? String == unbridgedLaunch["ticket"] as? String &&
+            (ownerOnly["sessionActions"] as! [String: Any])["resumeStatus"] as? String == "owner_detected",
+            "Catalog owner observation must not pretend that the Notify bridge connected or replaced work")
+        store.updateClaudeCatalog([unbridgedSaved])
+        let savedAgain = try row(unbridgedID)
+        let savedAgainActions = savedAgain["sessionActions"] as! [String: Any]
+        precondition(savedAgain["ticket"] as? String == unbridgedLaunch["ticket"] as? String &&
+            savedAgainActions["resumable"] as? Bool == true,
+            "An original CLI owner can exit back to Saved without ever changing the runtime ticket")
+        let firstRetirement = savedAgainActions["resumeAuthority"] as! [String: Any]
+        precondition(firstRetirement["epoch"] as? String == (beforeUnbridged["resumeAuthority"] as! [String: Any])["epoch"] as? String &&
+            firstRetirement["retired"] as? Int == 1,
+            "Only observed retirement advances the native scoped resume authority")
+        let changedColor = try sessionCommand(unbridgedID, "set_session_color", extra: ["rgb": 0x123456])
+        try emit(store.internet, [changedColor]); try sessionResult(changedColor, status: "color_saved")
+        let coloredAfterOwner = try row(unbridgedID)["sessionActions"] as! [String: Any]
+        precondition(NSDictionary(dictionary: coloredAfterOwner["resumeAuthority"] as! [String: Any]).isEqual(to: firstRetirement),
+                     "An unrelated metadata generation cannot change the retired launch authority")
+        let launchCountBeforeReplay = launchedSessions.count
+        try emit(store.internet, [unbridgedLaunch]); try sessionResult(unbridgedLaunch, status: "failed")
+        precondition(launchedSessions.count == launchCountBeforeReplay, "Retirement never makes the original launch command replayable")
+        let explicitResume = try sessionCommand(unbridgedID, "resume_session", connection: store.mobile)
+        precondition(explicitResume["id"] as? String != unbridgedLaunch["id"] as? String)
+        try emit(store.mobile, [explicitResume]); wait { launchContinuation != nil }
+        launchContinuation?.resume(); launchContinuation = nil
+        try sessionResult(explicitResume, status: "launched", connection: store.mobile)
+        precondition(launchedSessions.count == launchCountBeforeReplay + 1)
+        store.updateClaudeCatalog([SavedClaude(id: unbridgedID, title: "Owner without Notify", cwd: root.path, lastActivity: nil, pid: 456)])
+        store.updateClaudeCatalog([unbridgedSaved])
+        let afterTwoPhones = try row(unbridgedID)["sessionActions"] as! [String: Any]
+        let initialAuthority = beforeUnbridged["resumeAuthority"] as? [String: Any]
+        let retiredAuthority = afterTwoPhones["resumeAuthority"] as? [String: Any]
+        let olderReviewRetired = initialAuthority?["epoch"] as? String != nil &&
+            initialAuthority?["epoch"] as? String == retiredAuthority?["epoch"] as? String &&
+            (retiredAuthority?["retired"] as? Int ?? -1) > (initialAuthority?["retired"] as? Int ?? -1)
+        precondition(olderReviewRetired && retiredAuthority?["retired"] as? Int == 2,
+                     "Phone A must retain native retirement authorization after phone B retires, even when A misses every intermediate snapshot")
+        store.updateClaudeCatalog([unbridgedSaved])
+        let repeatedAuthority = (try row(unbridgedID)["sessionActions"] as! [String: Any])["resumeAuthority"] as! [String: Any]
+        precondition(NSDictionary(dictionary: repeatedAuthority).isEqual(to: retiredAuthority!),
+                     "Repeated Saved discovery must not invent another retirement")
+        store.updateClaudeCatalog([SavedClaude(id: unbridgedID, title: "Replacement work", cwd: root.appendingPathComponent("other-project").path, lastActivity: nil)])
+        let replacementAuthority = (try row(unbridgedID)["sessionActions"] as! [String: Any])["resumeAuthority"] as! [String: Any]
+        precondition(replacementAuthority["epoch"] as? String != retiredAuthority?["epoch"] as? String &&
+            replacementAuthority["retired"] as? Int == 0, "Changed native work binding must get a fresh epoch, not credit for previous retirements")
+        precondition(store.removeDisconnected(unbridgedID))
+        store.updateClaudeCatalog([unbridgedSaved])
+        let recreatedAuthority = (try row(unbridgedID)["sessionActions"] as! [String: Any])["resumeAuthority"] as! [String: Any]
+        precondition(recreatedAuthority["epoch"] as? String != replacementAuthority["epoch"] as? String &&
+            recreatedAuthority["retired"] as? Int == 0, "Removing/recreating a cached identity must not resurrect its retirement scope")
+        let replacementStore = Store(directory: root.appendingPathComponent("replacement-store"), defaults: MemoryDefaults(),
+            mobileResources: resources, terminal: terminal)
+        replacementStore.updateClaudeCatalog([unbridgedSaved])
+        let replacementOverview = try JSONSerialization.jsonObject(with: replacementStore.phoneWorkspaceSnapshot(watching: [])[0]) as! [String: Any]
+        let replacementRow = (replacementOverview["sessions"] as! [[String: Any]]).first!
+        let restartedAuthority = (replacementRow["sessionActions"] as! [String: Any])["resumeAuthority"] as! [String: Any]
+        precondition(restartedAuthority["epoch"] as? String != recreatedAuthority["epoch"] as? String &&
+            restartedAuthority["retired"] as? Int == 0, "A new Store instance cannot authorize old uncertain attempts")
+        replacementStore.stop()
+        let scopeRaceID = "88888888-8888-4888-8888-888888888888"
+        let scopeRaceSaved = SavedClaude(id: scopeRaceID, title: "Scope race", cwd: root.path, lastActivity: nil)
+        store.updateClaudeCatalog([scopeRaceSaved])
+        pauseOwner = true
+        let scopeRace = try sessionCommand(scopeRaceID, "resume_session")
+        try emit(store.internet, [scopeRace]); wait { ownerContinuation != nil }
+        let beforeScopeRace = launchedSessions.count
+        store.updateClaudeCatalog([SavedClaude(id: scopeRaceID, title: "Replacement", cwd: root.appendingPathComponent("other-project").path, lastActivity: nil)])
+        store.updateClaudeCatalog([scopeRaceSaved])
+        pauseOwner = false
+        ownerContinuation?.resume(returning: nil); ownerContinuation = nil
+        try wait { try launchContinuation != nil || events(store.internet).contains {
+            $0["id"] as? String == scopeRace["id"] as? String && $0["status"] as? String == "failed"
+        } }
+        launchContinuation?.resume(throwing: TerminalSessionError.timedOut); launchContinuation = nil
+        precondition(launchedSessions.count == beforeScopeRace,
+                     "A changed-and-restored work scope during owner lookup must not launch under an old phone review")
+        try sessionResult(scopeRace, status: "failed")
+        // Keep existing fixtures' one-session assumptions intact.
+        store.server.onDisconnect("resumed-alias")
+        _ = store.removeDisconnected("resumed-alias")
+        store.server.onDisconnect(peerID)
+        _ = store.removeDisconnected(peerID)
+        store.updateCatalog([])
+        store.updateClaudeCatalog([])
         let lanItems = store.phoneSnapshot()
         let internetItems = store.phoneSnapshot(from: store.internet)
         precondition(lanItems.first!.ticket != internetItems.first!.ticket)
@@ -250,6 +528,8 @@ private final class MemoryDefaults: UserDefaults {
             let commandID = store.steeringWorkspace.history["fixture"]!.last!.id
             try wait { try runtimePackets().contains { $0["commandID"] as? String == commandID } }
             // Cleanup may publish unavailable before returning partial counts; catalogs/removals have the same ordering.
+            let metadataChange = try sessionCommand("fixture", "reset_session_color")
+            try emit(store.internet, [metadataChange]); try sessionResult(metadataChange, status: "color_reset")
             try packet(["type": "capabilities", "steering": true, "subagentCreate": true, "subagentRemove": false,
                         "subagentStop": true, "idleSubagentCleanup": false, "subagentTypes": ["reviewer"], "subagentModels": []])
             try packet(["type": "team", "team": ["agents": [], "runningCount": 0, "idleCount": 0, "truncated": false]])

@@ -21,6 +21,17 @@ public enum TerminalSessionError: LocalizedError {
 }
 
 public enum TerminalSession {
+    public static func resumeUnavailableReason(agent: String, id: String, cwd: String, executableURL: URL) -> String? {
+        do {
+            try requireITerm()
+            switch agent {
+            case "copilot": _ = try resumeCommand(id: id, cwd: cwd, copilotHome: copilotHome, executableURL: executableURL, livePIDs: [])
+            case "claude": _ = try resumeClaudeCommand(id: id, cwd: cwd, home: ClaudeDiscovery.home, executableURL: executableURL, livePIDs: [])
+            default: throw TerminalSessionError.invalidSession
+            }
+            return nil
+        } catch { return error.localizedDescription }
+    }
     public static var copilotHome: URL {
         ProcessInfo.processInfo.environment["COPILOT_HOME"].map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".copilot")

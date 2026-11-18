@@ -30,7 +30,7 @@ struct IdleCleanupAttempt: Identifiable {
 
 final class Store: ObservableObject {
     @Published private(set) var registry = SessionRegistry() {
-        didSet { mobile.workspaceChanged(); internet.workspaceChanged() }
+        didSet { synchronizeResumeLifecycles(); mobile.workspaceChanged(); internet.workspaceChanged() }
     }
     @Published var selectedID: String?
     @Published var selectedRequestID: String?
@@ -87,6 +87,20 @@ final class Store: ObservableObject {
     @Published private(set) var terminalBusy = Set<String>()
     @Published private(set) var launching = Set<String>()
     private var terminalTasks: [String: Task<Void, Never>] = [:]
+    private var terminalSources = Set<String>()
+    private var resumeObservedOwners = Set<String>()
+    private struct ResumeLifecycle {
+        let cwd: String
+        var authority = MobileResumeAuthority()
+        var launched = false
+    }
+    private var resumeLifecycles: [String: ResumeLifecycle] = [:]
+    private var resumeWarnings: [String: UUID] = [:]
+    @Published private(set) var resumeResults: [String: (status: String, detail: String)] = [:] {
+        didSet { mobile.workspaceChanged(); internet.workspaceChanged() }
+    }
+    private let terminal: SessionTerminal
+    private var phoneSessionControls: [String: (control: MobileControl, connection: MobileConnection)] = [:]
     @Published private(set) var descriptions: [String: SessionDescription] = [:]
     @Published private(set) var summarizingID: String?
     @Published var autoYes: Bool {
@@ -111,7 +125,9 @@ final class Store: ObservableObject {
     private var lastDiscoveryError: String?
     private let descriptionRunner = DescriptionRunner()
 
-    init(directory: URL? = nil, defaults: UserDefaults = .standard, mobileResources: URL? = Bundle.main.resourceURL) {
+    init(directory: URL? = nil, defaults: UserDefaults = .standard, mobileResources: URL? = Bundle.main.resourceURL,
+         terminal: SessionTerminal = .live) {
+        self.terminal = terminal
         self.defaults = defaults
         let savedAppearance = defaults.string(forKey: "appearanceMode")
         appearanceMode = savedAppearance.flatMap(AppearanceMode.init(rawValue:)) ?? .system
@@ -156,6 +172,7 @@ final class Store: ObservableObject {
                         status: "unknown", text: "Phone connection unavailable. Check the session before retrying.")
                     self.phoneControls.removeValue(forKey: commandID)
                 }
+                self.phoneSessionControls = self.phoneSessionControls.filter { $0.value.connection !== connection }
             }
         }
         if let savedAppearance, AppearanceMode(rawValue: savedAppearance) == nil {
@@ -182,6 +199,7 @@ final class Store: ObservableObject {
             self.disableSessionAutoYes(id, reason: "connection closed")
             self.steeringWorkspace.disconnect(id)
             self.registry.disconnect(id)
+            self.observeResumeOwners()
             self.expirePhoneControls()
             self.publishPhones()
             self.onAttentionChange?()
@@ -268,80 +286,123 @@ final class Store: ObservableObject {
             } catch { self.claudeSetupError = "Could not install Claude hooks: \(AgentSetup.failureDescription(error))" }
         }
     }
-    func setColor(_ value: UInt32?, for session: SessionRecord) {
-        do { try appearance.set(value, for: session, in: directory) }
-        catch { self.error = "Session color could not be saved: \(error.localizedDescription)" }
+    @discardableResult
+    func setColor(_ value: UInt32?, for session: SessionRecord) -> Bool {
+        do { try appearance.set(value, for: session, in: directory); return true }
+        catch { self.error = "Session color could not be saved: \(error.localizedDescription)"; return false }
     }
-    func rememberSessionOrder(_ ids: [String]) {
-        guard ids.allSatisfy({ registry.sessions[$0] != nil }) else {
+    @discardableResult
+    func rememberSessionOrder(_ ids: [String]) -> Bool {
+        guard Set(ids).count == ids.count, ids.allSatisfy({ registry.sessions[$0] != nil }) else {
             error = "Session order could not be saved because a session is no longer available."
-            return
+            return false
         }
         var seen = Set<String>()
         let keys = ids.compactMap { registry.sessions[$0] }.map { $0.sourceSessionID ?? $0.id }
             .filter { seen.insert($0).inserted }
         sessionOrder = keys + sessionOrder.filter { seen.insert($0).inserted }
         defaults.set(sessionOrder, forKey: "sessionOrder")
+        mobile.workspaceChanged(); internet.workspaceChanged()
+        return true
     }
-    func openTerminal(_ session: SessionRecord, resume: Bool = false) {
-        guard !terminalBusy.contains(session.id), !launching.contains(session.id) else { return }
-        guard session.agent == "copilot" || session.agent == "claude" else {
-            localSessionErrors[session.id] = "Terminal navigation is not available for this agent type."
-            return
+    var orderedSessions: [SessionRecord] {
+        sessions.sorted {
+            let left = $0.sourceSessionID ?? $0.id, right = $1.sourceSessionID ?? $1.id
+            let a = sessionOrder.firstIndex(of: left) ?? sessionOrder.firstIndex(of: $0.id) ?? Int.max
+            let b = sessionOrder.firstIndex(of: right) ?? sessionOrder.firstIndex(of: $1.id) ?? Int.max
+            return a == b ? (left == right ? $0.id < $1.id : left < right) : a < b
         }
+    }
+    private func terminalKey(_ session: SessionRecord) -> String { session.agent + ":" + (session.sourceSessionID ?? session.id) }
+    private func synchronizeResumeLifecycles() {
+        guard !resumeLifecycles.isEmpty else { return }
+        let bindings = Dictionary(grouping: registry.sessions.values, by: terminalKey)
+        resumeLifecycles = resumeLifecycles.filter { key, lifecycle in
+            bindings[key]?.count == 1 && bindings[key]?.first?.cwd == lifecycle.cwd
+        }
+    }
+    private func resumeAuthority(for session: SessionRecord) -> MobileResumeAuthority? {
+        let key = terminalKey(session)
+        if resumeLifecycles[key] == nil {
+            guard resumeLifecycles.count < 256 else { return nil }
+            resumeLifecycles[key] = ResumeLifecycle(cwd: session.cwd)
+        }
+        return resumeLifecycles[key]?.authority
+    }
+    func openTerminal(_ session: SessionRecord, resume: Bool = false, phone: Bool = false,
+                      completion: ((String, String) -> Void)? = nil) {
+        let sourceKey = terminalKey(session)
+        func reject(_ message: String) { localSessionErrors[session.id] = message; completion?("failed", message) }
+        guard !terminalSources.contains(sourceKey), !terminalBusy.contains(session.id), !launching.contains(session.id) else {
+            reject("This session already has a terminal action or launch awaiting connection."); return
+        }
+        if phone && (resumeResults[sourceKey].map { $0.status != "failed" } == true || !session.isSaved || session.connected || session.ownerPID != nil) {
+            reject("A live owner or prior launch exists. Check the original session on the Mac; nothing was launched."); return
+        }
+        guard session.agent == "copilot" || session.agent == "claude" else {
+            reject("Terminal navigation is not available for this agent type."); return
+        }
+        let reviewedResumeAuthority = resume ? resumeAuthority(for: session) : nil
+        terminalSources.insert(sourceKey)
         terminalBusy.insert(session.id)
         localSessionErrors.removeValue(forKey: session.id)
         let rowID = session.id
-        let sourceID = session.sourceSessionID ?? session.id
-        let agentType = session.agent
+        if resume { resumeResults[sourceKey] = ("launching", "Checking the original saved CLI session on the Mac.") }
         terminalTasks[session.id] = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.terminalBusy.remove(session.id); self.terminalTasks.removeValue(forKey: session.id) }
+            defer {
+                self.terminalBusy.remove(session.id); self.terminalTasks.removeValue(forKey: session.id)
+                self.terminalSources.remove(sourceKey)
+                self.observeResumeOwners()
+                self.mobile.workspaceChanged(); self.internet.workspaceChanged()
+            }
+            var launchStarted = false
             do {
-                if agentType == "copilot" {
-                    let live = try await Task.detached {
-                        try CopilotDiscovery.sessions(in: TerminalSession.copilotHome.appendingPathComponent("session-state"),
-                                                     livePIDs: CopilotDiscovery.runningPIDs())
-                    }.value
-                    if let owner = live.first(where: { $0.id == sourceID }) {
-                        try await TerminalSession.focus(pid: owner.pid)
-                    } else if resume && session.isSaved {
-                        guard let executable = self.setupSnapshot?.copilot ?? AgentSetup.findExecutable("copilot", path: AgentSetup.searchPath) else {
-                            self.localSessionErrors[session.id] = "Copilot CLI not found. Check setup before resuming."
-                            return
-                        }
-                        try await TerminalSession.resume(id: sourceID, cwd: session.cwd,
-                            executableURL: executable)
-                        self.launching.insert(session.id)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
-                            guard let self, self.launching.remove(rowID) != nil else { return }
-                            self.localSessionErrors[rowID] = "iTerm2 opened, but no live owner was detected yet."
-                        }
-                    } else {
-                        self.localSessionErrors[session.id] = "No live Copilot terminal found for this session."
+                if let owner = try await self.terminal.owner(session) {
+                    if phone { throw TerminalSessionError.activeOwner(owner) }
+                    try await self.terminal.focus(owner)
+                    if resume { self.resumeResults[sourceKey] = ("owner_detected", "The existing CLI owner was found; no new terminal was launched.") }
+                } else if resume && session.isSaved {
+                    guard let current = self.registry.sessions[rowID], !current.connected, current.isSaved,
+                          current.ownerPID == nil, self.terminalKey(current) == sourceKey,
+                          current.cwd == session.cwd, current.workRevision == session.workRevision,
+                          !phone || reviewedResumeAuthority != nil && self.resumeAuthority(for: current) == reviewedResumeAuthority,
+                          !self.sessions.contains(where: { self.terminalKey($0) == sourceKey && ($0.connected || $0.ownerPID != nil) }) else {
+                        throw TerminalSessionError.invalidSession
                     }
-                } else { // claude
-                    let live = try await Task.detached {
-                        try ClaudeDiscovery.sessions(livePIDs: ClaudeDiscovery.runningPIDs())
-                    }.value
-                    if let owner = live.first(where: { $0.id == sourceID }) {
-                        try await TerminalSession.focus(pid: owner.pid)
-                    } else if resume && session.isSaved {
-                        guard let claude = self.setupSnapshot?.claude ?? AgentSetup.findExecutable("claude", path: AgentSetup.searchPath) else {
-                            self.localSessionErrors[session.id] = "Claude CLI not found. Check setup before resuming."
-                            return
-                        }
-                        try await TerminalSession.resumeClaude(id: sourceID, cwd: session.cwd, executableURL: claude)
-                        self.launching.insert(session.id)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
-                            guard let self, self.launching.remove(rowID) != nil else { return }
-                            self.localSessionErrors[rowID] = "iTerm2 opened, but no live Claude session connected yet."
-                        }
-                    } else {
-                        self.localSessionErrors[session.id] = "No live Claude terminal found for this session."
+                    if let reason = self.terminal.unavailable(current) {
+                        throw NSError(domain: "NotifyResume", code: 1, userInfo: [NSLocalizedDescriptionKey: reason])
                     }
+                    launchStarted = true
+                    _ = self.resumeAuthority(for: current)
+                    self.resumeLifecycles[sourceKey]?.launched = true
+                    try await self.terminal.launch(current)
+                    if !self.resumeObservedOwners.contains(sourceKey) {
+                        self.launching.insert(rowID)
+                        self.resumeResults[sourceKey] = ("awaiting_connection", "iTerm2 launch completed. Waiting for the original session to connect; launch is not connection.")
+                    }
+                    completion?("launched", "The original \(session.agent) CLI was launched in iTerm2 on the Mac. This acknowledgment confirms launch only, not connection.")
+                    let warning = UUID()
+                    self.resumeWarnings[sourceKey] = warning
+                    DispatchQueue.main.asyncAfter(deadline: .now() + self.terminal.connectionTimeout) { [weak self] in
+                        guard let self, self.resumeWarnings[sourceKey] == warning else { return }
+                        self.resumeWarnings.removeValue(forKey: sourceKey)
+                        guard self.launching.remove(rowID) != nil else { return }
+                        let matched = self.sessions.filter { self.terminalKey($0) == sourceKey }
+                        guard !matched.contains(where: { $0.connected || $0.ownerPID != nil }) else { return }
+                        let message = "iTerm2 opened, but no live owner was detected yet. Check the Mac before any further launch."
+                        self.localSessionErrors[rowID] = message
+                        self.resumeResults[sourceKey] = ("unconfirmed", message)
+                    }
+                } else {
+                    reject("No live terminal found for this session.")
                 }
-            } catch { self.localSessionErrors[session.id] = error.localizedDescription }
+            } catch {
+                self.localSessionErrors[rowID] = error.localizedDescription
+                let status = launchStarted ? "unknown" : "failed"
+                if resume { self.resumeResults[sourceKey] = (status, error.localizedDescription) }
+                completion?(status, error.localizedDescription)
+            }
         }
     }
     func showSteering(_ id: String?) {
@@ -517,10 +578,7 @@ final class Store: ObservableObject {
                     livePIDs: CopilotDiscovery.runningPIDs())
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    self.registry.catalog(found)
-                    for item in found where item.pid != nil {
-                        for row in self.sessions where (row.sourceSessionID ?? row.id) == item.id { self.launching.remove(row.id) }
-                    }
+                    self.updateCatalog(found)
                     let metadataError = found.compactMap(\.metadataError).first
                     if let metadataError, metadataError != self.lastDiscoveryError { self.error = metadataError }
                     self.lastDiscoveryError = metadataError
@@ -535,7 +593,7 @@ final class Store: ObservableObject {
                 let claudeRunning = try ClaudeDiscovery.sessions(livePIDs: claudeLivePIDs)
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    self.registry.catalogClaude(claudeSaved)
+                    self.updateClaudeCatalog(claudeSaved)
                     self.registry.discoverClaude(claudeRunning)
                     let liveIDs = Set(claudeRunning.map(\.id))
                     for row in self.sessions where row.agent == "claude" && liveIDs.contains(row.sourceSessionID ?? row.id) {
@@ -548,6 +606,43 @@ final class Store: ObservableObject {
         }
         discoveryTimer = timer
         timer.resume()
+    }
+    func updateCatalog(_ found: [SavedCopilot]) {
+        registry.catalog(found)
+        for item in found where item.pid != nil {
+            for row in sessions where row.agent == "copilot" && (row.sourceSessionID ?? row.id) == item.id { launching.remove(row.id) }
+        }
+        observeResumeOwners()
+    }
+    func updateClaudeCatalog(_ found: [SavedClaude]) { registry.catalogClaude(found); observeResumeOwners() }
+    private func observeResumeOwners() {
+        for key in Array(resumeResults.keys) {
+            let rows = sessions.filter { terminalKey($0) == key }
+            if rows.contains(where: { $0.connected || $0.ownerPID != nil }) {
+                resumeObservedOwners.insert(key)
+                resumeWarnings.removeValue(forKey: key)
+                let connected = rows.contains(where: \.connected)
+                resumeResults[key] = connected ? ("connected", "The matching native session is connected.") :
+                    ("owner_detected", "The original CLI owner was detected; Notify connection is not confirmed.")
+                for id in Array(launching) where rows.contains(where: { $0.id == id || $0.sourceSessionID == id }) {
+                    launching.remove(id)
+                }
+            } else if resumeObservedOwners.contains(key) {
+                if rows.contains(where: \.isSaved) && !terminalSources.contains(key) {
+                    // This high-water mark survives later phones' launches; scope replacement never counts as retirement.
+                    if resumeLifecycles[key]?.launched == true {
+                        if resumeLifecycles[key]!.authority.retired < MobileResumeAuthority.maximumRetired {
+                            resumeLifecycles[key]!.authority.retired += 1
+                        }
+                        resumeLifecycles[key]?.launched = false
+                    }
+                    resumeResults.removeValue(forKey: key)
+                    resumeObservedOwners.remove(key)
+                } else {
+                    resumeResults[key] = ("unconfirmed", "The previously observed owner is no longer reported. Wait for Mac discovery.")
+                }
+            }
+        }
     }
     func select(_ id: String, request: String? = nil) {
         selectionIsExplicit = true
@@ -606,11 +701,19 @@ final class Store: ObservableObject {
     }
     func clearDisconnected() {
         for session in sessions where !session.connected && !session.needsSetup {
-            for request in session.requests { replyWorkspace.resolve(request.id) }
-            registry.remove(session.id)
-            agentErrors.removeValue(forKey: session.id)
-            localSessionErrors.removeValue(forKey: session.id)
+            _ = removeDisconnected(session.id)
         }
+    }
+    @discardableResult
+    func removeDisconnected(_ id: String) -> Bool {
+        guard let session = registry.sessions[id], !session.connected, !session.needsSetup, session.ownerPID == nil,
+              !terminalSources.contains(terminalKey(session)), !launching.contains(id) else { return false }
+        for request in session.requests { replyWorkspace.resolve(request.id) }
+        registry.remove(id)
+        agentErrors.removeValue(forKey: id); localSessionErrors.removeValue(forKey: id)
+        if selectedID == id { selectedID = nil; selectedRequestID = nil; reconcileSelection(in: orderedSessions) }
+        if steeringSessionID == id { steeringSessionID = nil }
+        return registry.sessions[id] == nil
     }
     private func receive(_ packet: AgentPacket) {
         switch packet.type {
@@ -756,6 +859,7 @@ final class Store: ObservableObject {
             }
         default: error = "Unsupported launcher event: \(packet.type)"
         }
+        observeResumeOwners()
         if ["hello", "request", "resolved", "reply", "error", "state", "metadata"].contains(packet.type) { publishPhones() }
         expirePhoneControls()
         onAttentionChange?()
@@ -833,10 +937,11 @@ final class Store: ObservableObject {
     func phoneWorkspaceSnapshot(watching ids: [String], from source: MobileConnection? = nil) throws -> [Data] {
         let connection = source ?? mobile
         expirePhoneControls()
-        let rows = sessions
+        let rows = orderedSessions
         let colors = Dictionary(uniqueKeysWithValues: rows.prefix(256).map { ($0.id, String(format: "#%06X", appearance.color(for: $0))) })
         let policies = Dictionary(uniqueKeysWithValues: rows.prefix(256).map { ($0.id, automation.policy(for: $0)) })
-        var messages = [try connection.workspace.overview(sessions: rows, colors: colors, policies: policies)]
+        let metadata = phoneSessionMetadata(from: connection)
+        var messages = [try connection.workspace.overview(sessions: rows, colors: colors, policies: policies, sessionActions: metadata)]
         for id in ids.prefix(8) {
             guard let session = rows.prefix(256).first(where: { $0.id == id }) else { continue }
             messages.append(try connection.workspace.detail(session: session, controls: steeringWorkspace.history[id] ?? [],
@@ -845,10 +950,87 @@ final class Store: ObservableObject {
         return messages
     }
 
+    private func phoneSessionMetadata(from connection: MobileConnection) -> [String: MobileSessionActions] {
+        let rows = orderedSessions
+        let counts = Dictionary(grouping: rows, by: { $0.sourceSessionID ?? $0.id })
+        let visible = Array(rows.prefix(256))
+        return Dictionary(uniqueKeysWithValues: visible.map { session in
+            let key = terminalKey(session)
+            let unique = counts[session.sourceSessionID ?? session.id]?.count == 1
+            let group = visible.filter { MobileSessionActions.group($0) == MobileSessionActions.group(session) }.map(\.id)
+            let busy = terminalSources.contains(key) || launching.contains(session.id)
+            let saved = session.isSaved && !session.connected && session.ownerPID == nil && !session.needsSetup
+            let supported = ["copilot", "claude"].contains(session.agent) && UUID(uuidString: session.sourceSessionID ?? session.id) != nil
+            let mayLaunch = resumeResults[key] == nil || resumeResults[key]?.status == "failed"
+            let authority = unique && supported ? resumeAuthority(for: session) : nil
+            let reviewAvailable = authority.map { $0.retired < MobileResumeAuthority.maximumRetired } == true
+            let reason = saved && supported && !busy && mayLaunch ?
+                (reviewAvailable ? terminal.unavailable(session) : "Resume review history is unavailable. Check this session on the Mac.") : nil
+            let state = session.connected ? "connected" : session.ownerPID != nil ? "owner_detected" :
+                resumeResults[key]?.status ?? (saved && supported && reason == nil ? "available" : "unavailable")
+            let detail = session.connected ? "The native session is connected." : session.ownerPID != nil ?
+                "An original CLI owner was detected; a Notify connection is not confirmed." :
+                resumeResults[key]?.detail ?? reason ?? (saved && supported ? "" : "Resume is only available for supported saved CLI sessions.")
+            let metadata = MobileSessionActions(session: session, appearance: appearance, editable: unique,
+                removable: unique && !session.connected && !session.needsSetup && session.ownerPID == nil && !busy &&
+                    !["unknown", "unconfirmed", "awaiting_connection"].contains(state),
+                resumable: unique && saved && supported && !busy && mayLaunch && reason == nil,
+                resumeStatus: state, resumeDetail: detail,
+                moveUp: sessionMoveTarget(session.id, in: group, offset: -1),
+                moveDown: sessionMoveTarget(session.id, in: group, offset: 1), resumeAuthority: authority)
+            return (session.id, connection.workspace.sessionActions(metadata, for: session))
+        })
+    }
+
+    private func sessionActionFromPhone(_ control: MobileControl, session: SessionRecord, connection: MobileConnection) {
+        do {
+            let metadata = phoneSessionMetadata(from: connection)
+            guard let current = metadata[session.id] else { throw ProtocolError.stale }
+            try connection.workspace.reserveSessionAction(control, session: session, metadata: current,
+                target: control.targetID.flatMap { metadata[$0] })
+            if control.action == "resume_session" {
+                let key = "\(ObjectIdentifier(connection)):\(control.id.lowercased())"
+                phoneSessionControls[key] = (control, connection)
+                openTerminal(session, resume: true, phone: true) { [weak self] status, detail in
+                    guard let pending = self?.phoneSessionControls.removeValue(forKey: key),
+                          pending.connection === connection else { return }
+                    connection.completeControl(control, commandID: control.id, status: status, detail: detail,
+                        error: status == "launched" ? nil : detail)
+                }
+                return
+            }
+            let success: Bool
+            switch control.action {
+            case "set_session_color", "reset_session_color":
+                success = setColor(control.rgb, for: session)
+            case "move_session":
+                if let target = control.targetID, let updated = reorderedSessionIDs(orderedSessions.map(\.id), moving: session.id, over: target) {
+                    success = rememberSessionOrder(updated)
+                } else { success = false }
+            case "remove_session": success = removeDisconnected(session.id)
+            default: success = false
+            }
+            let detail = control.action == "remove_session" ?
+                "Disconnected cached row removed from Notify. CLI history and project files are unchanged; discovery may bring it back." :
+                control.action == "move_session" ? "Session order saved on the Mac." :
+                control.action == "reset_session_color" ? "Automatic session color restored on the Mac." : "Session color saved on the Mac."
+            connection.completeControl(control, commandID: control.id, status: success ? control.successStatuses[0] : "failed",
+                detail: success ? detail : "", error: success ? nil : error ?? "The session action could not be completed.")
+        } catch {
+            connection.completeControl(control, status: "failed", detail: "",
+                error: "Session action rejected: stale, duplicate, unsupported, ambiguous or changed target. Refresh and review the Mac.")
+        }
+    }
+
     func controlFromPhone(_ control: MobileControl, from source: MobileConnection? = nil) {
         let connection = source ?? mobile
-        guard connection.canReceiveCommands, let session = registry.sessions[control.sessionID], control.isPolicy || phoneControls.count < 8 else {
+        guard connection.canReceiveCommands, let session = registry.sessions[control.sessionID],
+              control.isPolicy || phoneControls.count + phoneSessionControls.count < 8 else {
             connection.completeControl(control, status: "failed", detail: "", error: "Session unavailable or too many phone controls pending.")
+            return
+        }
+        if control.isSessionAction {
+            sessionActionFromPhone(control, session: session, connection: connection)
             return
         }
         do {

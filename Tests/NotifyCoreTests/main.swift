@@ -1,5 +1,5 @@
 import Foundation
-import NotifyCore
+@testable import NotifyCore
 
 do {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("notify-setup-" + UUID().uuidString)
@@ -607,6 +607,78 @@ phoneChat.update(sessionID: controlled.id, commandID: phoneStop, status: "receiv
 check(phoneChat.receipt(sessionID: controlled.id, commandID: phoneStop)?.status == "sending", "Stop requires a genuine stopped ACK")
 
 var phoneWorkspace = MobileWorkspace()
+do {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        .appendingPathComponent(".build/session-resume-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = "12345678-1234-4234-8234-123456789abc"
+    let originalCLI = root.appendingPathComponent("original cli")
+    try Data().write(to: originalCLI)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: originalCLI.path)
+    let history = root.appendingPathComponent("copilot/session-state/" + id)
+    try FileManager.default.createDirectory(at: history, withIntermediateDirectories: true)
+    let command = try TerminalSession.resumeCommand(id: id, cwd: root.path,
+        copilotHome: root.appendingPathComponent("copilot"), executableURL: originalCLI, livePIDs: [])
+    check(command.contains("--resume") && command.contains(id) && command.contains("original cli") && command.contains(root.path),
+          "Resume command must use only the exact original UUID, cwd and chosen original CLI")
+    try Data().write(to: history.appendingPathComponent("inuse.42.lock"))
+    do {
+        _ = try TerminalSession.resumeCommand(id: id, cwd: root.path,
+            copilotHome: root.appendingPathComponent("copilot"), executableURL: originalCLI, livePIDs: [42])
+        preconditionFailure("Even an owner with no decoded metadata must block a duplicate launch")
+    } catch TerminalSessionError.activeOwner(let pid) { check(pid == 42, "Exact live owner is retained") }
+    let claude = root.appendingPathComponent("claude/projects/project")
+    try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
+    let transcript = claude.appendingPathComponent(id + ".jsonl")
+    try Data().write(to: transcript)
+    let claudeCommand = try TerminalSession.resumeClaudeCommand(id: id, cwd: root.path,
+        home: root.appendingPathComponent("claude"), executableURL: originalCLI, livePIDs: [])
+    check(claudeCommand.contains("CLAUDE_CONFIG_DIR=") && claudeCommand.contains(id) && claudeCommand.contains("original cli"),
+          "Claude resume preserves its own original history and executable")
+    check(FileManager.default.fileExists(atPath: transcript.path), "Resume preparation never deletes history")
+}
+do {
+    var authority = MobileWorkspace()
+    var saved = SessionRecord(id: "saved", agent: "copilot", cwd: "/synthetic")
+    saved.connected = false; saved.isSaved = true
+    let value = MobileSessionActions(session: saved, appearance: SessionAppearance(), editable: true,
+        removable: true, resumable: true, resumeStatus: "available", resumeDetail: "", moveUp: nil, moveDown: "peer")
+    let metadata = authority.sessionActions(value, for: saved)
+    var payload: [String: Any] = ["id": UUID().uuidString, "sessionID": saved.id,
+        "ticket": authority.ticket(for: saved), "sessionTicket": metadata.ticket,
+        "action": "set_session_color", "text": "", "rgb": 0xFFFFFF]
+    func decode(_ data: [String: Any]) throws -> MobileControl {
+        try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: data))
+    }
+    let color = try decode(payload)
+    check(color.isValid, "RGB white must remain a full unsigned 24-bit integer")
+    try authority.reserveSessionAction(color, session: saved, metadata: metadata)
+    do {
+        try authority.reserveSessionAction(color, session: saved, metadata: metadata)
+        preconditionFailure("A reserved session action must not be replayed")
+    } catch {}
+    for bad: Any in ["16777215", true, -1, 0x1000000, 1.5, NSNull()] {
+        payload["rgb"] = bad
+        do {
+            let malformed = try decode(payload)
+            check(!malformed.isValid, "Reject malformed RGB instead of coercing it")
+        } catch {}
+    }
+    payload["id"] = UUID().uuidString; payload["rgb"] = 1
+    payload["agentID"] = "child"
+    let subagentColor = try decode(payload)
+    check(!subagentColor.isValid, "Session colors must never address runtime subagents")
+    payload.removeValue(forKey: "agentID"); payload.removeValue(forKey: "rgb")
+    payload["action"] = "remove_session"
+    saved.connected = true
+    do {
+        try authority.reserveSessionAction(decode(payload), session: saved, metadata: metadata)
+        preconditionFailure("A reconnected row must not be removed")
+    } catch {}
+    check(SessionAppearance.choices.count == 20 && Set(SessionAppearance.choices) == Set(SessionAppearance.names.keys),
+          "Native and phone named color catalogs must share all twenty existing choices")
+}
 let newPolicyControl = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
     "id": UUID().uuidString, "sessionID": controlled.id, "ticket": "workspace",
     "action": "dangerous_auto_yes", "text": "", "enabled": true, "policyTicket": "policy",

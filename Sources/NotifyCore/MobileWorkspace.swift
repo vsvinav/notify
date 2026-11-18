@@ -16,6 +16,50 @@ public struct MobileAutomationPolicy: Codable, Equatable {
     public let normalEnabled: Bool
 }
 
+public struct MobileResumeAuthority: Encodable, Equatable {
+    public static let maximumRetired = 9_007_199_254_740_991
+    public let epoch = UUID().uuidString
+    public var retired = 0
+    public init() {}
+}
+
+public struct MobileSessionActions: Encodable, Equatable {
+    public struct ColorChoice: Encodable, Equatable {
+        public let name: String
+        public let rgb: UInt32
+    }
+    public var ticket = ""
+    public let sourceID: String
+    public let group: String
+    public let rgb: UInt32
+    public let overridden: Bool
+    public let colors = SessionAppearance.choices.map { ColorChoice(name: SessionAppearance.names[$0]!, rgb: $0) }
+    public let editable: Bool
+    public let removable: Bool
+    public let resumable: Bool
+    public let resumeStatus: String
+    public let resumeDetail: String
+    public let resumeAuthority: MobileResumeAuthority?
+    public let moveUp: String?
+    public let moveDown: String?
+    public init(session: SessionRecord, appearance: SessionAppearance, editable: Bool, removable: Bool,
+                resumable: Bool, resumeStatus: String, resumeDetail: String, moveUp: String?, moveDown: String?,
+                resumeAuthority: MobileResumeAuthority? = nil) {
+        sourceID = session.sourceSessionID ?? session.id
+        group = Self.group(session)
+        rgb = appearance.color(for: session)
+        overridden = appearance.overrides[sourceID] != nil
+        self.editable = editable; self.removable = removable; self.resumable = resumable
+        self.resumeStatus = resumeStatus; self.resumeDetail = resumeDetail
+        self.resumeAuthority = resumeAuthority
+        self.moveUp = moveUp; self.moveDown = moveDown
+    }
+    public static func group(_ session: SessionRecord) -> String {
+        session.isSaved ? "saved" : !session.connected || session.needsSetup ? "not_connected" :
+            !session.requests.isEmpty ? "needs_you" : "monitoring"
+    }
+}
+
 public struct MobileControl: Decodable {
     public let id: String
     public let sessionID: String
@@ -28,9 +72,21 @@ public struct MobileControl: Decodable {
     public let offTicket: String?
     public let managementTicket: String?
     public let creation: SubagentCreation?
+    public let sessionTicket: String?
+    public let rgb: UInt32?
+    public let targetID: String?
+    public let targetTicket: String?
+    public var isSessionAction: Bool {
+        ["set_session_color", "reset_session_color", "move_session", "remove_session", "resume_session"].contains(action)
+    }
     public var isManagement: Bool { ["create_subagent", "remove_subagent", "stop_idle_subagents"].contains(action) }
     public var successStatuses: [String] {
         switch action {
+        case "set_session_color": return ["color_saved"]
+        case "reset_session_color": return ["color_reset"]
+        case "move_session": return ["session_moved"]
+        case "remove_session": return ["session_removed"]
+        case "resume_session": return ["launched"]
         case "create_subagent": return ["created"]
         case "remove_subagent": return ["removed"]
         case "stop_idle_subagents": return ["cleaned"]
@@ -42,7 +98,8 @@ public struct MobileControl: Decodable {
     public init(from decoder: Decoder) throws {
         let keys = try decoder.container(keyedBy: MobilePayloadKey.self)
         guard Set(keys.allKeys.map(\.stringValue)).isSubset(of: [
-            "type", "id", "sessionID", "ticket", "action", "text", "agentID", "enabled", "policyTicket", "offTicket", "managementTicket", "creation"
+            "type", "id", "sessionID", "ticket", "action", "text", "agentID", "enabled", "policyTicket", "offTicket", "managementTicket", "creation",
+            "sessionTicket", "rgb", "targetID", "targetTicket"
         ]) else { throw ProtocolError.invalid }
         if keys.contains(.init("type")), try keys.decode(String.self, forKey: .init("type")) != "control" { throw ProtocolError.invalid }
         id = try keys.decode(String.self, forKey: .init("id"))
@@ -56,11 +113,26 @@ public struct MobileControl: Decodable {
         offTicket = keys.contains(.init("offTicket")) ? try keys.decode(String.self, forKey: .init("offTicket")) : nil
         managementTicket = keys.contains(.init("managementTicket")) ? try keys.decode(String.self, forKey: .init("managementTicket")) : nil
         creation = keys.contains(.init("creation")) ? try keys.decode(SubagentCreation.self, forKey: .init("creation")) : nil
+        sessionTicket = keys.contains(.init("sessionTicket")) ? try keys.decode(String.self, forKey: .init("sessionTicket")) : nil
+        rgb = keys.contains(.init("rgb")) ? try keys.decode(UInt32.self, forKey: .init("rgb")) : nil
+        targetID = keys.contains(.init("targetID")) ? try keys.decode(String.self, forKey: .init("targetID")) : nil
+        targetTicket = keys.contains(.init("targetTicket")) ? try keys.decode(String.self, forKey: .init("targetTicket")) : nil
     }
     public var isPolicy: Bool { action == "dangerous_auto_yes" }
     public var isPolicyOff: Bool { isPolicy && enabled == false }
     private var isOffID: Bool { id.dropFirst(14).first == "8" }
     public var isValid: Bool {
+        if isSessionAction {
+            return UUID(uuidString: id) != nil && id.dropFirst(14).first == "4" &&
+                !sessionID.isEmpty && sessionID.count <= 128 && !ticket.isEmpty && ticket.count <= 256 &&
+                sessionTicket.map { !$0.isEmpty && $0.count <= 256 } == true &&
+                text.isEmpty && agentID == nil && enabled == nil && policyTicket == nil && offTicket == nil &&
+                managementTicket == nil && creation == nil &&
+                (action == "set_session_color" ? rgb.map { $0 <= 0xFFFFFF } == true : rgb == nil) &&
+                (action == "move_session" ? targetID.map { !$0.isEmpty && $0.count <= 128 && $0 != sessionID } == true &&
+                    targetTicket.map { !$0.isEmpty && $0.count <= 256 } == true : targetID == nil && targetTicket == nil)
+        }
+        return sessionTicket == nil && rgb == nil && targetID == nil && targetTicket == nil &&
         UUID(uuidString: id) != nil && !sessionID.isEmpty && sessionID.count <= 128 &&
         !ticket.isEmpty && ticket.count <= 256 &&
         (isPolicy ? enabled != nil && policyTicket.map { !$0.isEmpty && $0.count <= 256 } == true && agentID == nil &&
@@ -92,9 +164,35 @@ public struct MobileWorkspace {
     private var managementGenerations: [String: (value: ManagementGeneration, ticket: String)] = [:]
     private var seen: [String: (sessionID: String, ticket: String)] = [:]
     private var offSeen: [String: (id: String, offTicket: String)] = [:]
+    private var sessionGenerations: [String: (value: MobileSessionActions, revision: UUID, cwd: String, agent: String, ticket: String)] = [:]
     public init() {}
 
-    public mutating func invalidate() { generations.removeAll(); managementGenerations.removeAll(); seen.removeAll(); offSeen.removeAll() }
+    public mutating func invalidate() { generations.removeAll(); managementGenerations.removeAll(); sessionGenerations.removeAll(); seen.removeAll(); offSeen.removeAll() }
+    public mutating func sessionActions(_ value: MobileSessionActions, for session: SessionRecord) -> MobileSessionActions {
+        guard sessionGenerations[session.id] != nil || sessionGenerations.count < 256 else { return value }
+        let previous = sessionGenerations[session.id]
+        if previous?.value != value || previous?.revision != session.workRevision ||
+            previous?.cwd != session.cwd || previous?.agent != session.agent {
+            sessionGenerations[session.id] = (value, session.workRevision, session.cwd, session.agent, UUID().uuidString)
+        }
+        var result = value
+        result.ticket = sessionGenerations[session.id]!.ticket
+        return result
+    }
+    public mutating func reserveSessionAction(_ control: MobileControl, session: SessionRecord,
+                                             metadata: MobileSessionActions, target: MobileSessionActions? = nil) throws {
+        guard control.isSessionAction && control.isValid && control.sessionID == session.id &&
+            control.ticket == ticket(for: session) && control.sessionTicket == metadata.ticket && metadata.editable &&
+            (control.action != "remove_session" || metadata.removable && !session.connected) &&
+            (control.action != "resume_session" || metadata.resumable && session.isSaved && !session.connected) &&
+            (control.action != "move_session" || target?.editable == true && target?.ticket == control.targetTicket &&
+                target?.sourceID != metadata.sourceID && target?.group == metadata.group &&
+                [metadata.moveUp, metadata.moveDown].compactMap { $0 }.contains(control.targetID ?? "")) else { throw ProtocolError.stale }
+        let id = control.id.lowercased()
+        guard seen[id] == nil, !offSeen.values.contains(where: { $0.id == id }) else { throw ProtocolError.stale }
+        guard seen.count < 256 else { throw ProtocolError.oversized }
+        seen[id] = (session.id, control.ticket)
+    }
     public mutating func managementTicket(for session: SessionRecord) -> String {
         guard managementGenerations[session.id] != nil || managementGenerations.count < 256 else { return "" }
         let value = ManagementGeneration(revision: session.workRevision, connected: session.connected,
@@ -142,7 +240,8 @@ public struct MobileWorkspace {
         guard seen.count < 256 else { throw ProtocolError.oversized }
         seen[id] = (session.id, control.ticket)
     }
-    public mutating func overview(sessions: [SessionRecord], colors: [String: String], policies: [String: MobileAutomationPolicy] = [:]) throws -> Data {
+    public mutating func overview(sessions: [SessionRecord], colors: [String: String], policies: [String: MobileAutomationPolicy] = [:],
+                                 sessionActions: [String: MobileSessionActions] = [:]) throws -> Data {
         struct Capabilities: Encodable {
             let steering: Bool; let subagentChat: Bool; let subagentStop: Bool; let dangerousAutoYes: Bool
             let subagentCreate: Bool; let subagentRemove: Bool; let subagentCleanup: Bool
@@ -153,6 +252,7 @@ public struct MobileWorkspace {
             let runningCount: Int; let idleCount: Int
             let dangerousAutoYes: MobileAutomationPolicy?
             let managementTicket: String; let subagentTypes: [String]; let subagentModels: [String]
+            let sessionActions: MobileSessionActions?
         }
         struct Snapshot: Encodable {
             let type = "workspace"
@@ -163,6 +263,7 @@ public struct MobileWorkspace {
         let retained = Set(sessions.prefix(256).map(\.id))
         generations = generations.filter { retained.contains($0.key) }
         managementGenerations = managementGenerations.filter { retained.contains($0.key) }
+        sessionGenerations = sessionGenerations.filter { retained.contains($0.key) }
         seen = seen.filter { retained.contains($0.value.sessionID) }
         offSeen = offSeen.filter { retained.contains($0.key) }
         var snapshot = Snapshot(sessions: sessions.prefix(256).map { session in
@@ -176,7 +277,8 @@ public struct MobileWorkspace {
                     subagentRemove: session.connected && session.agent == "copilot" && session.canRemoveSubagents,
                     subagentCleanup: session.connected && session.agent == "copilot" && session.canCleanupIdleSubagents),
                 runningCount: session.team?.runningCount ?? 0, idleCount: session.team?.idleCount ?? 0, dangerousAutoYes: policies[session.id],
-                managementTicket: managementTicket(for: session), subagentTypes: session.subagentTypes, subagentModels: session.subagentModels)
+                managementTicket: managementTicket(for: session), subagentTypes: session.subagentTypes, subagentModels: session.subagentModels,
+                sessionActions: sessionActions[session.id])
         }, total: sessions.count, truncated: sessions.count > 256)
         while true {
             let data = try Self.encoder().encode(snapshot)
