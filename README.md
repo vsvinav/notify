@@ -96,8 +96,8 @@ launches and missed updates, but not replacement of its Mac/session/project
 scope. Stale reviews rejected before dispatch show a failed
 receipt; refresh and review a new action rather than replaying the old command.
 Android's **System / Light / Dark** appearance
-choice affects that phone only. Source checks are headless; real-device and
-real-terminal acceptance remain separate.
+choice affects that phone only. Headless checks and fictional Android layout
+checks cover these controls; real-terminal acceptance remains separate.
 
 **Same Wi-Fi:** enable **Settings > Phone connections > Allow phone connections**, choose **Pair a phone**, and follow the [iPhone/Android web-app setup](https://github.com/vsvinav/notify-mobile/tree/feature/remote-access#quickstart). Verify the local certificate independently before trusting it; compare pairing codes locally. No App Store install is required. Internet mode does not require this local CA.
 
@@ -115,7 +115,8 @@ confirmed idle cleanup. Unpublished matching Mac/helper/Android source builds su
 Dangerous Auto-yes control of the same Mac-owned session policy: high-risk enable
 confirmation, red acknowledged On state, and direct Off. Phone disconnect leaves
 it enabled; stale state never claims Off, and toggles are never replayed. Older
-builds show unsupported. Physical-device acceptance remains pending.
+builds show unsupported. Native fictional layout checks passed; real policy
+activation, camera, keyboard and alert delivery remain separate acceptance checks.
 
 **Different account or stuck pairing:** try the original Notify passkey first. Build 7 adds **Start fresh internet setup** under **Pairing recovery**: turn internet off, wait for the helper to stop, and confirm the private backup before pairing again. It never resets automatically or changes terminal sessions, LAN pairing or Google passkeys. This recovery button is not included in the published beta 4/build 6. See [safe recovery](docs/remote-setup.md#8-revoke-rotate-and-recover-safely).
 
@@ -139,16 +140,25 @@ Internet browser access needs an open page; internet browser push is not connect
 
 *Existing native Mac app captures with fictional sessions, not private account
 screens. They are retained for the current workspace layout; the icon above is
-generated from the updated Mac icon source. Android's separately labeled browser
-design previews are not presented as native device screenshots.*
+generated from the updated Mac icon source.*
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/android-agents-native-dark.png">
+  <img src="docs/images/android-agents-native.png" alt="Native Android agents, Add subagent and idle cleanup with fictional main/helper sessions" width="300">
+</picture>
+
+*Native Android capture from the shipping Compose components in an isolated
+fictional test app. Eleven on-device layout checks passed, including light/dark
+and narrow/enlarged-text cases. The connected label is synthetic; this image
+does not establish real pairing, agent execution or notification delivery.*
 
 ## Build from source
 
 Use the matching branches and keep both checkouts updated together:
 
 ```sh
-git clone --branch feature/remote-native-identity https://github.com/vsvinav/notify.git
-git clone --branch feature/remote-access https://github.com/vsvinav/notify-mobile.git
+git clone --branch main https://github.com/vsvinav/notify.git
+git clone --branch main https://github.com/vsvinav/notify-mobile.git
 cd notify
 (cd bridge && NODE_TLS_REJECT_UNAUTHORIZED=1 npm ci --ignore-scripts)
 NODE_TLS_REJECT_UNAUTHORIZED=1 NOTIFY_MOBILE_SOURCE=../notify-mobile bash scripts/build.sh
