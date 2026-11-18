@@ -112,6 +112,7 @@ public struct AgentPacket: Decodable {
     public let title: String?
     public let sourceSessionID: String?
     public let steering: Bool?
+    public let steeringImmediate: Bool?
     public let sessionAutoYes: Bool?
     public let commandID: String?
     public let agentID: String?
@@ -136,6 +137,7 @@ public struct SessionRecord: Identifiable {
     public var synopsis = ""
     public var sourceSessionID: String?
     public var canSteer = false
+    public var canSendImmediately = false
     public var canChatWithSubagents = false
     public var canStopSubagents = false
     public var canCreateSubagents = false

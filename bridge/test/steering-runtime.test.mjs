@@ -20,12 +20,13 @@ test("production joined terminal streams partial activity before completion and 
   const stages = {};
   const consumedAt = new Map(), userWireAt = new Map(), queueNotifications = [];
   const partial = "Local fixture partial response.";
-  const packets = [], delivered = [], diagnostics = [];
+  const packets = [], delivered = [], diagnostics = [], modelInputs = [];
   const provider = httpServer(async (request, response) => {
     let body = "";
     for await (const chunk of request) body += chunk;
     modelCalls++;
     const input = JSON.parse(body);
+    modelInputs.push(input);
     const latest = [...(input.messages ?? [])].reverse().find(m => m.role === "user");
     if (JSON.stringify(latest?.content).includes("HOLD")) { held++; return; }
     response.writeHead(200, { "content-type": "text/event-stream" });
@@ -129,7 +130,21 @@ test("production joined terminal streams partial activity before completion and 
     t.diagnostic(`Partial stages (ms after provider): owner=${(stages.ownerPartial - stages.providerPartial).toFixed(1)}, wire=${stages.wirePartial ? (stages.wirePartial - stages.providerPartial).toFixed(1) : "missing after 1500ms"}; final withheld.`);
     assert.ok(stages.wirePartial, "Production extension must deliver running partial activity while the provider withholds completion");
     assert.equal(stages.providerComplete, undefined, "Partial activity must not wait for the final response");
+    const immediateText = "IMMEDIATE_STEERING_FIXTURE", laterText = "EXPLICIT_NEXT_TURN_FIXTURE";
+    const immediate = control("send", immediateText);
+    await waitFor(() => packets.some(p => p.commandID === immediate && ["submitted", "received"].includes(p.status)));
+    assert.equal(stages.providerComplete, undefined, "Send must not abort or complete the current model response");
+    assert.equal(modelCalls, 1, "Send must wait for a safe model boundary rather than start concurrent work");
+    const later = control("queue", laterText);
+    await waitFor(() => packets.some(p => p.commandID === later && p.status === "queued"));
     releaseResponse();
+    await waitFor(() => modelInputs.length >= 2 && delivered.some(e => e.clientTurnId === immediate));
+    assert.ok(JSON.stringify(modelInputs[1].messages).includes(immediateText),
+      "The next model request must consume Send without terminal intervention");
+    assert.equal(JSON.stringify(modelInputs[1].messages).includes(laterText), false,
+      "Explicit Queue must not be silently promoted to mid-turn steering");
+    await waitFor(() => packets.some(p => p.commandID === immediate && p.status === "received"));
+    await waitFor(() => delivered.some(e => e.clientTurnId === later));
     await waitFor(() => packets.some(p => p.type === "activity" && p.activity.kind === "assistant" && p.activity.status === "complete"));
     const final = packets.find(p => p.type === "activity" && p.activity.detail === partial + " Finished.");
     assert.ok(final, "Final response replaces the partial activity");

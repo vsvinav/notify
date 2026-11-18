@@ -520,6 +520,49 @@ do {
     preconditionFailure("Unadvertised steering cannot be used")
 } catch ProtocolError.invalid {}
 controlled.canSteer = true
+do {
+    let send = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+        "id": UUID().uuidString, "sessionID": controlled.id, "ticket": "fixture",
+        "action": "send", "text": "Steer without stopping"
+    ]))
+    check(send.isValid, "Native control protocol must recognize explicit Send separately from Queue")
+    check(send.successStatuses == ["submitted", "received"], "Send acceptance is not a queued or consumed turn")
+    var registry = SessionRegistry()
+    registry.register(id: "immediate", agent: "copilot", cwd: "/synthetic")
+    registry.capabilities("immediate", steering: true, autoYes: false)
+    var workspace = SteeringWorkspace()
+    var authority = MobileWorkspace()
+    var session = registry.sessions["immediate"]!
+    workspace.setDraft("Current direction", sessionID: session.id)
+    check(workspace.unavailableReason(session: session, agentID: nil, action: "send") != nil,
+          "Old extensions must not be mistaken for immediate steering support")
+    let oldTicket = authority.ticket(for: session)
+    registry.capabilities("immediate", steering: true, autoYes: false, steeringImmediate: true)
+    session = registry.sessions["immediate"]!
+    check(authority.ticket(for: session) != oldTicket, "Immediate capability changes invalidate phone command authority")
+    let command = try workspace.begin(session: session, action: "send")
+    workspace.update(sessionID: session.id, commandID: command, status: "queued", text: "Wrong mode")
+    check(workspace.receipt(sessionID: session.id, commandID: command)?.status == "sending", "Send cannot accept a queue ACK")
+    workspace.setDraft("Newer direction", sessionID: session.id)
+    workspace.update(sessionID: session.id, commandID: command, status: "submitted", text: "Awaiting consumption")
+    check(workspace.receipt(sessionID: session.id, commandID: command)?.status == "submitted" &&
+          workspace.draft(sessionID: session.id) == "Newer direction", "Submitted is unconsumed and preserves newer native text")
+    workspace.update(sessionID: session.id, commandID: command, status: "received", text: "Consumed")
+    workspace.update(sessionID: session.id, commandID: command, status: "submitted", text: "Late acceptance")
+    check(workspace.receipt(sessionID: session.id, commandID: command)?.status == "received", "Early consumption cannot regress")
+    let pending = try workspace.begin(session: session, action: "send", phoneText: "Phone direction")
+    workspace.update(sessionID: session.id, commandID: pending, status: "submitted", text: "Submitted")
+    check(workspace.draft(sessionID: session.id) == "Newer direction", "Phone Send must not clear a Mac draft")
+    workspace.disconnect(session.id)
+    check(workspace.receipt(sessionID: session.id, commandID: pending)?.status == "unknown", "Disconnect fences unconsumed steering")
+    check(workspace.unavailableReason(session: session, agentID: "child", action: "send") != nil,
+          "Main Send must not silently target a helper")
+    registry.capabilities("immediate", steering: true, autoYes: false)
+    check(registry.sessions["immediate"]?.canSendImmediately == false, "A legacy capability update revokes immediate Send")
+    registry.capabilities("immediate", steering: true, autoYes: false, steeringImmediate: true)
+    registry.disconnect("immediate")
+    check(registry.sessions["immediate"]?.canSendImmediately == false, "Disconnect revokes immediate capability")
+}
 controlled.canAutoYes = true
 controls.drafts[controlled.id] = "Keep the public API unchanged"
 let commandID = try controls.begin(session: controlled, action: "queue")

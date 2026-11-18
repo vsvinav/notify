@@ -35,7 +35,7 @@ This beta is **ad-hoc signed, not Developer ID signed or notarized**. If Apple's
 
 Already installed? Run `open ~/Applications/Notify.app`. Downloads contain no personal accounts, settings, paired phones or session history. Connect agents and pair each Mac separately.
 
-**Release scope:** **[beta 5 / build 11](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.5)** includes pairing/reconnect recovery, Android session-management support, the matching amber lightning icon and background-approval alert fixes. Use Android 0.3.1 or later for the corresponding receiver and draft fixes. A changed ad-hoc signer can require explicit phone re-pairing when replacing an older download; never reset pairing automatically. Check the selected release's notes rather than assuming an older download includes newer source features.
+**Release scope:** **[beta 6 / build 13](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.6)** adds immediate Send with explicit Queue and richer native Markdown, alongside pairing/reconnect recovery, Android session-management support and background-approval alert fixes. Use Android 0.3.3 or later for immediate Send and encrypted offline reading. A changed ad-hoc signer can require explicit phone re-pairing when replacing an older download; never reset pairing automatically. Check the selected release's notes rather than assuming an older download includes newer source features.
 
 **Release policy for Notify repositories:** publish client updates as versioned
 GitHub releases with installable artifacts and SHA-256 checksums: the Mac app ZIP
@@ -137,7 +137,22 @@ Internet browser access needs an open page; internet browser push is not connect
 
 ## Screenshots
 
-**Upcoming Markdown update (build 12, not in beta 5):** response tables, quoted
+**Chat update (beta 6 / build 13):** normal main-agent **Send**
+steers Copilot before its next model request without stopping current work.
+**Queue** remains an explicit next-turn action, and **Interrupt** still requires
+confirmation. Update Notify and reload its extension in each existing Copilot
+terminal; older extensions visibly offer Queue instead. Android needs its matching
+updated APK. **Submitted** means accepted, not yet consumed; **Received** requires
+the runtime's matching message event.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/chat-send-dark.png">
+  <img src="docs/images/chat-send.png" alt="Fictional native chat composer with separate Send, Queue, Interrupt and Stop main controls" width="420">
+</picture>
+
+The native chat component above is rendered offscreen with fictional text.
+
+The update also adds response tables, quoted
 advice and dividers get native formatting alongside existing headings, lists
 and fenced code. Wide tables and long code scroll sideways without shrinking
 text. Unsupported tables wider than 16 columns stay as selectable source;

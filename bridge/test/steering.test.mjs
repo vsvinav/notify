@@ -25,6 +25,41 @@ async function harness(overrides = {}, team) {
 }
 
 const cleanupCommand = () => ({ commandID: randomUUID(), action: "stop_idle_subagents", text: "" });
+test("main Send steers without interruption and awaits correlated consumption", async () => {
+  const h = await harness();
+  const command = { commandID: randomUUID(), action: "send", text: "Adjust the current approach" };
+  await assert.doesNotReject(h.bridge.onControl(command));
+  assert.equal(h.bridge.capabilities.steeringImmediate, true);
+  assert.deepEqual(h.calls, [["send", { prompt: command.text, mode: "immediate", clientTurnId: command.commandID }]]);
+  assert.equal(h.statuses.at(-1).status, "submitted");
+  await h.bridge.onControl(command);
+  assert.equal(h.calls.length, 1, "Duplicate Send must never be dispatched twice");
+  h.emit({ type: "user.message", data: { clientTurnId: randomUUID() } });
+  assert.equal(h.statuses.at(-1).status, "submitted");
+  h.emit({ type: "user.message", data: { clientTurnId: command.commandID } });
+  assert.equal(h.statuses.at(-1).status, "received");
+  await assert.rejects(h.bridge.onControl({ ...command, text: "Changed" }), /changed/);
+  await assert.rejects(h.bridge.onControl({ ...command, commandID: randomUUID(), agentID: "child" }), /invalid/i);
+  h.attachment.stop();
+  assert.equal(h.bridge.capabilities.steeringImmediate, false);
+});
+
+test("main Send cannot regress early consumption or retry an uncertain dispatch", async () => {
+  const h = await harness();
+  h.session.send = async value => {
+    h.calls.push(["send", value]);
+    h.emit({ type: "user.message", data: { clientTurnId: value.clientTurnId } });
+  };
+  await assert.doesNotReject(h.bridge.onControl({ commandID: randomUUID(), action: "send", text: "Early event" }));
+  assert.equal(h.statuses.at(-1).status, "received");
+  const uncertain = { commandID: randomUUID(), action: "send", text: "Lost acknowledgment" };
+  h.session.send = async value => { h.calls.push(["send", value]); throw new Error("Synthetic lost acknowledgment"); };
+  await h.bridge.onControl(uncertain);
+  assert.equal(h.statuses.at(-1).status, "unknown");
+  await h.bridge.onControl(uncertain);
+  assert.equal(h.calls.length, 2, "Uncertain Send must not be replayed");
+});
+
 async function cleanupHarness(t) {
   let now = 0;
   t.mock.method(performance, "now", () => now);

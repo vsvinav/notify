@@ -23,7 +23,7 @@ export class Bridge {
   private title?: string;
   private sourceSessionID?: string;
   private warned = false;
-  private capabilities = { steering: false, sessionAutoYes: false, subagentChat: false, subagentStop: false,
+  private capabilities = { steering: false, steeringImmediate: false, sessionAutoYes: false, subagentChat: false, subagentStop: false,
     subagentCreate: false, subagentRemove: false, idleSubagentCleanup: false, subagentTypes: [] as string[], subagentModels: [] as string[] };
   private receipts = new Map<string, { status: string; text: string }>();
   private activities = new Map<string, ActivityEntry>();
@@ -117,9 +117,10 @@ export class Bridge {
       } else this.error(text);
     }
   }
-  setCapabilities(value: { steering: boolean; sessionAutoYes: boolean; subagentChat?: boolean; subagentStop?: boolean;
+  setCapabilities(value: { steering: boolean; steeringImmediate?: boolean; sessionAutoYes: boolean; subagentChat?: boolean; subagentStop?: boolean;
     subagentCreate?: boolean; subagentRemove?: boolean; idleSubagentCleanup?: boolean; subagentTypes?: string[]; subagentModels?: string[] }): void {
-    this.capabilities = { ...value, subagentChat: value.subagentChat === true, subagentStop: value.subagentStop === true,
+    this.capabilities = { ...value, steeringImmediate: value.steering && value.steeringImmediate === true,
+      subagentChat: value.subagentChat === true, subagentStop: value.subagentStop === true,
       subagentCreate: value.subagentCreate === true, subagentRemove: value.subagentRemove === true,
       idleSubagentCleanup: value.idleSubagentCleanup === true,
       subagentTypes: value.subagentTypes ?? [], subagentModels: value.subagentModels ?? [] };

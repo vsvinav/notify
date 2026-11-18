@@ -122,10 +122,12 @@ public struct SessionRegistry {
             }
         }
     }
-    public mutating func capabilities(_ id: String, steering: Bool, autoYes: Bool, subagentChat: Bool = false, subagentStop: Bool = false) {
+    public mutating func capabilities(_ id: String, steering: Bool, autoYes: Bool, subagentChat: Bool = false, subagentStop: Bool = false,
+                                     steeringImmediate: Bool = false) {
         guard sessions[id]?.connected == true,
               let agent = sessions[id]?.agent, ["copilot", "claude"].contains(agent) else { return }
         sessions[id]?.canSteer = steering
+        sessions[id]?.canSendImmediately = agent == "copilot" && steering && steeringImmediate
         sessions[id]?.canAutoYes = autoYes
         sessions[id]?.canChatWithSubagents = subagentChat
         sessions[id]?.canStopSubagents = subagentStop
@@ -199,7 +201,10 @@ public struct SessionRegistry {
     public mutating func resolve(sessionID: String, requestID: String) {
         sessions[sessionID]?.requests.removeAll { $0.id == requestID }
     }
-    public mutating func disconnect(_ id: String) { sessions[id]?.connected = false }
+    public mutating func disconnect(_ id: String) {
+        sessions[id]?.connected = false
+        sessions[id]?.canSendImmediately = false
+    }
     public mutating func remove(_ id: String) {
         if sessions[id]?.connected == false { sessions.removeValue(forKey: id) }
     }

@@ -29,7 +29,7 @@ export function attachSteering(session: CopilotSession, bridge: Bridge,
   let subagentModels: string[] = [];
   let agentNames = new Map<string, string>();
   function capabilities() {
-    if (!stopped) bridge.setCapabilities({ steering: true, sessionAutoYes: true, subagentChat, subagentStop,
+    if (!stopped) bridge.setCapabilities({ steering: true, steeringImmediate: true, sessionAutoYes: true, subagentChat, subagentStop,
       subagentCreate: canCreate && subagentTypes.length > 0, subagentRemove, subagentTypes, subagentModels,
       idleSubagentCleanup: subagentStop && typeof session.rpc.tasks?.list === "function" &&
         typeof team?.stopIdleSubagents === "function" && team.cleanupAvailable === true });
@@ -83,7 +83,7 @@ export function attachSteering(session: CopilotSession, bridge: Bridge,
   bridge.onControl = async value => {
     if (stopped || !object(value) || typeof value.commandID !== "string" ||
         !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value.commandID) ||
-        !["queue", "interrupt", "stop", "create_subagent", "remove_subagent", "stop_idle_subagents"].includes(String(value.action)) ||
+        !["send", "queue", "interrupt", "stop", "create_subagent", "remove_subagent", "stop_idle_subagents"].includes(String(value.action)) ||
         typeof value.text !== "string" || value.text.length > 16000 ||
         (!["stop", "remove_subagent", "stop_idle_subagents"].includes(String(value.action)) && !value.text.trim()) ||
         (value.action === "create_subagent"
@@ -93,7 +93,7 @@ export function attachSteering(session: CopilotSession, bridge: Bridge,
         (value.action === "remove_subagent" && (value.text !== "" || !boundedText(value.agentID, 128))) ||
         (value.action === "stop_idle_subagents" && (value.text !== "" || value.agentID !== undefined)) ||
         (value.agentID !== undefined && (typeof value.agentID !== "string" || !value.agentID || value.agentID.length > 128 ||
-          value.action === "interrupt"))) throw new Error("Invalid or unavailable steering command.");
+          value.action === "interrupt" || value.action === "send"))) throw new Error("Invalid or unavailable steering command.");
     const agentID = typeof value.agentID === "string" ? value.agentID : undefined;
     const agentName = typeof value.agentName === "string" ? value.agentName : undefined;
     const agentType = typeof value.agentType === "string" ? value.agentType : undefined;
@@ -181,7 +181,9 @@ export function attachSteering(session: CopilotSession, bridge: Bridge,
       } else if (value.action === "stop") {
         await session.abort();
         for (const [queuedID, receipt] of receipts) {
-          if (queuedID !== id && !receipt.agentID && receipt.status === "queued") status(queuedID, "cancelled", "Queue cleared by Stop.");
+          if (queuedID !== id && !receipt.agentID && ["queued", "submitted"].includes(receipt.status)) {
+            status(queuedID, "cancelled", "Pending input cleared by Stop.");
+          }
         }
         status(id, "stopped", "Stop acknowledged. Queued prompts were cleared; existing changes were not undone.");
       } else {
@@ -191,7 +193,9 @@ export function attachSteering(session: CopilotSession, bridge: Bridge,
         }
         await session.send({ prompt: value.text, mode: value.action === "queue" ? "enqueue" : "immediate", clientTurnId: id });
         if (receipts.get(id)?.status !== "received") {
-          status(id, "queued", value.action === "queue"
+          status(id, value.action === "send" ? "submitted" : "queued", value.action === "send"
+            ? "Submitted as steering. Waiting for Copilot to read it before its next model request."
+            : value.action === "queue"
             ? "Accepted into Copilot's queue. Waiting for it to consume the message."
             : "Direction submitted. Waiting for Copilot to consume it.");
         }
@@ -220,7 +224,7 @@ export function attachSteering(session: CopilotSession, bridge: Bridge,
       unsubscribe();
       unsubscribeCleanup?.();
       bridge.onControl = undefined;
-      bridge.setCapabilities({ steering: false, sessionAutoYes: false, subagentChat: false, subagentStop: false,
+      bridge.setCapabilities({ steering: false, steeringImmediate: false, sessionAutoYes: false, subagentChat: false, subagentStop: false,
         subagentCreate: false, subagentRemove: false, subagentTypes: [], subagentModels: [], idleSubagentCleanup: false });
     }
   };
