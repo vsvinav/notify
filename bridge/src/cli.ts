@@ -14,7 +14,7 @@ async function main() {
   });
   const name = positionals.shift();
   if (values.help || !name) {
-    console.log("notify claude|copilot [--model NAME] [--resume ID] [prompt]\nnotify demo\nnotify setup-copilot\n\nSimple SDK terminal chat with native floating replies.\nsetup-copilot installs the extension for original Copilot terminals.\n/quit exits. /reply ID allow|deny answers permissions.\n/reply ID {\"0\":[\"answer\"]} answers questions. IDs can use their first eight characters.");
+    console.log("notify claude|copilot [--model NAME] [--resume ID] [prompt]\nnotify demo\nnotify setup-copilot\nnotify setup-claude\n\nSimple SDK terminal chat with native floating replies.\nsetup-copilot installs the Copilot extension.\nsetup-claude installs Claude Code hooks.\n/quit exits. /reply ID allow|deny answers permissions.\n/reply ID {\"0\":[\"answer\"]} answers questions. IDs can use their first eight characters.");
     return;
   }
   if (name === "setup-copilot") {
@@ -23,7 +23,16 @@ async function main() {
     console.log(`Installed ${path}\n\nIf experimental mode is already enabled in an existing Copilot terminal:\n/extensions manage\n\nEnable notify, press Esc to close the manager, then approve its permission-access request. If it is not listed, ask Copilot to reload extensions.\n\nIMPORTANT: /settings experimental on restarts Copilot's UI/session initialization in CLI 1.0.112. Do not toggle it during active work. For future terminals, start copilot --experimental.\nNo running sessions or permission settings were changed by this installer.`);
     return;
   }
-  if (!["claude", "copilot", "demo"].includes(name)) throw new Error("Choose claude, copilot, or demo.");
+  if (name === "setup-claude") {
+    if (positionals.length || values.model || values.resume || values.doctor) {
+      throw new Error("Usage: notify setup-claude");
+    }
+    const { setupClaude } = await import("./setup.ts");
+    const path = await setupClaude();
+    console.log(`Installed hooks at ${path}\n\nFor existing Claude terminals: wait until Claude is idle, then open /hooks to reload and review the configuration and close the menu. Opening /hooks ends the current turn. Notify attaches when the next installed event fires; installing alone cannot attach an idle session or recover an already-open prompt.\nFor new terminals: hooks load automatically.\n\nMain-session steering and subagent controls stay in the original Claude terminal. Plain claude -p without a permission channel does not emit PermissionRequest in Claude Code 2.1.81.\nNo running sessions or permission settings were changed.`);
+    return;
+  }
+  if (!["claude", "copilot", "demo", "setup-copilot", "setup-claude"].includes(name)) throw new Error("Choose claude, copilot, demo, setup-copilot, or setup-claude.");
   const bridge = new Bridge(name, await realpath(process.cwd()));
   const agent = name === "claude" ? new ClaudeAgent(bridge, await executable("claude"), values.model, values.resume)
     : name === "copilot" ? new CopilotAgent(bridge, await executable("copilot"), values.model, values.resume) : undefined;

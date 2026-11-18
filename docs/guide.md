@@ -11,7 +11,9 @@ A native macOS app for answering Claude Code and Copilot requests without switch
 3. Run `~/Applications/Notify.app/Contents/Resources/bin/notify demo` to try the floating controls without starting an agent or spending credits.
 4. Answer connected sessions from their floating panels or the control center. Add your phone through **Settings > Phone connections**.
 
-[Current app screenshots](../README.md#screenshots) · [Update an existing installation](#updating-notify) · [Phone setup](#phone-connections)
+[Current app screenshots](../README.md#screenshots) · [Update an existing installation](#updating-notify) · [LAN phone setup](#phone-connections) · [Internet / Render / Firebase setup](remote-setup.md)
+
+Mac-only use needs no Notify cloud account. LAN phones and internet devices are separate opt-in connections. Internet users can join an existing service; only its operator needs to provision Render/Firebase.
 
 The sidebar puts **Needs you** first, then connected agents you're monitoring. **Not connected** stays separate, and saved chats have their own tab. Select a session, then use **Chat**, **Decision** (or **Overview**), **Settings**, or **Hierarchy**. Click the main agent or a helper in **Your team** to open its conversation. Messaging controls live only in Chat; session automation stays in Settings. A session-colored floating panel brings permission requests, choices, multi-select questions, and text fields to your current desktop.
 
@@ -37,13 +39,13 @@ The updated Copilot extension streams partial assistant replies before completio
 
 ## Open and resume in iTerm2
 
-**Saved chats** lists locally saved Copilot metadata. Select a stopped chat and choose **Resume in iTerm2**. Notify opens the original `copilot --resume <exact-id>` in a new iTerm2 window using the saved project folder. It does not send a model prompt.
+**Saved chats** lists locally saved Copilot and Claude sessions. Select a stopped chat and choose **Resume in iTerm2**. Notify opens the original `copilot --resume <exact-id>` or `claude --resume <exact-id>` in a new iTerm2 window using the saved project folder and configured agent home. It does not send a model prompt.
 
 **Saved Copilot mode and permission settings—including allow-all, if previously enabled—carry over.** The launch confirmation warns about this; Notify's broader per-session Auto-yes stays off. Extension setup and experimental-mode requirements remain explicit.
 
 **Open in iTerm2** checks live ownership and matches the process's terminal to an exact iTerm2 session. A currently running chat is opened instead of resumed again. An absent/ambiguous terminal or denied Automation access produces an error rather than choosing a random tab. Launching is not the same as connecting: permissions remain unavailable until the extension connects.
 
-iTerm2 must be installed at `/Applications/iTerm.app`; this local build launches Copilot at `/opt/homebrew/bin/copilot`. macOS may ask permission for Notify to control iTerm2. Missing project folders block resume. Existing Claude terminals and saved Claude launching are not supported in this release.
+iTerm2 must be installed at `/Applications/iTerm.app`; Notify finds the agent executable using its setup search paths. macOS may ask permission for Notify to control iTerm2. Missing project folders, linked/ambiguous history locations and existing live owners block a duplicate resume. Claude support is included on this development branch; the beta 3 download predates it.
 
 ## Requirements
 
@@ -54,7 +56,7 @@ iTerm2 must be installed at `/Applications/iTerm.app`; this local build launches
 
 ## Install the download
 
-1. Download **Notify-0.2.0-beta.3-macos-arm64.zip** and **SHA256SUMS.txt** from the [macOS beta release](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.3). With both files in the same folder, run `shasum -a 256 -c SHA256SUMS.txt` there to check the download.
+1. Download the Apple Silicon ZIP and **SHA256SUMS.txt** from [Mac releases](https://github.com/vsvinav/notify/releases). Read that release's notes for its included features. With both files in the same folder, run `shasum -a 256 -c SHA256SUMS.txt` there to check the download.
 2. Unzip the archive. In Finder, open your home folder and create **Applications** there if needed. Move **Notify.app** into that folder. When updating, quit Notify first and replace only the app; leave agent terminals running.
 3. Open Notify, choose **Connect agents**, and follow the setup instructions. Install **Node.js 22.18+** and sign in through your Copilot or Claude CLI beforehand. Node and the CLIs are not bundled.
 
@@ -94,16 +96,16 @@ ln -s "$HOME/Applications/Notify.app/Contents/Resources/bin/notify" ~/.local/bin
 For a local source build, start from an empty parent folder:
 
 ```sh
-git clone https://github.com/vsvinav/notify.git
-git clone https://github.com/vsvinav/notify-mobile.git
+git clone --branch feature/remote-native-identity https://github.com/vsvinav/notify.git
+git clone --branch feature/remote-access https://github.com/vsvinav/notify-mobile.git
 cd notify
 (cd bridge && NODE_TLS_REJECT_UNAUTHORIZED=1 npm ci --ignore-scripts)
-NOTIFY_MOBILE_SOURCE=../notify-mobile bash scripts/build.sh
+NODE_TLS_REJECT_UNAUTHORIZED=1 NOTIFY_MOBILE_SOURCE=../notify-mobile bash scripts/build.sh
 bash scripts/install.sh
 open ~/Applications/Notify.app
 ```
 
-The build requires an explicit checkout of the separate [notify-mobile repository](https://github.com/vsvinav/notify-mobile), bundles its web app and production dependencies, and ad-hoc signs the combined Mac app. Node itself remains a prerequisite. Phone connections are off by default. If Apple's command-line tools are missing, run `xcode-select --install` and finish their installation first.
+The build requires Rust 1.91+ and an explicit checkout of the separate [notify-mobile repository](https://github.com/vsvinav/notify-mobile), bundles its web app and production dependencies, and ad-hoc signs the combined Mac app. Node itself remains a prerequisite. Phone connections are off by default. If Apple's command-line tools are missing, run `xcode-select --install` and finish their installation first.
 
 The installer creates `~/.local/bin/notify`, without replacing existing apps or launchers. If that directory is not on your PATH:
 
@@ -129,12 +131,14 @@ notify demo
 
 ### Updating Notify
 
-1. Download and unzip the new release, or get the new source for both repositories and rebuild with `NOTIFY_MOBILE_SOURCE=/path/to/notify-mobile bash scripts/build.sh` from the Mac repository.
+1. Download and unzip the new release, or get the new source for both repositories and rebuild with `NODE_TLS_REJECT_UNAUTHORIZED=1 NOTIFY_MOBILE_SOURCE=/path/to/notify-mobile bash scripts/build.sh` from the Mac repository.
 2. **Quit Notify from its menu**, not just by closing its window. Leave your agent terminals running.
 3. In Finder, replace **`~/Applications/Notify.app`** with the downloaded app or new **`build/Notify.app`**. Keep your existing `~/.local/bin/notify` launcher link; do not run the first-install script again.
 4. Reopen Notify. Existing extensions reconnect; a changed extension may still require an explicit reload in its original terminal.
 
 Replacing the app does not remove settings or paired-phone data in `~/Library/Application Support/Notify/`. Session Auto-yes modes reset on restart. A repository-access error is not an installation success: obtain access before building.
+
+Internet access also starts off after an app restart. Re-enable it explicitly. Source rebuilds or arbitrary re-signing can make an existing hardware-backed identity inaccessible; preserve the supported nested signer and never silently delete/recreate keys to bypass a signing mismatch. [Internet recovery](remote-setup.md#8-revoke-rotate-and-recover-safely).
 
 ## Connect agents
 
@@ -144,7 +148,7 @@ Setup finds Copilot, Claude Code and Node in the app's PATH and standard user/Ho
 
 For Copilot, **Install extension** asks before adding the local extension at the displayed path. Existing files are never replaced. Enable Notify and grant permission access in the original terminal yourself, as described below. The app does not toggle experimental mode or restart terminals.
 
-For Claude, copy the launch command and run it from your project folder. Commands use the installed app's absolute launcher path, preserve your terminal PATH, and can be inspected before copying. A CLI installed only in a custom terminal environment may not be found by the app; the copied command can still use that environment. Existing Claude-terminal attachment and other agent adapters are not implemented.
+For Claude, **Add hooks** asks before updating the displayed Claude settings file. It uses the same installer as `notify setup-claude`, preserves existing configuration, and does not restart a terminal or relax permission rules. The SDK-backed launcher remains available as a separate option; it is not a way to attach to an original terminal.
 
 **Check again** refreshes prerequisites; it does not change configuration. Accounts, models and API keys remain with the agent. Global approval shortcuts pause while setup is open. **Back to sessions** exits setup without disconnecting anything.
 
@@ -172,15 +176,42 @@ The app discovers live and saved Copilot sessions every 30 seconds using same-us
 
 Once connected, permissions, choices, forms, and plan decisions can be answered in Notify or the original terminal. The first accepted response wins. Pending permission prompts are recovered when attaching; a question already blocking initial setup may need one terminal reply first. Closing Notify leaves the original terminal usable, and reopening reconnects outstanding requests.
 
-Original Claude Code windows are not attached by this extension; continue using `notify claude` for Claude floating replies.
+The Copilot extension does not attach Claude terminals; Claude uses its own hooks below.
+
+## Existing Claude Code terminals
+
+This section describes the current branch; the beta 3 app predates these hooks. Check your selected release's notes before using this setup.
+
+1. Open **Connect agents > Claude Code > Add hooks**. Check the exact settings path and confirm sharing supported requests/activity with Notify and any paired phones.
+2. Wait until the already-open Claude terminal is idle, then review and close `/hooks` to accept the changes. **Opening `/hooks` ends the current turn in Claude 2.1.81; do not open it during active work.** Installing hooks alone does not replay a session-start event.
+3. Wait for the next hook event from your normal work. **Connected** appears only after the actual hook connection arrives. Do not restart active work or create a duplicate session just to make the row connect.
+
+Alternatively, run `~/.local/bin/notify setup-claude` after installing this build. It respects `CLAUDE_CONFIG_DIR`; use it from that terminal if your shell has a different Claude home than the Mac app. New terminals load accepted hooks automatically.
+
+Notify discovers live Claude owner metadata and indexes saved transcripts in bounded chunks for project/name metadata. It caches only names, project paths and file positions; later refreshes read appended data instead of rescanning unchanged history. The hook connection follows reported conversation entries and subagent lifecycle events; it does not invent missing ancestry or recover a complete earlier conversation.
+
+| Capability | Original Copilot terminal | Original Claude terminal |
+| --- | --- | --- |
+| Native session list, colors, terminal navigation | Yes | Yes |
+| Supported permission requests and supplied remembered scopes | Yes | Via hooks |
+| Already-waiting permission recovery on attachment | Yes | No |
+| Questions and custom answers | Supported runtime forms | Only if Claude delivers a supported question hook |
+| Reported responses and observed team chart | Yes | Yes |
+| Native main/subagent messaging and stop controls | Supported connections | Unavailable |
+| Direct subagent creation, removal and model selection | Supported connections | Unavailable |
+| Explicit Haiku summaries of saved conversation | Yes | Yes |
+
+Questions not delivered through hooks, existing blocked prompts and unsupported controls remain in the original Claude terminal. A hook reply receipt means the response reached the hook's standard output; it does not prove that Claude executed a tool or saved a permission rule. Closing or cancelling a hook retires only its own request. Phone views use the same capability limits.
+
+Claude 2.1.81 was checked with an isolated local provider and its real SDK permission channel: installed hooks delivered allow/deny decisions and question answers to the actual runtime. Plain `claude -p` did not emit a question permission hook. Reloading hooks inside an already-open interactive TUI has not been exercised; the idle-only reload guidance follows that version's command behavior.
 
 ## Session descriptions
 
-The session list uses Copilot's existing chat title rather than a UUID, with project and connection status shown separately. Select a session to see its latest activity.
+The session list uses reported Copilot and Claude chat titles rather than a UUID when available, with project and connection status shown separately. Select a session to see its latest activity.
 
-For a richer description, select a Copilot session and click **Summarize**. After confirmation, Notify sends at most 12,000 characters of saved user/assistant text to an available Haiku model through your Copilot account. It excludes tool arguments/results, does not read referenced files, and uses a separate tool-free session. This consumes account allowance; nothing runs automatically, and Notify never silently falls back to a different model family. Missing login, model availability and generation failures are shown explicitly.
+For a richer description, select a Copilot or Claude session and click **Summarize**. After confirmation, Notify sends at most 12,000 characters of saved user/assistant text to Haiku through that agent's account. It excludes tool arguments/results, does not read referenced files, and uses a separate tool-free session. The Claude helper also disables project settings and hooks. This consumes account allowance; nothing runs automatically, and Notify never silently falls back to a different model family. Missing login, model availability and generation failures are shown explicitly.
 
-Descriptions are cached locally with their model and generation time. **Refresh description** is another explicit request. The original chat title and terminal session are never changed. Only one summary runs at a time, with a 60-second generation timeout. This feature currently uses saved Copilot sessions, not Claude history.
+Descriptions are cached locally with their model and generation time. **Refresh description** is another explicit request. The original chat title and terminal session are never changed. Only one summary runs at a time, with a 60-second generation timeout.
 
 Summaries contain complete paragraphs, up to 250 words and 6,000 characters, rather than being cut off with an ellipsis. Use **Copy summary** to copy the full text. Older cached summaries are not regenerated automatically; choose **Refresh description** to replace one.
 
@@ -227,9 +258,33 @@ The SDK's existing permission rules can resolve operations before Notify sees th
 
 In the control center, choose **Chat** to message the main agent. **Send** queues your message if it is busy. **Interrupt** confirms before interrupting the main turn and sending your draft; **Stop main** confirms before stopping current work and clearing queued main prompts.
 
-Click a subagent in **Your team** to select that helper. Its composer has its own draft and delivery receipts. **Send** steers a running helper or wakes an idle supported helper; **Stop subagent** confirms before cancelling its work. The runtime may also stop its descendants; the main agent and unrelated helpers are not stopped. Existing edits are not undone. Ended, unavailable and unsupported helpers remain read-only. Some runtime task types reject messaging even while listed; that failure is shown rather than redirecting your message. Creating a new helper or restarting an ended one remains in the original terminal.
+Click a subagent in **Your team** to select that helper. Its composer has its own draft and delivery receipts. **Send** steers a running helper or wakes an idle supported helper; **Stop subagent** confirms before cancelling its work. The runtime may also stop its descendants; the main agent and unrelated helpers are not stopped. Existing edits are not undone. Ended, unavailable and unsupported helpers remain read-only. Some runtime task types reject messaging even while listed; that failure is shown rather than redirecting your message. Supported updated Copilot sessions can create helpers using Notify’s live-catalog creation form described below. Restarting an ended helper still requires the original terminal.
 
 The larger main agent wears a hat. Helper chats use a mini portrait, the helper's name and a tinted **Subagent chat** header, with the selected helper highlighted in the team. **Stop main** and **Stop subagent** are filled red buttons and still require confirmation.
+
+### Stopping idle subagents
+
+Choose **Stop idle >10 min** in the Control Center sidebar. Review the notice, then choose **Stop idle subagents**. This is a manual cleanup across **all connected supported sessions**, not just the selected chat. It never runs on a schedule.
+
+The matching **native Android source preview** also offers **Add subagent**,
+ended-only **Remove from list**, and **Stop idle >10 min** in **Agents**. Unlike
+the Mac sidebar loop, phone cleanup targets **only the selected session** after
+confirmation. Creation offers live type/model IDs or **Configured default**,
+warns about credits and permission rules, and never sends a main-chat prompt
+instead. Native validation, audit and actual runtime acknowledgments remain
+authoritative. Catalog changes invalidate reviewed management actions without
+resetting chat drafts; rejected/unknown creation preserves form values. Unknown
+delivery is not automatically retried. Old Mac/helper builds and Claude do not
+advertise dispatchable management. This is unreleased source functionality,
+not a change to the installed Android app or the LAN web app.
+
+Copilot must load the updated Notify extension. Idle observation starts when the extension connects; an old creation date does not prove that a helper has been idle. New activity resets that observation. Helpers must have been continuously observed idle for **more than ten minutes**. Missing timing or unsafe/unknown ancestry is skipped. Claude hooks cannot stop subagents, so Claude sessions are explicitly skipped.
+
+Before stopping each helper, Notify rechecks the runtime and protects main agents and descendants that are active or not eligible. The runtime does not offer an atomic “cancel only if still idle” operation, so activity can still change after that final check. Existing edits and project files are not deleted.
+
+Results appear separately for each session, including skipped, failed and uncertain outcomes. A large cleanup may exceed the acknowledgment timeout: **Unknown** does not mean nothing happened. Check the original session rather than immediately retrying; a late acknowledgment can still update the result. Busy sessions are skipped rather than interrupting an existing control.
+
+Long chat replies render their blocks as you scroll instead of laying out the entire reply at once. This reduces work on the UI thread shared with notifications; it does not require killing idle helpers.
 
 Working agents visibly type; idle agents occasionally blink or glance. An acknowledged stop has a still pose. Motion pauses when the window is hidden or Reduce Motion is enabled. An idle or finished response does not mean the whole task succeeded.
 
@@ -288,11 +343,20 @@ For a capable attached Copilot session, open its **Settings** tab and enable the
 
 Both session modes use the same adapter-advertised eligibility and runtime-policy checks. Dangerous mode does not invent question answers, complete browser actions, bypass restrictions, grant remembered scopes, or make unsupported integrations available. Questions and restricted requests can still interrupt unattended work.
 
-Opt-in and each automatic dispatch are audited before sending. Audit/delivery failure stops further automatic approvals. **Turn off** works even if the audit cannot be saved. Disconnect, restart, Stop, lost capability and agent/steering errors reset the mode. Already-sent approvals cannot be recalled. Approval hotkeys pause while a native confirmation sheet or modal is open.
+Opt-in and each automatic dispatch are audited before sending. Audit/delivery failure stops further automatic approvals. **Turn off** works even if the audit cannot be saved. Provider disconnect, restart, Stop, lost capability and agent/steering errors reset the mode. Already-sent approvals cannot be recalled. Approval hotkeys pause while a native confirmation sheet or modal is open.
+
+Matching unpublished Mac/helper/native Android source builds also expose this same
+session policy on the phone, with explicit high-risk confirmation, a red On
+indicator and direct Off. **Phone disconnect does not disable Dangerous Auto-yes.**
+Offline state shows last-known On/unknown, never a successful Off; toggles are not
+replayed. Older builds show unsupported. No separate phone approval engine is used,
+and phone policy changes do not replace chat drafts or conversation positions.
 
 ## Phone connections
 
-In main **Settings > Phone connections**, enable **Allow phone connections**, then choose **Pair a phone**. The companion supports an installable web app shared by iPhone and Android, not separate App Store apps.
+This section describes **LAN mode**, an installable web app for iPhone and Android. Native Android internet access is a separate client and enrollment; see [internet setup](remote-setup.md).
+
+In main **Settings > Phone connections**, enable **Allow phone connections**, then choose **Pair a phone**.
 
 Your phone and awake Mac must be on the same local network. Scan the setup QR, compare the certificate's SHA-256 fingerprint with the Mac, and follow the phone's instructions to manually install and trust the local certificate. Notify never installs trust automatically. The HTTP setup page serves only public instructions/certificate material; pairing, request details and replies use HTTPS.
 
@@ -302,13 +366,13 @@ The Mac lists paired phones separately from currently connected browsers and ena
 
 Allow notifications from a direct tap in the installed phone app. iPhone requires iOS 16.4+ and a Home Screen web app for Web Push. Background alerts use Apple/Google/Mozilla push infrastructure and contain only a generic prompt, never agent request content. **Send test alert** requests a generic alert for subscribed devices; a provider accepting it does not prove delivery.
 
-Phone replies use the same exact choices, custom-answer restrictions and permission scopes as the Mac. They require a fresh live request and matching agent acknowledgment. Disconnects, sleep, revocation, changed requests and uncertain replies fail explicitly; replies are not automatically replayed. There is no remote shell or hosted Notify relay.
+Phone replies use the same exact choices, custom-answer restrictions and permission scopes as the Mac. They require a fresh live request and matching agent acknowledgment. Disconnects, sleep, revocation, changed requests and uncertain replies fail explicitly; replies are not automatically replayed. There is no remote shell; LAN mode does not use a hosted relay.
 
 The phone's **Sessions** view shows live session status and on-demand recent conversations. Select the main agent or an exact helper in **Chat with**, or choose its tile in **Hierarchy**. Tools and reported thinking stay separate from chat. Phone drafts do not overwrite Mac drafts; reloading the phone page clears its unsent drafts.
 
 **Send**, main-agent **Interrupt**, and confirmed **Stop** use the connection's supported controls. Stopping a helper can also stop its descendants. Unsupported or ended targets remain read-only, never redirected to another agent. Sending instructions can spend model credits. Queued means accepted into the queue, not completed; uncertainty is explicit and no instruction is automatically retried.
 
-The chart shows running helpers plus one expandable **+N idle subagents** tile. Ended helpers are grouped separately. **Fit** and **100%** support wide/deep teams; missing parent relationships are labeled rather than inferred. Recent activity and team snapshots are bounded, with visible notices when incomplete. Subagent creation/removal and automation controls remain Mac-only.
+The chart shows running helpers plus one expandable **+N idle subagents** tile. Ended helpers are grouped separately. **Fit** and **100%** support wide/deep teams; missing parent relationships are labeled rather than inferred. Recent activity and team snapshots are bounded, with visible notices when incomplete. This LAN web app has no subagent creation/removal or automation controls; use the Mac or the matching native Android source preview.
 
 After updating Notify on the Mac, close and reopen the installed phone web app on the same network. Pairing remains if the HTTPS address is unchanged. Existing older Mac apps can still serve approvals but cannot supply the new workspace.
 
@@ -320,11 +384,11 @@ After updating Notify on the Mac, close and reopen the installed phone web app o
 - Agent IPC listens only on loopback and requires a random token from a user-private file. Explicitly enabled phone support uses a separate authenticated same-network HTTPS listener.
 - Settings use macOS preferences. Connection information, session color overrides, the last 200 approval records and up to 200 private cached descriptions live in `~/Library/Application Support/Notify/`.
 - History records session labels and decisions, not answers, commands, or conversation contents. The app keeps only a bounded in-memory conversation preview. The agent CLIs retain their normal session histories.
-- No hosted Notify relay is added. The agents and explicitly requested Haiku descriptions communicate with their normal model providers; optional generic phone alerts use platform push services.
+- Mac-only and LAN use do not require a hosted Notify relay. Explicit internet mode uses an HTTPS relay with encrypted payloads and durable public trust/private push-routing metadata, not hosted conversations. The agents and explicitly requested Haiku descriptions communicate with their normal model providers; optional generic phone alerts use platform push services.
 - Phone keys, paired-device credentials, push subscriptions and bounded hashed notification identities stay in the private `mobile` subdirectory. Request snapshots are in memory, not saved there.
 - Browser-auth requests require completing the shown URL yourself before confirming. Secret/password prompts are not a supported floating-input workflow; authenticate in the original CLI first.
 - The panel is configured for other Spaces and full-screen apps, but secure desktops, locked screens, and individual full-screen app behavior are controlled by macOS.
-- Library/skill/plugin management, existing Claude attachment, internet request/reply relay access, and a full terminal emulator remain later work.
+- Library/skill/plugin management, full Claude control parity, Claude historical pending-prompt recovery and a full terminal emulator remain unsupported. Internet mode requires separate setup and approval; browser internet push is not implemented. Physical-phone background delivery, sound and vibration still need device verification.
 
 ## Checks
 
@@ -334,13 +398,13 @@ swift run NotifyTerminalChecks
 swift build --product NotifyTransportChecks
 bash scripts/check-ui.sh
 cd bridge
-npm test
-npm run check
-npm run test:integration
-npm run test:copilot
+NODE_TLS_REJECT_UNAUTHORIZED=1 npm test
+NODE_TLS_REJECT_UNAUTHORIZED=1 npm run check
+NODE_TLS_REJECT_UNAUTHORIZED=1 npm run test:integration
+NODE_TLS_REJECT_UNAUTHORIZED=1 npm run test:copilot
 python3 test/tui_runtime.py
-node dist/cli.js claude --doctor
-node dist/cli.js copilot --doctor
+NODE_TLS_REJECT_UNAUTHORIZED=1 node dist/cli.js claude --doctor
+NODE_TLS_REJECT_UNAUTHORIZED=1 node dist/cli.js copilot --doctor
 ```
 
 The doctor commands initialize the installed runtimes without sending a model prompt. Transport checks exercise actual Swift-to-Node permission and question replies. The Copilot checks hot-load the extension into an existing SDK-owned session and an original terminal UI, including extension consent and a native reply to the same session ID. Steering checks use a loopback-only synthetic OpenAI provider to exercise joined-session queue, interrupt and stop without paid model calls. Summary checks verify a real tool-free runtime setup with a substituted response. UI checks measure native scrolling, composer state, audit failures and mode resets. They use disposable fixtures and never manipulate real running terminals. Live provider output and individual full-screen app behavior still need a manual check.

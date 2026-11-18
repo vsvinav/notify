@@ -6,10 +6,11 @@ import { object } from "./protocol.ts";
 type Receipt = { action: string; status: string; text: string; message: string; agentID?: string; agentName?: string; agentType?: string; model?: string };
 const boundedText = (value: unknown, limit: number): value is string =>
   typeof value === "string" && !!value.trim() && value.length <= limit;
-const management = (action: unknown) => action === "create_subagent" || action === "remove_subagent";
+const management = (action: unknown) => action === "create_subagent" || action === "remove_subagent" || action === "stop_idle_subagents";
 
 export function attachSteering(session: CopilotSession, bridge: Bridge,
-  team?: Pick<ReturnType<typeof attachSubagents>, "refresh" | "removed" | "isRetainedCancelled">) {
+  team?: Pick<ReturnType<typeof attachSubagents>, "refresh" | "removed" | "isRetainedCancelled" | "cancelled"> &
+    Partial<Pick<ReturnType<typeof attachSubagents>, "stopIdleSubagents" | "cleanupAvailable" | "onCleanupAvailability">>) {
   const receipts = new Map<string, Receipt>();
   let stopped = false;
   let busy = false;
@@ -29,8 +30,11 @@ export function attachSteering(session: CopilotSession, bridge: Bridge,
   let agentNames = new Map<string, string>();
   function capabilities() {
     if (!stopped) bridge.setCapabilities({ steering: true, sessionAutoYes: true, subagentChat, subagentStop,
-      subagentCreate: canCreate && subagentTypes.length > 0, subagentRemove, subagentTypes, subagentModels });
+      subagentCreate: canCreate && subagentTypes.length > 0, subagentRemove, subagentTypes, subagentModels,
+      idleSubagentCleanup: subagentStop && typeof session.rpc.tasks?.list === "function" &&
+        typeof team?.stopIdleSubagents === "function" && team.cleanupAvailable === true });
   }
+  const unsubscribeCleanup = team?.onCleanupAvailability?.(capabilities);
   async function modelCatalog(): Promise<string | undefined> {
     try {
       if (typeof session.rpc.model?.list !== "function") throw new Error("This runtime does not support session model listing.");
@@ -79,14 +83,15 @@ export function attachSteering(session: CopilotSession, bridge: Bridge,
   bridge.onControl = async value => {
     if (stopped || !object(value) || typeof value.commandID !== "string" ||
         !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value.commandID) ||
-        !["queue", "interrupt", "stop", "create_subagent", "remove_subagent"].includes(String(value.action)) ||
+        !["queue", "interrupt", "stop", "create_subagent", "remove_subagent", "stop_idle_subagents"].includes(String(value.action)) ||
         typeof value.text !== "string" || value.text.length > 16000 ||
-        (!["stop", "remove_subagent"].includes(String(value.action)) && !value.text.trim()) ||
+        (!["stop", "remove_subagent", "stop_idle_subagents"].includes(String(value.action)) && !value.text.trim()) ||
         (value.action === "create_subagent"
           ? (!boundedText(value.agentName, 160) || !boundedText(value.agentType, 128) || value.agentID !== undefined)
           : (value.agentName !== undefined || value.agentType !== undefined)) ||
         (value.model !== undefined && (value.action !== "create_subagent" || !boundedText(value.model, 200))) ||
         (value.action === "remove_subagent" && (value.text !== "" || !boundedText(value.agentID, 128))) ||
+        (value.action === "stop_idle_subagents" && (value.text !== "" || value.agentID !== undefined)) ||
         (value.agentID !== undefined && (typeof value.agentID !== "string" || !value.agentID || value.agentID.length > 128 ||
           value.action === "interrupt"))) throw new Error("Invalid or unavailable steering command.");
     const agentID = typeof value.agentID === "string" ? value.agentID : undefined;
@@ -109,7 +114,15 @@ export function attachSteering(session: CopilotSession, bridge: Bridge,
     let interrupted = false;
     let dispatched = false;
     try {
-      if (value.action === "create_subagent") {
+      if (value.action === "stop_idle_subagents") {
+        if (!subagentStop || typeof session.rpc.tasks?.list !== "function" || !team?.stopIdleSubagents) {
+          status(id, "failed", "Cancelled 0; skipped 0; failed 0; uncertain 0. This runtime does not support observed idle subagent cleanup.");
+          return;
+        }
+        const result = await team.stopIdleSubagents(() => stopped);
+        status(id, result.status, result.text);
+        if (!stopped) await team.refresh();
+      } else if (value.action === "create_subagent") {
         await ready;
         if (model !== undefined) {
           await modelsReady;
@@ -157,6 +170,7 @@ export function attachSteering(session: CopilotSession, bridge: Bridge,
         if (stopped) { status(id, "failed", "Extension detached before dispatch."); return; }
         if (value.action === "stop") {
           const result = await session.rpc.tasks.cancel({ id: agentID });
+          if (result.cancelled) team?.cancelled(agentID!);
           status(id, result.cancelled ? "stopped" : "failed", result.cancelled
             ? "Subagent stop acknowledged. Other agents were not stopped." : "The runtime did not cancel this subagent.");
         } else {
@@ -183,7 +197,7 @@ export function attachSteering(session: CopilotSession, bridge: Bridge,
         }
       }
     } catch (error) {
-      if (!["received", "created", "removed"].includes(receipts.get(id)?.status ?? "")) {
+      if (!["received", "created", "removed", "cleaned"].includes(receipts.get(id)?.status ?? "")) {
         status(id, management(value.action) && !dispatched ? "failed" : "unknown",
           `${interrupted ? "Main turn interrupted. " : ""}${management(value.action) && !dispatched
             ? "Nothing was dispatched." : "Delivery is uncertain; check the session before resending."} ${String(error)}`);
@@ -204,9 +218,10 @@ export function attachSteering(session: CopilotSession, bridge: Bridge,
     stop() {
       stopped = true;
       unsubscribe();
+      unsubscribeCleanup?.();
       bridge.onControl = undefined;
       bridge.setCapabilities({ steering: false, sessionAutoYes: false, subagentChat: false, subagentStop: false,
-        subagentCreate: false, subagentRemove: false, subagentTypes: [], subagentModels: [] });
+        subagentCreate: false, subagentRemove: false, subagentTypes: [], subagentModels: [], idleSubagentCleanup: false });
     }
   };
 }

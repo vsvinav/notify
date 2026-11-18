@@ -16,9 +16,9 @@ for size in [16, 32, 128, 256, 512] {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = context
         let tile = NSRect(x: side * 0.08, y: side * 0.08, width: side * 0.84, height: side * 0.84)
-        NSColor(srgbRed: 0.13, green: 0.17, blue: 0.14, alpha: 1).setFill()
+        NSColor(srgbRed: 48.0 / 255, green: 42.0 / 255, blue: 34.0 / 255, alpha: 1).setFill()
         NSBezierPath(roundedRect: tile, xRadius: side * 0.19, yRadius: side * 0.19).fill()
-        NSColor(srgbRed: 0.75, green: 0.84, blue: 0.64, alpha: 1).setFill()
+        NSColor(srgbRed: 232.0 / 255, green: 191.0 / 255, blue: 122.0 / 255, alpha: 1).setFill()
         let bolt = NSBezierPath()
         bolt.move(to: NSPoint(x: side * 0.57, y: side * 0.81))
         for (x, y) in [(0.29, 0.44), (0.47, 0.44), (0.42, 0.19), (0.73, 0.57), (0.54, 0.57)] {

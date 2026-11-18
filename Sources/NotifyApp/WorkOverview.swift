@@ -23,6 +23,7 @@ struct WorkOverview: View {
     @State private var order: [String] = []
     @State private var showDisconnected = false
     @State private var dropTargetID: String?
+    @State private var showIdleCleanup = false
     private var connected: [SessionRecord] { visible.filter { $0.connected && !$0.needsSetup } }
     private var disconnected: [SessionRecord] { visible.filter { !$0.connected || $0.needsSetup } }
     private var visible: [SessionRecord] {
@@ -92,6 +93,10 @@ struct WorkOverview: View {
                 Button { store.showSetup() } label: {
                     Label("Connect agents", systemImage: "plus")
                 }.buttonStyle(.borderless).font(WorkspaceType.text(13, strong: true))
+                Button { showIdleCleanup = true } label: {
+                    Label("Stop idle >10 min", systemImage: "stop.circle")
+                }.buttonStyle(.borderless).font(WorkspaceType.text(13, strong: true))
+                    .help("Review cleanup across all connected sessions.")
             }.padding(18).frame(width: 232).background(Palette.sidebar)
             Divider()
             VStack(alignment: .leading, spacing: 18) {
@@ -120,6 +125,7 @@ struct WorkOverview: View {
                 }
             }.padding(22).frame(maxWidth: .infinity, maxHeight: .infinity).background(Palette.surface)
         }
+        .sheet(isPresented: $showIdleCleanup) { IdleSubagentCleanupView(store: store) }
         .onAppear {
             updateOrder()
             showDisconnected = connected.isEmpty || store.selected?.connected == false
@@ -187,18 +193,7 @@ struct WorkOverview: View {
         return true
     }
     private func updateOrder() {
-        let ids = Set(store.sessions.map(\.id))
-        order.removeAll { !ids.contains($0) }
-        order.append(contentsOf: store.sessions.filter { !order.contains($0.id) }.map(\.id))
-        let stable = order
-        func rank(_ id: String) -> Int {
-            let key = store.registry.sessions[id]?.sourceSessionID ?? id
-            return store.sessionOrder.firstIndex(of: key) ?? store.sessionOrder.firstIndex(of: id) ?? Int.max
-        }
-        order.sort {
-            let a = rank($0), b = rank($1)
-            return a == b ? (stable.firstIndex(of: $0) ?? 0) < (stable.firstIndex(of: $1) ?? 0) : a < b
-        }
+        order = store.orderedSessions.map(\.id)
     }
 }
 
@@ -266,6 +261,7 @@ private struct WorkDetail: View {
     @State private var tab: String
     @State private var chatAgentID: String?
     @State private var showSubagentManagement = false
+    @State private var confirmRemoval = false
     init(store: Store, session: SessionRecord) {
         self.store = store
         self.session = session
@@ -361,6 +357,19 @@ private struct WorkDetail: View {
                         Text("The global safe-read setting must also be enabled. Session Auto-yes is separate from remembered terminal permissions.")
                             .font(.system(size: 13)).foregroundStyle(Palette.muted)
                         Button("Open project folder") { NSWorkspace.shared.open(URL(fileURLWithPath: session.cwd)) }.disabled(session.cwd.isEmpty)
+                        Button("Remove from Notify…") { confirmRemoval = true }
+                            .disabled(session.connected || session.needsSetup || session.ownerPID != nil ||
+                                      store.terminalBusy.contains(session.id) || store.launching.contains(session.id))
+                            .alert("Remove “\(session.name)” from Notify?", isPresented: $confirmRemoval) {
+                                Button("Cancel", role: .cancel) {}
+                                Button("Remove cached row", role: .destructive) {
+                                    if !store.removeDisconnected(session.id) {
+                                        store.error = "This session has reconnected or has a live owner or pending launch. Nothing was removed."
+                                    }
+                                }
+                            } message: {
+                                Text("Remove only this disconnected cached row. No live owner is stopped, no CLI history or project files are deleted, and no phone is unpaired. Discovery can bring the history back.")
+                            }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
             } else if session.needsSetup {
@@ -368,18 +377,25 @@ private struct WorkDetail: View {
                     VStack(alignment: .leading, spacing: 16) {
                         Text("Connect this running terminal").font(.title2)
                         Text("This session is running, but Notify is not connected to its requests or activity.")
-                        Button("Set up Copilot connection") { store.showSetup(.copilot) }
-                        Text("If experimental mode is already enabled, open /extensions manage in that terminal, enable notify, close the manager, then approve permission access. If the extension is missing, ask Copilot to reload extensions.")
-                        Text("Do not enable experimental mode during active work: this Copilot version restarts its UI when the setting changes.")
-                            .foregroundStyle(Palette.amber)
+                        if session.agent == "claude" {
+                            Button("Add hooks for Claude Code") { store.showSetup(.claude) }
+                            Text("After adding hooks, wait until Claude is idle before reviewing and closing /hooks; opening it ends the current turn. Notify connects on its next hook event. Already-waiting prompts remain in the terminal.")
+                                .foregroundStyle(Palette.muted)
+                        } else {
+                            Button("Set up Copilot connection") { store.showSetup(.copilot) }
+                            Text("If experimental mode is already enabled, open /extensions manage in that terminal, enable notify, close the manager, then approve permission access. If Notify is missing, ask Copilot to reload extensions.")
+                            Text("Do not enable experimental mode during active work: this Copilot version restarts its UI when the setting changes.")
+                                .foregroundStyle(Palette.amber)
+                        }
                     }.font(.system(size: 14)).textSelection(.enabled)
                 }
             } else if session.isSaved || !session.connected {
                 VStack(alignment: .leading, spacing: 18) {
                     Text(session.isSaved ? "Pick up this work in iTerm2." : "This agent is disconnected.").font(.title2)
                     SessionDescriptionView(store: store, session: session)
-                    Text(session.isSaved ? "Resume keeps the original CLI and its saved permission settings. Notify never grants extension access automatically." :
-                            "Previous activity is available, but controls stay disabled until the agent reconnects.")
+                    Text(session.isSaved
+                         ? "Resume opens the saved session in iTerm2 with its original CLI and permissions. Launch is not proof of connection; wait for its hooks or extension to connect."
+                         : "Previous activity is available, but controls stay disabled until the agent reconnects.")
                         .font(.system(size: 14)).foregroundStyle(Palette.muted)
                     Spacer()
                 }

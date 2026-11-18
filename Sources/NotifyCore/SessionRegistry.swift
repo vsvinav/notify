@@ -6,11 +6,11 @@ public struct SessionRegistry {
 
     public mutating func catalog(_ found: [SavedCopilot]) {
         let ids = Set(found.map(\.id))
-        for row in sessions.values where row.isSaved && !ids.contains(row.sourceSessionID ?? row.id) {
+        for row in sessions.values where row.agent == "copilot" && row.isSaved && !ids.contains(row.sourceSessionID ?? row.id) {
             sessions.removeValue(forKey: row.id)
         }
         for item in found {
-            let rowID = sessions.values.first { $0.sourceSessionID == item.id }?.id ?? item.id
+            let rowID = sessions.values.first { $0.agent == "copilot" && $0.sourceSessionID == item.id }?.id ?? item.id
             var row = sessions[rowID] ?? SessionRecord(id: rowID, agent: "copilot", cwd: item.cwd)
             if sessions[rowID]?.connected != true {
                 row.connected = false
@@ -30,14 +30,15 @@ public struct SessionRegistry {
 
     public mutating func discover(_ found: [DiscoveredCopilot]) {
         let live = Set(found.map(\.id))
-        for session in sessions.values where session.needsSetup && !live.contains(session.sourceSessionID ?? session.id) {
+        for session in sessions.values where session.agent == "copilot" && session.needsSetup && !live.contains(session.sourceSessionID ?? session.id) {
             sessions.removeValue(forKey: session.id)
         }
         for foundSession in found {
-            let rowID = sessions.values.first { $0.sourceSessionID == foundSession.id }?.id ?? foundSession.id
+            let rowID = sessions.values.first { $0.agent == "copilot" && $0.sourceSessionID == foundSession.id }?.id ?? foundSession.id
             var session = sessions[rowID] ?? SessionRecord(id: foundSession.id, agent: "copilot", cwd: foundSession.cwd)
             if sessions[rowID]?.connected != true {
                 session.connected = false
+                session.isSaved = false
                 session.needsSetup = true
                 session.summary = "Running in terminal (PID \(foundSession.pid)). Connect the Notify extension."
             }
@@ -48,6 +49,52 @@ public struct SessionRegistry {
             sessions[session.id] = session
         }
     }
+    public mutating func discoverClaude(_ found: [DiscoveredClaude]) {
+        let live = Set(found.map(\.id))
+        for session in sessions.values where session.agent == "claude" && session.needsSetup
+            && !live.contains(session.sourceSessionID ?? session.id) {
+            sessions.removeValue(forKey: session.id)
+        }
+        for item in found {
+            let rowID = sessions.values.first { $0.agent == "claude" && $0.sourceSessionID == item.id }?.id ?? item.id
+            var session = sessions[rowID] ?? SessionRecord(id: item.id, agent: "claude", cwd: item.cwd)
+            if sessions[rowID]?.connected != true {
+                session.connected = false
+                session.isSaved = false
+                session.needsSetup = true
+                session.summary = "Running in terminal (PID \(item.pid)). Add Notify hooks to connect."
+            }
+            if !item.cwd.isEmpty { session.cwd = item.cwd }
+            if !item.title.isEmpty { session.title = item.title }
+            session.ownerPID = item.pid
+            sessions[session.id] = session
+        }
+    }
+
+    public mutating func catalogClaude(_ found: [SavedClaude]) {
+        let ids = Set(found.map(\.id))
+        for row in sessions.values where row.agent == "claude" && row.isSaved
+            && !ids.contains(row.sourceSessionID ?? row.id) {
+            sessions.removeValue(forKey: row.id)
+        }
+        for item in found {
+            let rowID = sessions.values.first { $0.agent == "claude" && $0.sourceSessionID == item.id }?.id ?? item.id
+            var row = sessions[rowID] ?? SessionRecord(id: rowID, agent: "claude", cwd: item.cwd)
+            if sessions[rowID]?.connected != true {
+                row.connected = false
+                row.isSaved = item.pid == nil
+                row.needsSetup = item.pid != nil
+                row.updated = item.lastActivity ?? .distantPast
+                row.summary = item.pid == nil ? "Saved chat. Resume in iTerm2 to continue." : "Running in terminal. Add Notify hooks to connect."
+                row.requests.removeAll()
+            }
+            row.ownerPID = item.pid
+            if !item.title.isEmpty { row.title = item.title }
+            if !item.cwd.isEmpty { row.cwd = item.cwd }
+            sessions[rowID] = row
+        }
+    }
+
     public mutating func register(id: String, agent: String, cwd: String) {
         let previous = sessions[id]
         var session = SessionRecord(id: id, agent: agent, cwd: cwd)
@@ -66,7 +113,7 @@ public struct SessionRegistry {
         }
         if let sourceSessionID, UUID(uuidString: sourceSessionID) != nil {
             sessions[id]?.sourceSessionID = sourceSessionID
-            for source in sessions.values where source.id != id && !source.connected &&
+            for source in sessions.values where source.id != id && source.agent == sessions[id]?.agent && !source.connected &&
                 (source.id == sourceSessionID || source.sourceSessionID == sourceSessionID) {
                 if sessions[id]?.title.isEmpty == true { sessions[id]?.title = source.title }
                 sessions[id]?.synopsis = source.synopsis
@@ -76,7 +123,8 @@ public struct SessionRegistry {
         }
     }
     public mutating func capabilities(_ id: String, steering: Bool, autoYes: Bool, subagentChat: Bool = false, subagentStop: Bool = false) {
-        guard sessions[id]?.connected == true, sessions[id]?.agent == "copilot" else { return }
+        guard sessions[id]?.connected == true,
+              let agent = sessions[id]?.agent, ["copilot", "claude"].contains(agent) else { return }
         sessions[id]?.canSteer = steering
         sessions[id]?.canAutoYes = autoYes
         sessions[id]?.canChatWithSubagents = subagentChat
@@ -87,10 +135,11 @@ public struct SessionRegistry {
         sessions[id]?.stopped = false
         sessions[id]?.workRevision = UUID()
     }
-    public mutating func managementCapabilities(_ id: String, create: Bool, remove: Bool, types: [String], models: [String] = []) throws {
-        guard sessions[id]?.connected == true, sessions[id]?.agent == "copilot" else { throw ProtocolError.stale }
+    public mutating func managementCapabilities(_ id: String, create: Bool, remove: Bool, types: [String], models: [String] = [], idleCleanup: Bool = false) throws {
+        guard sessions[id]?.connected == true, ["copilot", "claude"].contains(sessions[id]?.agent ?? "") else { throw ProtocolError.stale }
         sessions[id]?.canCreateSubagents = false
         sessions[id]?.canRemoveSubagents = false
+        sessions[id]?.canCleanupIdleSubagents = false
         sessions[id]?.subagentTypes = []
         sessions[id]?.subagentModels = []
         guard types.count <= 100, Set(types).count == types.count,
@@ -100,6 +149,8 @@ public struct SessionRegistry {
         else { throw ProtocolError.invalid }
         sessions[id]?.canCreateSubagents = create
         sessions[id]?.canRemoveSubagents = remove
+        let cleanupSupported = idleCleanup && sessions[id]?.agent == "copilot"
+        sessions[id]?.canCleanupIdleSubagents = cleanupSupported
         sessions[id]?.subagentTypes = types
         sessions[id]?.subagentModels = models
     }

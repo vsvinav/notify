@@ -20,7 +20,7 @@ public final class DescriptionRunner {
     }
 
     public func run(sessionID: String, script: URL, completion: @escaping (Result<SessionDescription, Error>) -> Void) throws {
-        guard process == nil, UUID(uuidString: sessionID) != nil else { throw ProtocolError.invalid }
+        guard process == nil, !sessionID.isEmpty else { throw ProtocolError.invalid }
         let task = Process(), output = Pipe(), errors = Pipe()
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var env = ProcessInfo.processInfo.environment

@@ -1,5 +1,5 @@
 import Foundation
-import NotifyCore
+@testable import NotifyCore
 
 do {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("notify-setup-" + UUID().uuidString)
@@ -607,6 +607,205 @@ phoneChat.update(sessionID: controlled.id, commandID: phoneStop, status: "receiv
 check(phoneChat.receipt(sessionID: controlled.id, commandID: phoneStop)?.status == "sending", "Stop requires a genuine stopped ACK")
 
 var phoneWorkspace = MobileWorkspace()
+do {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        .appendingPathComponent(".build/session-resume-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = "12345678-1234-4234-8234-123456789abc"
+    let originalCLI = root.appendingPathComponent("original cli")
+    try Data().write(to: originalCLI)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: originalCLI.path)
+    let history = root.appendingPathComponent("copilot/session-state/" + id)
+    try FileManager.default.createDirectory(at: history, withIntermediateDirectories: true)
+    let command = try TerminalSession.resumeCommand(id: id, cwd: root.path,
+        copilotHome: root.appendingPathComponent("copilot"), executableURL: originalCLI, livePIDs: [])
+    check(command.contains("--resume") && command.contains(id) && command.contains("original cli") && command.contains(root.path),
+          "Resume command must use only the exact original UUID, cwd and chosen original CLI")
+    try Data().write(to: history.appendingPathComponent("inuse.42.lock"))
+    do {
+        _ = try TerminalSession.resumeCommand(id: id, cwd: root.path,
+            copilotHome: root.appendingPathComponent("copilot"), executableURL: originalCLI, livePIDs: [42])
+        preconditionFailure("Even an owner with no decoded metadata must block a duplicate launch")
+    } catch TerminalSessionError.activeOwner(let pid) { check(pid == 42, "Exact live owner is retained") }
+    let claude = root.appendingPathComponent("claude/projects/project")
+    try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
+    let transcript = claude.appendingPathComponent(id + ".jsonl")
+    try Data().write(to: transcript)
+    let claudeCommand = try TerminalSession.resumeClaudeCommand(id: id, cwd: root.path,
+        home: root.appendingPathComponent("claude"), executableURL: originalCLI, livePIDs: [])
+    check(claudeCommand.contains("CLAUDE_CONFIG_DIR=") && claudeCommand.contains(id) && claudeCommand.contains("original cli"),
+          "Claude resume preserves its own original history and executable")
+    check(FileManager.default.fileExists(atPath: transcript.path), "Resume preparation never deletes history")
+}
+do {
+    var authority = MobileWorkspace()
+    var saved = SessionRecord(id: "saved", agent: "copilot", cwd: "/synthetic")
+    saved.connected = false; saved.isSaved = true
+    let value = MobileSessionActions(session: saved, appearance: SessionAppearance(), editable: true,
+        removable: true, resumable: true, resumeStatus: "available", resumeDetail: "", moveUp: nil, moveDown: "peer")
+    let metadata = authority.sessionActions(value, for: saved)
+    var payload: [String: Any] = ["id": UUID().uuidString, "sessionID": saved.id,
+        "ticket": authority.ticket(for: saved), "sessionTicket": metadata.ticket,
+        "action": "set_session_color", "text": "", "rgb": 0xFFFFFF]
+    func decode(_ data: [String: Any]) throws -> MobileControl {
+        try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: data))
+    }
+    let color = try decode(payload)
+    check(color.isValid, "RGB white must remain a full unsigned 24-bit integer")
+    try authority.reserveSessionAction(color, session: saved, metadata: metadata)
+    do {
+        try authority.reserveSessionAction(color, session: saved, metadata: metadata)
+        preconditionFailure("A reserved session action must not be replayed")
+    } catch {}
+    for bad: Any in ["16777215", true, -1, 0x1000000, 1.5, NSNull()] {
+        payload["rgb"] = bad
+        do {
+            let malformed = try decode(payload)
+            check(!malformed.isValid, "Reject malformed RGB instead of coercing it")
+        } catch {}
+    }
+    payload["id"] = UUID().uuidString; payload["rgb"] = 1
+    payload["agentID"] = "child"
+    let subagentColor = try decode(payload)
+    check(!subagentColor.isValid, "Session colors must never address runtime subagents")
+    payload.removeValue(forKey: "agentID"); payload.removeValue(forKey: "rgb")
+    payload["action"] = "remove_session"
+    saved.connected = true
+    do {
+        try authority.reserveSessionAction(decode(payload), session: saved, metadata: metadata)
+        preconditionFailure("A reconnected row must not be removed")
+    } catch {}
+    check(SessionAppearance.choices.count == 20 && Set(SessionAppearance.choices) == Set(SessionAppearance.names.keys),
+          "Native and phone named color catalogs must share all twenty existing choices")
+}
+let newPolicyControl = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+    "id": UUID().uuidString, "sessionID": controlled.id, "ticket": "workspace",
+    "action": "dangerous_auto_yes", "text": "", "enabled": true, "policyTicket": "policy",
+    "offTicket": "00000000-0000-8000-8000-000000000001"
+]))
+check(newPolicyControl.isValid, "Phone Dangerous Auto-yes must be a typed session policy operation")
+let legacyPolicyControl = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+    "id": UUID().uuidString, "sessionID": controlled.id, "ticket": "workspace",
+    "action": "dangerous_auto_yes", "text": "", "enabled": true, "policyTicket": "policy"
+]))
+check(!legacyPolicyControl.isValid, "Legacy clients must not enable without bounded Off authority")
+var policyAuthority = SessionAutomation()
+var policyWorkspace = MobileWorkspace()
+var policySession = controlled
+policySession.canSteer = false
+policySession.canAutoYes = true
+let chatGeneration = policyWorkspace.ticket(for: policySession)
+let firstPolicy = policyAuthority.policy(for: policySession)
+func policyRequest(_ ticket: String, enabled: Bool = true, target: String? = nil, id: String = UUID().uuidString) throws -> MobileControl {
+    var value: [String: Any] = ["id": id, "sessionID": policySession.id, "ticket": chatGeneration,
+                              "action": "dangerous_auto_yes", "text": "", "enabled": enabled, "policyTicket": ticket,
+                              "offTicket": firstPolicy.offTicket]
+    if let target { value["agentID"] = target }
+    return try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: value))
+}
+let delayedEnable = try policyRequest(firstPolicy.ticket)
+check(policyWorkspace.accepts(delayedEnable, session: policySession, policy: firstPolicy), "Native auto capability must not require steering")
+let helperPolicyRequest = try policyRequest(firstPolicy.ticket, target: "helper")
+check(!policyWorkspace.accepts(helperPolicyRequest, session: policySession, policy: firstPolicy), "Session policy must reject helper targets")
+check(!policyWorkspace.accepts(delayedEnable, session: otherControlled, policy: firstPolicy), "Policy cannot cross sessions")
+try policyWorkspace.reserve(delayedEnable, session: policySession, policy: firstPolicy)
+do {
+    try policyWorkspace.reserve(try policyRequest(firstPolicy.ticket, enabled: false, id: delayedEnable.id.lowercased()), session: policySession, policy: firstPolicy)
+    check(false, "Policy UUID cannot be reused with changed payload or case")
+} catch {}
+policyAuthority.disable(policySession.id)
+let newerOff = policyAuthority.policy(for: policySession)
+check(newerOff.ticket != firstPolicy.ticket && newerOff.revision > firstPolicy.revision, "Even already-Off must retire reviewed enables")
+check(!policyWorkspace.accepts(delayedEnable, session: policySession, policy: newerOff), "Delayed enable must not reactivate after newer Mac Off")
+check(policyWorkspace.ticket(for: policySession) == chatGeneration, "Policy revisions must preserve ordinary chat tickets and drafts")
+try policyAuthority.setDangerousEnabled(true, for: policySession)
+policyWorkspace.invalidate()
+check(policyAuthority.dangerous.contains(policySession.id), "Phone transport disconnect must not disable the Mac-owned policy")
+let onPolicy = policyAuthority.policy(for: policySession)
+var urgentWorkspace = MobileWorkspace()
+let urgentTicket = urgentWorkspace.ticket(for: policySession)
+let urgentOffData = try JSONSerialization.data(withJSONObject: [
+    "id": newerOff.offTicket, "sessionID": policySession.id, "ticket": urgentTicket, "action": "dangerous_auto_yes",
+    "enabled": false, "policyTicket": firstPolicy.ticket, "offTicket": newerOff.offTicket, "text": ""
+])
+let currentOff = try JSONDecoder().decode(MobileControl.self, from: urgentOffData)
+check(urgentWorkspace.accepts(currentOff, session: policySession, policy: onPolicy), "Fresh exact-session Off must supersede an enable without waiting for its policy ticket")
+try policyAuthority.setEnabled(true, for: policySession)
+let normalPolicy = policyAuthority.policy(for: policySession)
+check(!normalPolicy.enabled && normalPolicy.normalEnabled && normalPolicy.ticket != onPolicy.ticket, "Normal Auto-yes replaces and invalidates Dangerous mode")
+var fullPolicyWorkspace = MobileWorkspace()
+var fullPolicyAuthority = SessionAutomation()
+var fullPolicySession = controlled
+fullPolicySession.canSteer = true
+fullPolicySession.canAutoYes = true
+let fullPolicyWorkspaceTicket = fullPolicyWorkspace.ticket(for: fullPolicySession)
+for _ in 0..<255 {
+    let command = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+        "id": UUID().uuidString, "sessionID": fullPolicySession.id, "ticket": fullPolicyWorkspaceTicket, "action": "queue", "text": "synthetic"
+    ]))
+    try fullPolicyWorkspace.reserve(command, session: fullPolicySession)
+}
+let fullPolicyBeforeOn = fullPolicyAuthority.policy(for: fullPolicySession)
+let fullPolicyEnable = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+    "id": UUID().uuidString, "sessionID": fullPolicySession.id, "ticket": fullPolicyWorkspaceTicket,
+    "action": "dangerous_auto_yes", "text": "", "enabled": true, "policyTicket": fullPolicyBeforeOn.ticket, "offTicket": fullPolicyBeforeOn.offTicket
+]))
+try fullPolicyWorkspace.reserve(fullPolicyEnable, session: fullPolicySession, policy: fullPolicyBeforeOn)
+try fullPolicyAuthority.setDangerousEnabled(true, for: fullPolicySession)
+let fullPolicyOn = fullPolicyAuthority.policy(for: fullPolicySession)
+let fullPolicyOff = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+    "id": fullPolicyOn.offTicket, "sessionID": fullPolicySession.id, "ticket": fullPolicyWorkspaceTicket,
+    "action": "dangerous_auto_yes", "text": "", "enabled": false, "policyTicket": fullPolicyOn.ticket, "offTicket": fullPolicyOn.offTicket
+]))
+do {
+    try fullPolicyWorkspace.reserve(fullPolicyOff, session: fullPolicySession, policy: fullPolicyOn)
+} catch {
+    check(false, "Full native ordinary history must not strand urgent Off")
+}
+fullPolicyAuthority.disable(fullPolicySession.id)
+for _ in 0..<300 {
+    try fullPolicyAuthority.setDangerousEnabled(true, for: fullPolicySession)
+    let active = fullPolicyAuthority.policy(for: fullPolicySession)
+    let stop = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+        "id": active.offTicket, "sessionID": fullPolicySession.id, "ticket": fullPolicyWorkspaceTicket,
+        "action": "dangerous_auto_yes", "text": "", "enabled": false, "policyTicket": active.ticket, "offTicket": active.offTicket
+    ]))
+    try fullPolicyWorkspace.reserve(stop, session: fullPolicySession, policy: active)
+    do {
+        try fullPolicyWorkspace.reserve(stop, session: fullPolicySession, policy: active)
+        check(false, "One Off epoch must never dispatch twice")
+    } catch {}
+    fullPolicyAuthority.disable(fullPolicySession.id)
+}
+let lastOffPolicy = fullPolicyAuthority.policy(for: fullPolicySession)
+check(!fullPolicyWorkspace.accepts(fullPolicyOff, session: fullPolicySession, policy: lastOffPolicy),
+      "Retired native Off payload must stay invalid after hundreds of epochs")
+let reusedOffID = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+    "id": fullPolicyOff.id, "sessionID": fullPolicySession.id, "ticket": fullPolicyWorkspaceTicket, "action": "queue", "text": "changed"
+]))
+check(!reusedOffID.isValid, "Retired Off UUID cannot change into an ordinary command")
+let mismatchedOffID = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+    "id": fullPolicyOff.id, "sessionID": fullPolicySession.id, "ticket": fullPolicyWorkspaceTicket,
+    "action": "dangerous_auto_yes", "text": "", "enabled": false, "policyTicket": lastOffPolicy.ticket, "offTicket": lastOffPolicy.offTicket
+]))
+check(!mismatchedOffID.isValid, "Retired Off UUID cannot acquire a fresh epoch by changing its payload")
+var unsupportedOffSession = fullPolicySession
+unsupportedOffSession.canAutoYes = false
+check(!fullPolicyWorkspace.accepts(fullPolicyOff, session: unsupportedOffSession, policy: fullPolicyOn),
+      "Dedicated Off never bypasses native capability loss")
+unsupportedOffSession = fullPolicySession
+unsupportedOffSession.connected = false
+check(!fullPolicyWorkspace.accepts(fullPolicyOff, session: unsupportedOffSession, policy: fullPolicyOn),
+      "Dedicated Off never bypasses provider disconnect")
+let normalStillFull = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: [
+    "id": UUID().uuidString, "sessionID": fullPolicySession.id, "ticket": fullPolicyWorkspaceTicket, "action": "queue", "text": "synthetic"
+]))
+do {
+    try fullPolicyWorkspace.reserve(normalStillFull, session: fullPolicySession)
+    check(false, "Off must not evict ordinary UUID history")
+} catch {}
+check(fullPolicyWorkspace.ticket(for: fullPolicySession) == fullPolicyWorkspaceTicket, "Off epochs never rotate chat/draft tickets")
 let phoneTicket = phoneWorkspace.ticket(for: controlled)
 check(phoneWorkspace.ticket(for: controlled) == phoneTicket, "Unchanged workspace retains its generation")
 controlled.workRevision = UUID()
@@ -692,6 +891,32 @@ check(management.receipt(sessionID: controlled.id, commandID: created)?.status =
       management.draft(sessionID: controlled.id) == "Keep main draft",
       "Creation needs its own ACK and must preserve the main draft")
 controlled.subagentModels = ["account-model"]
+var mobileManagement = MobileWorkspace()
+let managementOverview = try JSONSerialization.jsonObject(with: mobileManagement.overview(sessions: [controlled], colors: [:])) as! [String: Any]
+let managementRow = (managementOverview["sessions"] as! [[String: Any]])[0]
+check(managementRow["managementTicket"] as? String != nil, "Phone needs live management authority separate from chat")
+let mobileCreationData: [String: Any] = ["id": UUID().uuidString, "sessionID": controlled.id,
+    "ticket": managementRow["ticket"]!, "managementTicket": managementRow["managementTicket"] ?? "",
+    "action": "create_subagent", "text": "", "creation": [
+        "name": "Reviewer", "agentType": "general-purpose", "prompt": "Review exactly", "model": "account-model"]]
+let mobileCreation = try JSONDecoder().decode(MobileControl.self, from: JSONSerialization.data(withJSONObject: mobileCreationData))
+check(mobileManagement.accepts(mobileCreation, session: controlled), "Phone must route a typed live creation")
+try mobileManagement.reserve(mobileCreation, session: controlled)
+do { try mobileManagement.reserve(mobileCreation, session: controlled); preconditionFailure("Duplicate create must reject") }
+catch ProtocolError.stale {}
+let chatTicketBeforeCatalogChange = mobileManagement.ticket(for: controlled)
+controlled.subagentModels = []
+check(!mobileManagement.accepts(mobileCreation, session: controlled), "Changed catalogs invalidate reviewed creation")
+check(mobileManagement.isCurrent(mobileCreation, session: controlled), "Changed catalogs must not invalidate a pending exact runtime result")
+check(mobileManagement.ticket(for: controlled) == chatTicketBeforeCatalogChange, "Catalog refresh must not reset chat drafts or policy epochs")
+var replacedManagementWorkspace = mobileManagement
+var replacedManagementSession = controlled
+replacedManagementSession.workRevision = UUID()
+check(!replacedManagementWorkspace.isCurrent(mobileCreation, session: replacedManagementSession), "Replacement work still invalidates management correlation")
+replacedManagementSession = controlled
+replacedManagementSession.connected = false
+check(!mobileManagement.isCurrent(mobileCreation, session: replacedManagementSession), "Disconnected management cannot correlate a result")
+controlled.subagentModels = ["account-model"]
 let selectedModel = try management.begin(session: controlled, action: "create_subagent",
     creation: SubagentCreation(name: "Model helper", agentType: "general-purpose", prompt: "Review", model: "account-model"))
 check(management.receipt(sessionID: controlled.id, commandID: selectedModel)?.model == "account-model",
@@ -727,6 +952,40 @@ do {
     preconditionFailure("Disconnected sessions must not create helpers")
 } catch ProtocolError.invalid {}
 print("Native subagent management checks passed")
+var cleanupSession = SessionRecord(id: "idle-cleanup", agent: "copilot", cwd: "/fixture")
+var cleanup = SteeringWorkspace()
+check(cleanup.unavailableReason(session: cleanupSession, agentID: nil, action: "stop_idle_subagents") != nil,
+      "Bulk cleanup requires a separately advertised runtime capability")
+cleanupSession.canCleanupIdleSubagents = true
+cleanupSession.team = try JSONDecoder().decode(SubagentTeam.self,
+    from: Data(#"{"agents":[],"runningCount":0,"idleCount":0,"truncated":false}"#.utf8))
+cleanup.setDraft("Keep the unsent main message", sessionID: cleanupSession.id)
+let cleanupID = try cleanup.begin(session: cleanupSession, action: "stop_idle_subagents")
+check(cleanup.receipt(sessionID: cleanupSession.id, commandID: cleanupID)?.message == "" &&
+      cleanup.receipt(sessionID: cleanupSession.id, commandID: cleanupID)?.isManagement == true,
+      "Cleanup must carry no message and must not appear as main-agent chat")
+cleanup.update(sessionID: cleanupSession.id, commandID: cleanupID, status: "stopped", text: "Wrong main-stop acknowledgment")
+check(cleanup.receipt(sessionID: cleanupSession.id, commandID: cleanupID)?.status == "sending",
+      "Main-stop acknowledgments must not complete a cleanup")
+cleanup.update(sessionID: cleanupSession.id, commandID: cleanupID, status: "cleaned", text: "Stopped 2; skipped 1")
+check(cleanup.receipt(sessionID: cleanupSession.id, commandID: cleanupID)?.status == "cleaned" &&
+      cleanup.draft(sessionID: cleanupSession.id) == "Keep the unsent main message" && !cleanupSession.stopped,
+      "Cleanup must preserve the main agent and its draft")
+for target in ["helper"] {
+    do {
+        _ = try cleanup.begin(session: cleanupSession, action: "stop_idle_subagents", agentID: target)
+        preconditionFailure("Bulk cleanup must not accept an alternate target")
+    } catch ProtocolError.invalid {}
+}
+cleanupSession.connected = false
+check(cleanup.unavailableReason(session: cleanupSession, agentID: nil, action: "stop_idle_subagents") != nil,
+      "Disconnected sessions must never accept cleanup")
+var unsupportedCleanup = SessionRecord(id: "unsupported-cleanup", agent: "claude", cwd: "/fixture")
+unsupportedCleanup.canCleanupIdleSubagents = true
+unsupportedCleanup.team = cleanupSession.team
+check(cleanup.unavailableReason(session: unsupportedCleanup, agentID: nil, action: "stop_idle_subagents") != nil,
+      "Original Claude hooks cannot advertise a working cleanup control")
+print("Native idle-cleanup correlation checks passed")
 
 var managementCatalog = SessionRegistry()
 managementCatalog.register(id: "catalog-session", agent: "copilot", cwd: "/fixture")
@@ -740,3 +999,156 @@ do {
 check(managementCatalog.sessions["catalog-session"]?.canCreateSubagents == false &&
       managementCatalog.sessions["catalog-session"]?.subagentModels.isEmpty == true,
       "Malformed catalogs must revoke stale creation choices rather than retain unsafe old capabilities")
+
+// ClaudeDiscovery smoke tests
+let claudeHome = FileManager.default.temporaryDirectory.appendingPathComponent("claude-test-\(UUID())")
+try FileManager.default.createDirectory(at: claudeHome, withIntermediateDirectories: true)
+defer { try? FileManager.default.removeItem(at: claudeHome) }
+
+// runningPIDs returns a set (may be empty in CI)
+let claudePIDs = try ClaudeDiscovery.runningPIDs()
+assert(claudePIDs.allSatisfy { $0 > 0 }, "All Claude PIDs must be positive")
+
+// sessions returns empty for empty dir
+let noSessions = try ClaudeDiscovery.sessions(livePIDs: [9999999], home: claudeHome)
+assert(noSessions.isEmpty, "sessions should be empty for empty home")
+
+// catalog returns empty for empty dir
+let noCatalog = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+assert(noCatalog.isEmpty, "catalog should be empty for empty home")
+
+// Claude persists session names in custom-title records.
+let projDir = claudeHome.appendingPathComponent("projects/abc123")
+try FileManager.default.createDirectory(at: projDir, withIntermediateDirectories: true)
+let uuid = UUID().uuidString.lowercased()
+let jsonlURL = projDir.appendingPathComponent("\(uuid).jsonl")
+let lines = [
+  #"{"cwd":"/tmp/myproject"}"#,
+  #"{"type":"custom-title","customTitle":"My Test Project"}"#
+].joined(separator: "\n")
+try lines.write(to: jsonlURL, atomically: true, encoding: .utf8)
+let cat = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+assert(cat.count == 1, "Should find 1 saved session")
+assert(cat[0].title == "My Test Project", "Should use customTitle")
+assert(cat[0].cwd == "/tmp/myproject", "Should read cwd")
+print("ClaudeDiscovery: OK")
+
+// SessionRegistry Claude support
+var reg = SessionRegistry()
+// discoverClaude creates a needsSetup entry
+reg.discoverClaude([DiscoveredClaude(id: "test-id-123", pid: 999, cwd: "/tmp/proj")])
+assert(reg.sessions["test-id-123"] != nil, "Should create entry")
+assert(reg.sessions["test-id-123"]?.needsSetup == true, "Should be needsSetup")
+assert(reg.sessions["test-id-123"]?.agent == "claude", "Should be claude agent")
+// catalogClaude creates a saved entry
+var reg2 = SessionRegistry()
+let savedID = UUID().uuidString.lowercased()
+reg2.catalogClaude([SavedClaude(id: savedID, title: "Test Project", cwd: "/tmp/p", lastActivity: nil)])
+assert(reg2.sessions[savedID]?.isSaved == true, "Should be saved")
+assert(reg2.sessions[savedID]?.title == "Test Project", "Should have title")
+// capabilities() works for claude
+reg2.register(id: "claude-sess", agent: "claude", cwd: "/tmp")
+// register() sets connected = true by default
+reg2.capabilities("claude-sess", steering: true, autoYes: false)
+assert(reg2.sessions["claude-sess"]?.canSteer == true, "Claude session should allow capabilities")
+print("SessionRegistry Claude: OK")
+
+reg2.catalog([])
+check(reg2.sessions[savedID]?.agent == "claude",
+      "Refreshing Copilot history must not delete saved Claude sessions")
+reg.discover([])
+check(reg.sessions["test-id-123"]?.needsSetup == true,
+      "Refreshing Copilot owners must not delete discovered Claude sessions")
+reg2.discoverClaude([DiscoveredClaude(id: savedID, pid: 999, cwd: "/tmp/p")])
+check(reg2.sessions[savedID]?.isSaved == false && reg2.sessions[savedID]?.needsSetup == true,
+      "A running Claude session must not remain eligible for saved-session launch")
+
+try """
+{"cwd":"/tmp/myproject"}
+{"type":"custom-title","customTitle":"My renamed Claude session"}
+{"type":"ai-title","aiTitle":"Generated title"}
+""".write(to: jsonlURL, atomically: true, encoding: .utf8)
+let renamedClaude = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(renamedClaude.first?.title == "My renamed Claude session",
+      "Claude discovery must read actual custom-title records and preserve explicit names")
+let claudeSessions = claudeHome.appendingPathComponent("sessions")
+try FileManager.default.createDirectory(at: claudeSessions, withIntermediateDirectories: true)
+let claudeOwner = claudeSessions.appendingPathComponent("999.json")
+try Data(#"{"sessionId":"../../not-a-session","cwd":"/tmp"}"#.utf8).write(to: claudeOwner)
+let malformedClaude = try ClaudeDiscovery.sessions(livePIDs: [999], home: claudeHome)
+check(malformedClaude.isEmpty, "Claude discovery must reject non-UUID session identities")
+try FileManager.default.removeItem(at: claudeOwner)
+let linkedOwnerSource = claudeHome.appendingPathComponent("owner-source.json")
+try Data("{\"sessionId\":\"\(uuid)\",\"cwd\":\"/tmp\"}".utf8).write(to: linkedOwnerSource)
+try FileManager.default.createSymbolicLink(at: claudeOwner, withDestinationURL: linkedOwnerSource)
+let linkedClaudeOwners = try ClaudeDiscovery.sessions(livePIDs: [999], home: claudeHome)
+check(linkedClaudeOwners.isEmpty, "Claude discovery must not follow linked session metadata")
+let linkedProject = claudeHome.appendingPathComponent("projects/linked")
+try FileManager.default.createSymbolicLink(at: linkedProject, withDestinationURL: projDir)
+let plainClaudeCatalog = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(plainClaudeCatalog.count == 1, "Claude history must not follow linked project directories")
+try ("""
+{"cwd":"/tmp/myproject"}
+{"type":"custom-title","customTitle":"Keep the saved name"}
+
+""" + String(repeating: #"{"type":"assistant","message":{"content":"fixture"}}"# + "\n", count: 1800))
+    .write(to: jsonlURL, atomically: true, encoding: .utf8)
+let longClaudeHistory = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(longClaudeHistory.first?.title == "Keep the saved name",
+      "A saved Claude title must survive more than 64 KB of later conversation")
+let metadataWriter = try FileHandle(forWritingTo: jsonlURL)
+try metadataWriter.seekToEnd()
+try metadataWriter.write(contentsOf: Data(("""
+{"type":"custom-title","customTitle":"Later saved name"}
+
+""" + String(repeating: #"{"type":"assistant","message":{"content":"fixture"}}"# + "\n", count: 1800)).utf8))
+try metadataWriter.close()
+let appendedClaude = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(appendedClaude.first?.title == "Later saved name", "Incremental indexing must preserve the latest name in the middle of long history")
+try Data(#"{"type":"ai-title","aiTitle":"Rewritten history"}"#.utf8).write(to: jsonlURL, options: .atomic)
+let rewrittenClaude = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(rewrittenClaude.first?.title == "Rewritten history", "Replacing a transcript must invalidate its old cached name")
+let partialMetadataWriter = try FileHandle(forWritingTo: jsonlURL)
+try partialMetadataWriter.seekToEnd()
+try partialMetadataWriter.write(contentsOf: Data(("\n" + #"{"type":"custom-title","customTitle":"caf"#).utf8) + Data([0xc3]))
+let partialClaude = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(partialClaude.first?.title == "Rewritten history", "An incomplete UTF-8 record must not overwrite the last complete title")
+try partialMetadataWriter.write(contentsOf: Data([0xa9]) + Data("\"}\n".utf8))
+let completeClaude = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(completeClaude.first?.title == "caf\u{00e9}", "An appended UTF-8 record must be reread from its complete line boundary")
+try partialMetadataWriter.truncate(atOffset: 0)
+let truncatedClaude = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(truncatedClaude.first?.title == "", "Truncation must clear stale metadata")
+try partialMetadataWriter.seek(toOffset: 0)
+try partialMetadataWriter.write(contentsOf: Data(repeating: 120, count: 150_000))
+_ = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+try partialMetadataWriter.write(contentsOf: Data(("\n" + #"{"type":"custom-title","customTitle":"After oversized line"}"# + "\n").utf8))
+try partialMetadataWriter.close()
+let recoveredClaude = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(recoveredClaude.first?.title == "After oversized line", "Oversized partial records must not consume following valid metadata")
+let unchangedClaude = try ClaudeDiscovery.catalog(home: claudeHome, livePIDs: [])
+check(unchangedClaude.first?.title == "After oversized line", "Unchanged cached history must preserve metadata")
+
+do {
+    let resources = claudeHome.appendingPathComponent("setup-resources")
+    let scripts = resources.appendingPathComponent("bridge/dist")
+    try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+    let target = claudeHome.appendingPathComponent("configured home")
+    let setupURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("bridge/dist/setup.js")
+    let encodedModule = String(decoding: try JSONEncoder().encode(setupURL.absoluteString), as: UTF8.self)
+    let encodedTarget = String(decoding: try JSONEncoder().encode(target.path), as: UTF8.self)
+    try Data("""
+    if (process.argv[2] !== "setup-claude" || process.env.CLAUDE_CONFIG_DIR !== \(encodedTarget)) throw new Error("Wrong setup target");
+    const { setupClaude } = await import(\(encodedModule));
+    await setupClaude();
+    """.utf8).write(to: scripts.appendingPathComponent("cli.js"))
+    try Data().write(to: scripts.appendingPathComponent("claude-hook.js"))
+    let snapshot = try AgentSetup.inspect(resources: resources, claudeHome: target)
+    try AgentSetup.installClaude(snapshot)
+    check(FileManager.default.fileExists(atPath: target.appendingPathComponent("settings.json").path),
+          "Native Claude setup must use its displayed home through the shared installer")
+    let installedSnapshot = try AgentSetup.inspect(resources: URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
+                                                   claudeHome: target)
+    check(AgentSetup.claudeHooksInstalled(installedSnapshot),
+          "Native setup must recognize the exact command installed by the shared CLI")
+}

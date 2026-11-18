@@ -2,11 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { attachSubagents } from "../dist/subagents.js";
 
-function fixture(list) {
+function fixture(list, cancel) {
   const snapshots = [];
   let receive;
   const tracker = attachSubagents({
-    rpc: { tasks: { list } },
+    rpc: { tasks: { list, cancel } },
     on(handler) { receive = handler; return () => { receive = undefined; }; }
   }, { team(snapshot) { snapshots.push(snapshot); } });
   return { tracker, snapshots, emit: event => receive?.(event) };
@@ -16,6 +16,217 @@ const agent = (id, status = "running") => ({
   type: "agent", id, toolCallId: `tool-${id}`, description: `Task ${id}`, displayName: `Helper ${id}`,
   status, startedAt: "2026-11-15T01:00:00Z", agentType: "explore", prompt: "Private full prompt",
   result: "Private full result", model: "configured-model", resolvedModel: "actual-model"
+});
+
+function cleanupFixture(t, initial = [agent("old", "idle")]) {
+  let now = 0, tasks = initial, listError, cancelResult = { cancelled: true };
+  t.mock.method(performance, "now", () => now);
+  const calls = [];
+  const f = fixture(async () => {
+    if (listError) throw listError;
+    return { tasks };
+  }, async ({ id }) => {
+    calls.push(id);
+    if (cancelResult instanceof Error) throw cancelResult;
+    if (cancelResult.cancelled) tasks = tasks.map(task => task.id === id ? { ...task, status: "cancelled" } : task);
+    return cancelResult;
+  });
+  for (const task of initial) f.emit({ type: "subagent.started", data: { toolCallId: task.toolCallId } });
+  t.after(() => f.tracker.stop());
+  return { ...f, calls, time: value => { now = value; }, tasks: value => { tasks = value; },
+    error: value => { listError = value; }, result: value => { cancelResult = value; } };
+}
+
+test("manual cleanup uses strictly more than ten observed monotonic idle minutes, never startedAt", async t => {
+  const f = cleanupFixture(t);
+  assert.equal(f.tracker.cleanupAvailable, false);
+  await f.tracker.refresh();
+  assert.equal(f.tracker.cleanupAvailable, true);
+  f.time(600000);
+  assert.equal((await f.tracker.stopIdleSubagents()).cancelled, 0);
+  f.time(600001);
+  const result = await f.tracker.stopIdleSubagents();
+  assert.equal(result.status, "cleaned");
+  assert.equal(result.cancelled, 1);
+  assert.deepEqual(f.calls, ["old"]);
+});
+
+test("idle activity and changed snapshots restart the entire observed idle interval", async t => {
+  const f = cleanupFixture(t);
+  await f.tracker.refresh();
+  f.time(600001);
+  f.tasks([agent("old", "running")]);
+  await f.tracker.refresh();
+  f.tasks([agent("old", "idle")]);
+  await f.tracker.refresh();
+  assert.equal((await f.tracker.stopIdleSubagents()).cancelled, 0);
+  f.time(1200002);
+  f.emit({ type: "assistant.message_delta", agentId: "old", data: { deltaContent: "work between snapshots" } });
+  assert.equal((await f.tracker.stopIdleSubagents()).cancelled, 0);
+  f.time(1800003);
+  f.emit({ type: "session.background_tasks_changed", data: {} });
+  assert.equal((await f.tracker.stopIdleSubagents()).cancelled, 0);
+  f.time(2400004);
+  f.tasks([{ ...agent("old", "idle"), description: "Changed while still idle" }]);
+  assert.equal((await f.tracker.stopIdleSubagents()).cancelled, 0);
+  assert.deepEqual(f.calls, []);
+});
+
+test("unknown age, errors, removal and disconnect never retain old eligibility", async t => {
+  const f = cleanupFixture(t);
+  f.time(600001);
+  assert.equal((await f.tracker.stopIdleSubagents()).cancelled, 0, "First observation is not ten minutes old");
+  f.time(1200002);
+  f.error(new Error("offline"));
+  await f.tracker.refresh();
+  assert.equal(f.tracker.cleanupAvailable, false);
+  assert.equal((await f.tracker.stopIdleSubagents()).status, "failed");
+  f.error(undefined);
+  assert.equal((await f.tracker.stopIdleSubagents()).cancelled, 0);
+  f.time(1800003);
+  f.tracker.resetIdleObservation();
+  assert.equal(f.tracker.cleanupAvailable, false);
+  assert.equal((await f.tracker.stopIdleSubagents()).cancelled, 0);
+  f.time(2400004);
+  f.tracker.removed("old");
+  assert.equal((await f.tracker.stopIdleSubagents()).cancelled, 0);
+  assert.deepEqual(f.calls, []);
+});
+
+test("running or young descendants protect ancestors; eligible trees cancel deepest first", async t => {
+  const f = cleanupFixture(t, [agent("parent", "idle"), agent("child", "running"), agent("sibling", "idle")]);
+  f.emit({ type: "subagent.started", data: { toolCallId: "tool-child", parentId: "parent" } });
+  await f.tracker.refresh();
+  f.time(600001);
+  let result = await f.tracker.stopIdleSubagents();
+  assert.deepEqual(f.calls, ["sibling"]);
+  assert.equal(result.skipped, 2);
+  f.tasks([agent("parent", "idle"), agent("child", "idle")]);
+  await f.tracker.refresh();
+  assert.equal((await f.tracker.stopIdleSubagents()).cancelled, 0);
+  f.time(1200002);
+  result = await f.tracker.stopIdleSubagents();
+  assert.equal(result.status, "cleaned");
+  assert.deepEqual(f.calls, ["sibling", "child", "parent"]);
+});
+
+test("unknown, missing and cyclic ancestry safely block potential ancestors", async t => {
+  const f = cleanupFixture(t, [agent("known", "idle")]);
+  f.tasks([agent("known", "idle"), agent("unknown", "running")]);
+  await f.tracker.refresh();
+  f.time(600001);
+  let result = await f.tracker.stopIdleSubagents();
+  assert.equal(result.cancelled, 0);
+  assert.match(result.text, /ancestry/i);
+  f.emit({ type: "subagent.started", data: { toolCallId: "tool-unknown", parentId: "missing" } });
+  await f.tracker.refresh();
+  f.time(1200002);
+  assert.equal((await f.tracker.stopIdleSubagents()).cancelled, 0);
+  f.emit({ type: "subagent.started", data: { toolCallId: "tool-unknown", parentId: "known" } });
+  f.emit({ type: "subagent.started", data: { toolCallId: "tool-known", parentId: "unknown" } });
+  await f.tracker.refresh();
+  f.time(1800003);
+  assert.equal((await f.tracker.stopIdleSubagents()).cancelled, 0);
+  assert.deepEqual(f.calls, []);
+});
+
+test("cleanup rechecks live status before each cancellation and fences activity during reads", async t => {
+  let now = 0, reads = 0, calls = [];
+  t.mock.method(performance, "now", () => now);
+  const f = fixture(async () => {
+    reads++;
+    if (reads === 3) return { tasks: [agent("old", "running")] };
+    return { tasks: [agent("old", "idle")] };
+  }, async value => { calls.push(value); return { cancelled: true }; });
+  t.after(() => f.tracker.stop());
+  f.emit({ type: "subagent.started", data: { toolCallId: "tool-old" } });
+  await f.tracker.refresh();
+  now = 600001;
+  assert.equal((await f.tracker.stopIdleSubagents()).cancelled, 0);
+  assert.equal(reads, 3);
+  assert.deepEqual(calls, []);
+
+  let finish;
+  const stale = fixture(() => new Promise(resolve => { finish = resolve; }), async () => ({ cancelled: true }));
+  t.after(() => stale.tracker.stop());
+  const pending = stale.tracker.refresh();
+  stale.emit({ type: "session.background_tasks_changed", data: {} });
+  finish({ tasks: [agent("old", "idle")] });
+  await pending;
+  assert.equal(stale.tracker.cleanupAvailable, false);
+});
+
+test("partial false ACKs fail and thrown or malformed ACKs are uncertain, never all-success", async t => {
+  const f = cleanupFixture(t, [agent("one", "idle"), agent("two", "idle")]);
+  await f.tracker.refresh();
+  f.time(600001);
+  f.result({ cancelled: false });
+  let result = await f.tracker.stopIdleSubagents();
+  assert.equal(result.status, "failed");
+  assert.equal(result.failed, 1);
+  assert.equal(result.skipped, 1);
+  f.result(new Error("lost ACK"));
+  result = await f.tracker.stopIdleSubagents();
+  assert.equal(result.status, "unknown");
+  assert.equal(result.unknown, 1);
+  f.result({});
+  assert.equal((await f.tracker.stopIdleSubagents()).status, "unknown");
+});
+
+test("unsupported and detached trackers cannot cancel", async () => {
+  const f = fixture(async () => ({ tasks: [agent("old", "idle")] }));
+  await f.tracker.refresh();
+  assert.equal(f.tracker.cleanupAvailable, false);
+  assert.equal((await f.tracker.stopIdleSubagents()).status, "failed");
+  f.tracker.stop();
+  assert.equal((await f.tracker.stopIdleSubagents()).status, "failed");
+});
+
+test("streamed activity invalidates idle age without adding task-list reads per token", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let reads = 0;
+  const f = fixture(async () => { reads++; return { tasks: [agent("old", "idle")] }; }, async () => ({ cancelled: true }));
+  t.after(() => f.tracker.stop());
+  await f.tracker.refresh();
+  for (let i = 0; i < 1000; i++) f.emit({ type: "assistant.message_delta", agentId: "old", data: {} });
+  t.mock.timers.tick(100);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reads, 1, "Activity must invalidate synchronously, not schedule per-token task-list RPCs");
+});
+
+test("session shutdown and resume reset observation instead of reusing pre-reload idle ages", async t => {
+  const f = cleanupFixture(t);
+  await f.tracker.refresh();
+  f.time(600001);
+  f.emit({ type: "session.shutdown", data: {} });
+  assert.equal(f.tracker.cleanupAvailable, false);
+  assert.equal((await f.tracker.stopIdleSubagents()).status, "failed");
+  f.emit({ type: "session.resume", data: {} });
+  assert.equal((await f.tracker.stopIdleSubagents()).cancelled, 0);
+  assert.deepEqual(f.calls, []);
+});
+
+test("bounded observation rejects duplicate identities and oversized snapshots safely", async t => {
+  const f = cleanupFixture(t);
+  await f.tracker.refresh();
+  f.time(600001);
+  for (const tasks of [[agent("old", "idle"), agent("old", "idle")],
+    Array.from({ length: 1001 }, (_, i) => agent(String(i), "idle"))]) {
+    f.tasks(tasks);
+    assert.equal((await f.tracker.stopIdleSubagents()).status, "failed");
+    assert.equal(f.tracker.cleanupAvailable, false);
+  }
+  assert.deepEqual(f.calls, []);
+});
+
+test("invalid ancestry cannot reuse an earlier root link after observation recovers", async t => {
+  const f = cleanupFixture(t);
+  await f.tracker.refresh();
+  f.emit({ type: "subagent.started", data: { toolCallId: "tool-old", parentId: null } });
+  await f.tracker.refresh();
+  f.time(600001);
+  assert.equal((await f.tracker.stopIdleSubagents()).cancelled, 0);
+  assert.deepEqual(f.calls, []);
 });
 
 test("subagent snapshots use live tasks, omit shells and private prompts, and preserve idle status", async () => {

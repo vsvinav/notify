@@ -19,10 +19,27 @@ struct MobileStatus: Decodable {
     let pushMessage: String?
 }
 
-struct MobilePairing: Identifiable {
+struct MobilePairing: Identifiable, Equatable {
     let id: String
     let name: String
     let code: String
+    var verificationData: String? = nil
+}
+
+enum MobileTransport { case lan, internet }
+
+enum InternetConnectionState: String, Decodable {
+    case paused, connecting, pairing, connected, error
+}
+
+struct InternetStatus: Decodable {
+    let state: InternetConnectionState
+    let url: String
+    let devices: [MobileDevice]
+    let pendingPairingIDs: [String]
+    let setupURL: String?
+    let pairingCode: String?
+    let message: String?
 }
 
 struct MobileReply: Decodable {
@@ -68,26 +85,46 @@ struct MobileItem: Encodable {
 
 private struct MobileEvent: Decodable {
     let type: String
-    let status: MobileStatus?
     let id: String?
     let name: String?
     let code: String?
     let message: String?
     let sessionIDs: [String]?
+    let verificationData: String?
 }
 
 final class MobileConnection: ObservableObject {
     @Published private(set) var enabled: Bool
     @Published private(set) var starting = false
     @Published private(set) var status: MobileStatus?
+    @Published private(set) var internetStatus: InternetStatus?
+    @Published private(set) var internetOrigin: String
     @Published private(set) var pairings: [MobilePairing] = []
     var pairing: MobilePairing? { pairings.first }
+    var canConfirmPairing: Bool {
+        guard let pairing else { return false }
+        if transport == .lan { return true }
+        guard let value = pairing.verificationData, value.utf8.count == 88,
+              let key = Data(base64Encoded: value), key.count == 65, key.first == 4 else { return false }
+        return key.base64EncodedString() == value
+    }
     @Published private(set) var error: String?
+    @Published private(set) var internetBackupURL: URL?
+    @Published private var retiringProcesses: [Process] = []
+    var canStartFreshInternetSetup: Bool {
+        transport == .internet && !enabled && process == nil && retiringProcesses.isEmpty
+    }
     var snapshot: (() -> [MobileItem])?
     var onReply: ((MobileReply) -> Void)?
     var onControl: ((MobileControl) -> Void)?
     var workspaceSnapshot: (([String]) throws -> [Data])?
     var onUnavailable: (() -> Void)?
+    let transport: MobileTransport
+    var workspace = MobileWorkspace()
+    var canReceiveCommands: Bool {
+        enabled && !sleeping && process?.isRunning == true &&
+            (transport == .lan ? status != nil : internetStatus?.state == .connected)
+    }
     private let directory: URL
     private let resources: URL?
     private let defaults: UserDefaults
@@ -103,26 +140,58 @@ final class MobileConnection: ObservableObject {
     private var workspacePending = false
     private var lastWorkspace: [Data] = []
 
-    init(directory: URL, defaults: UserDefaults, resources: URL? = Bundle.main.resourceURL) {
+    init(directory: URL, defaults: UserDefaults, resources: URL? = Bundle.main.resourceURL, transport: MobileTransport = .lan) {
         self.directory = directory
         self.defaults = defaults
         self.resources = resources
-        enabled = defaults.bool(forKey: "mobileEnabled")
+        self.transport = transport
+        internetOrigin = defaults.string(forKey: "internetOrigin") ?? ""
+        enabled = transport == .lan && defaults.bool(forKey: "mobileEnabled")
+    }
+
+    static func isValidInternetOrigin(_ value: String) -> Bool {
+        guard value.utf8.count <= 2048, value.hasPrefix("https://"),
+              value.unicodeScalars.allSatisfy({ $0.isASCII && $0.value > 32 && $0.value < 127 }),
+              !value.contains("%"), !value.contains("\\"),
+              let components = URLComponents(string: value),
+              components.scheme == "https", let host = components.host, !host.isEmpty,
+              components.user == nil, components.password == nil, components.path.isEmpty,
+              components.query == nil, components.fragment == nil,
+              components.url?.absoluteString == value else { return false }
+        if let port = components.port, !(1...65535).contains(port) { return false }
+        return !value.hasSuffix(":")
+    }
+
+    func setInternetOrigin(_ value: String) {
+        guard transport == .internet, !enabled else { return }
+        internetOrigin = value
+        defaults.set(value, forKey: "internetOrigin")
+        error = Self.isValidInternetOrigin(value) ? nil : "Enter an exact HTTPS origin, without a path, credentials, query or fragment."
     }
 
     func setEnabled(_ value: Bool) {
+        if value, transport == .internet, !Self.isValidInternetOrigin(internetOrigin) {
+            error = "Enter an exact HTTPS origin, without a path, credentials, query or fragment."
+            return
+        }
         enabled = value
-        defaults.set(value, forKey: "mobileEnabled")
+        if transport == .lan { defaults.set(value, forKey: "mobileEnabled") }
         if value { start() } else { stop() }
     }
 
     func start() {
         guard enabled, process == nil else { return }
         error = nil
+        guard transport == .lan || Self.isValidInternetOrigin(internetOrigin) else {
+            fail("The internet service origin is invalid.")
+            return
+        }
         guard let node = AgentSetup.findExecutable("node", path: AgentSetup.searchPath),
-              let script = resources?.appendingPathComponent("mobile/src/main.mjs"),
+              let script = resources?.appendingPathComponent(transport == .internet ? "mobile/src/remote-main.mjs" : "mobile/src/main.mjs"),
               FileManager.default.fileExists(atPath: script.path) else {
-            error = "Phone support needs Node.js 22.18 or newer and the bundled mobile companion. Rebuild Notify with the mobile repository."
+            error = transport == .internet
+                ? "Internet access needs Node.js 22.18 or newer and the bundled remote-main.mjs helper. No internet connection was started."
+                : "Phone support needs Node.js 22.18 or newer and the bundled mobile companion. Rebuild Notify with the mobile repository."
             return
         }
         let child = Process()
@@ -143,7 +212,9 @@ final class MobileConnection: ObservableObject {
         }
         child.terminationHandler = { [weak self] child in
             DispatchQueue.main.async {
-                guard let self, self.process === child else { return }
+                guard let self else { return }
+                self.retiringProcesses.removeAll { $0 === child }
+                guard self.process === child else { return }
                 self.stop()
                 self.error = "The phone companion stopped (exit \(child.terminationStatus)). Turn phone connections off and on to retry."
             }
@@ -156,7 +227,9 @@ final class MobileConnection: ObservableObject {
             lastEvent = Date()
             read(incoming.fileHandleForReading, from: child, diagnostics: false)
             read(diagnostics.fileHandleForReading, from: child, diagnostics: true)
-            send(["type": "start", "directory": directory.path])
+            var start: [String: Any] = ["type": "start", "directory": directory.path]
+            if transport == .internet { start["origin"] = internetOrigin }
+            send(start)
             timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
                 guard let self, !self.sleeping else { return }
                 if Date().timeIntervalSince(self.lastEvent) > 25 {
@@ -167,14 +240,17 @@ final class MobileConnection: ObservableObject {
             observers = [
                 center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
                     self?.sleeping = true
-                    self?.tickets.removeAll()
+                    self?.invalidateAuthority()
+                    if self?.transport == .internet {
+                        self?.internetStatus = nil
+                        self?.pairings.removeAll()
+                    }
                     self?.send(["type": "offline"])
-                    self?.onUnavailable?()
                 },
                 center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
                     self?.sleeping = false
                     self?.lastEvent = Date()
-                    self?.publish()
+                    self?.publish(heartbeat: self?.transport == .internet)
                 }
             ]
         } catch {
@@ -191,21 +267,75 @@ final class MobileConnection: ObservableObject {
         let child = process
         process = nil
         input = nil
-        if child?.isRunning == true { child?.terminate() }
-        tickets.removeAll()
-        watchedSessions = []
-        lastWorkspace = []
+        if let child, child.isRunning {
+            retiringProcesses.append(child)
+            child.terminate()
+        }
+        invalidateAuthority()
         status = nil
+        internetStatus = nil
         pairings.removeAll()
         starting = false
         sleeping = false
+    }
+
+    private func invalidateAuthority() {
+        tickets.removeAll()
+        watchedSessions = []
+        lastWorkspace = []
+        workspace.invalidate()
         onUnavailable?()
     }
 
+    func startFreshInternetSetup() {
+        guard canStartFreshInternetSetup else {
+            error = "Turn off internet access and wait for its helper to stop before starting fresh. Nothing was changed."
+            return
+        }
+        do {
+            let parent = directory.deletingLastPathComponent()
+            let parentFD = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard parentFD >= 0 else { throw POSIXError(.EACCES) }
+            defer { close(parentFD) }
+            var parentInfo = stat()
+            guard fstat(parentFD, &parentInfo) == 0, parentInfo.st_uid == getuid(),
+                  parentInfo.st_mode & 0o077 == 0 else { throw POSIXError(.EACCES) }
+            let name = directory.lastPathComponent
+            guard !name.isEmpty, name != ".", name != "..", directory != parent else { throw POSIXError(.EINVAL) }
+            let sourceFD = openat(parentFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard sourceFD >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            defer { close(sourceFD) }
+            var sourceInfo = stat()
+            guard fstat(sourceFD, &sourceInfo) == 0, sourceInfo.st_uid == getuid(),
+                  sourceInfo.st_mode & 0o077 == 0 else { throw POSIXError(.EACCES) }
+            let backupName = name + "-backup-" + UUID().uuidString.lowercased()
+            // Same-parent, exclusive rename keeps the old trust intact and never overwrites a backup.
+            guard renameatx_np(parentFD, name, parentFD, backupName, UInt32(RENAME_EXCL)) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            internetBackupURL = parent.appendingPathComponent(backupName)
+            error = nil
+        } catch {
+            self.error = "Could not back up the internet setup: \(error.localizedDescription) No fresh setup was started."
+        }
+    }
+
     func invite() { error = nil; send(["type": "invite"]) }
-    func confirmPairing(_ allow: Bool) {
+    func confirmPairing(_ allow: Bool, expected: MobilePairing? = nil) {
         guard let pairing else { return }
-        send(["type": "pair", "id": pairing.id, "allow": allow])
+        if transport == .internet, allow, expected != pairing {
+            error = "The pairing prompt changed. Compare the complete public key again before confirming."
+            return
+        }
+        guard expected == nil || expected == pairing else { return }
+        guard !allow || canConfirmPairing else {
+            error = "Internet pairing requires the complete P256 public key from the helper."
+            return
+        }
+        var command: [String: Any] = ["type": "pair", "id": pairing.id, "allow": allow]
+        if transport == .internet, allow { command["verificationData"] = pairing.verificationData }
+        error = nil
+        send(command)
         pairings.removeAll { $0.id == pairing.id }
     }
     func revoke(_ id: String) { send(["type": "revoke", "id": id]) }
@@ -220,7 +350,7 @@ final class MobileConnection: ObservableObject {
     }
 
     func accepts(_ reply: MobileReply, request: AgentRequest) -> Bool {
-        guard !reply.id.isEmpty, reply.id.count <= 128, !sleeping,
+        guard canReceiveCommands, !reply.id.isEmpty, reply.id.count <= 128,
               let current = tickets[reply.sessionID + "\0" + reply.requestID] else { return false }
         return current.request == request && current.token == reply.ticket
     }
@@ -232,7 +362,10 @@ final class MobileConnection: ObservableObject {
     }
 
     func publish(heartbeat: Bool = false) {
-        guard process?.isRunning == true, status != nil, !sleeping else { return }
+        guard canReceiveCommands else {
+            if heartbeat, transport == .internet { send(["type": "heartbeat"]) }
+            return
+        }
         guard let snapshot else { fail("Phone request information is unavailable."); return }
         let items = snapshot()
         let retained = Set(items.map(\.ticket))
@@ -249,7 +382,7 @@ final class MobileConnection: ObservableObject {
     }
 
     func workspaceChanged() {
-        guard !workspacePending, process?.isRunning == true, !sleeping else { return }
+        guard !workspacePending, canReceiveCommands else { return }
         workspacePending = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             guard let self else { return }
@@ -258,18 +391,29 @@ final class MobileConnection: ObservableObject {
         }
     }
     private func publishWorkspace(heartbeat: Bool = false) {
-        guard process?.isRunning == true, status != nil, !sleeping, let workspaceSnapshot else { return }
+        guard canReceiveCommands, let workspaceSnapshot else { return }
         do {
             let messages = try workspaceSnapshot(watchedSessions)
             for message in messages where heartbeat || !lastWorkspace.contains(message) { write(message) }
             lastWorkspace = messages
         } catch { fail("Could not encode phone workspace: \(error.localizedDescription)") }
     }
-    func completeControl(_ id: String, commandID: String? = nil, status: String, detail: String, error: String? = nil) {
-        var result: [String: Any] = ["type": "control_result", "id": id, "ok": error == nil,
-                                     "status": status, "detail": detail]
+    func completeControl(_ control: MobileControl, commandID: String? = nil, status: String, detail: String, error: String? = nil, policy: MobileAutomationPolicy? = nil) {
+        let confirmed = error == nil && commandID.map { !$0.isEmpty && $0.utf16.count <= 128 } == true &&
+            control.successStatuses.contains(status) && (!control.isPolicy || policy != nil)
+        let validStatus = confirmed || ["failed", "unknown", "cancelled"].contains(status)
+        var result: [String: Any] = ["type": "control_result", "id": control.id, "ok": confirmed,
+                                     "status": validStatus ? status : "unknown", "detail": detail]
         if let commandID { result["commandID"] = commandID }
-        if let error { result["error"] = error }
+        if control.isSessionAction {
+            result["sessionID"] = control.sessionID
+            result["action"] = control.action
+            result["sessionTicket"] = control.sessionTicket
+        }
+        if !confirmed { result["error"] = error ?? "Runtime did not confirm this exact action." }
+        if control.isPolicy, let policy {
+            result["dangerousAutoYes"] = ["ticket": policy.ticket, "offTicket": policy.offTicket, "revision": policy.revision, "enabled": policy.enabled, "normalEnabled": policy.normalEnabled]
+        }
         send(result)
     }
 
@@ -342,7 +486,29 @@ final class MobileConnection: ObservableObject {
             lastEvent = Date()
             switch event.type {
             case "status":
-                guard let status = event.status,
+                if transport == .internet {
+                    struct Envelope: Decodable { let status: InternetStatus }
+                    let status = try JSONDecoder().decode(Envelope.self, from: data).status
+                    guard status.url == internetOrigin, status.devices.count <= 64,
+                          Set(status.devices.map(\.id)).count == status.devices.count,
+                          status.devices.allSatisfy({ !$0.id.isEmpty && $0.id.count <= 128 && !$0.name.isEmpty && $0.name.count <= 100 }),
+                          status.pendingPairingIDs.count <= 8,
+                          Set(status.pendingPairingIDs).count == status.pendingPairingIDs.count,
+                          status.pendingPairingIDs.allSatisfy({ !$0.isEmpty && $0.count <= 128 }),
+                          status.state != .connected || status.devices.contains(where: \.online),
+                          status.setupURL.map(validInternetSetupURL) ?? true else { throw ProtocolError.invalid }
+                    let wasConnected = internetStatus?.state == .connected
+                    if status.state != .connected { invalidateAuthority() }
+                    internetStatus = status
+                    pairings.removeAll { !status.pendingPairingIDs.contains($0.id) }
+                    starting = status.state == .connecting
+                    error = status.state == .error ? (status.message ?? "The internet helper reported an error.") : nil
+                    if status.state == .connected, !wasConnected { publish() }
+                    return
+                }
+                struct Envelope: Decodable { let status: MobileStatus }
+                let status = try JSONDecoder().decode(Envelope.self, from: data).status
+                guard
                       status.pendingPairingIDs.count <= 8,
                       URL(string: status.url)?.scheme == "https",
                       URL(string: status.setupURL)?.scheme == "http" else { throw ProtocolError.invalid }
@@ -352,14 +518,24 @@ final class MobileConnection: ObservableObject {
                 starting = false
                 if first { publish() }
             case "pairing":
-                guard let id = event.id, let name = event.name, let code = event.code,
-                      id.count <= 128, name.count <= 100, code.count <= 32 else { throw ProtocolError.invalid }
+                guard let id = event.id, let name = event.name,
+                      id.count <= 128, name.count <= 100 else { throw ProtocolError.invalid }
+                let code = transport == .lan ? event.code : ""
+                guard let code, code.count <= 32 else { throw ProtocolError.invalid }
+                if transport == .internet {
+                    guard !id.isEmpty, !name.isEmpty,
+                          internetStatus?.pendingPairingIDs.contains(id) == true,
+                          event.verificationData.map({ !$0.isEmpty && $0.utf8.count <= 512 && $0.unicodeScalars.allSatisfy({ $0.isASCII && $0.value >= 32 && $0.value < 127 }) }) ?? true
+                    else { throw ProtocolError.invalid }
+                }
                 pairings.removeAll { $0.id == id }
                 guard pairings.count < 8 else { throw ProtocolError.oversized }
-                pairings.append(MobilePairing(id: id, name: name, code: code))
+                pairings.append(MobilePairing(id: id, name: name, code: code, verificationData: event.verificationData))
             case "reply":
+                guard canReceiveCommands else { throw ProtocolError.invalid }
                 onReply?(try JSONDecoder().decode(MobileReply.self, from: data))
             case "workspace_watch":
+                guard canReceiveCommands else { throw ProtocolError.invalid }
                 guard let ids = event.sessionIDs, ids.count <= 8, Set(ids).count == ids.count,
                       ids.allSatisfy({ !$0.isEmpty && $0.count <= 128 }) else { throw ProtocolError.invalid }
                 watchedSessions = ids
@@ -367,14 +543,26 @@ final class MobileConnection: ObservableObject {
                 workspaceChanged()
             case "control":
                 let control = try JSONDecoder().decode(MobileControl.self, from: data)
-                guard control.isValid, !sleeping else { throw ProtocolError.invalid }
+                guard control.isValid, canReceiveCommands else { throw ProtocolError.invalid }
                 onControl?(control)
             case "error":
+                if transport == .internet {
+                    fail(event.message ?? "The internet helper reported an error.")
+                    return
+                }
                 error = event.message ?? "The phone companion reported an error."
                 starting = false
             default: throw ProtocolError.invalid
             }
         } catch { fail("The phone companion sent an invalid message: \(error.localizedDescription)") }
+    }
+
+    private func validInternetSetupURL(_ value: String) -> Bool {
+        guard value.utf8.count <= 4096,
+              let url = URLComponents(string: value), let origin = URLComponents(string: internetOrigin),
+              url.scheme == origin.scheme, url.host == origin.host, url.port == origin.port,
+              url.user == nil, url.password == nil, url.url?.absoluteString == value else { return false }
+        return true
     }
 
     private func fail(_ message: String) { stop(); error = message }

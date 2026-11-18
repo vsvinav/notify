@@ -10,7 +10,7 @@ import { Bridge } from "../dist/connection.js";
 
 test("native transport authenticates and returns exact permission and question replies", { timeout: 30_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "notify-wire-"));
-  const server = spawn(resolve("../.build/debug/NotifyTransportChecks"), [root], { stdio: ["ignore", "pipe", "pipe"] });
+  const server = spawn(resolve(process.env.NOTIFY_NATIVE_FIXTURE ?? "../.build/debug/NotifyTransportChecks"), [root], { stdio: ["ignore", "pipe", "pipe"] });
   let stderr = "";
   let stdout = "";
   server.stdout.on("data", chunk => { stdout += chunk; });

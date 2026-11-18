@@ -8,9 +8,9 @@ public enum TerminalSessionError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .invalidSession: return "The saved session must have an exact UUID and an existing, non-linked session directory."
+        case .invalidSession: return "The saved session must have an exact UUID and one existing, non-linked history location."
         case .invalidDirectory: return "The project directory must be an existing absolute directory."
-        case .missingExecutable: return "The Copilot executable is not installed or is not executable."
+        case .missingExecutable: return "The agent executable is not installed or is not executable."
         case .missingITerm: return "iTerm2 is not installed at /Applications/iTerm.app."
         case .activeOwner(let pid): return "This chat is already running (PID \(pid)). Open its existing terminal instead."
         case .noTTY: return "No terminal belonging to this user's process could be identified."
@@ -21,6 +21,17 @@ public enum TerminalSessionError: LocalizedError {
 }
 
 public enum TerminalSession {
+    public static func resumeUnavailableReason(agent: String, id: String, cwd: String, executableURL: URL) -> String? {
+        do {
+            try requireITerm()
+            switch agent {
+            case "copilot": _ = try resumeCommand(id: id, cwd: cwd, copilotHome: copilotHome, executableURL: executableURL, livePIDs: [])
+            case "claude": _ = try resumeClaudeCommand(id: id, cwd: cwd, home: ClaudeDiscovery.home, executableURL: executableURL, livePIDs: [])
+            default: throw TerminalSessionError.invalidSession
+            }
+            return nil
+        } catch { return error.localizedDescription }
+    }
     public static var copilotHome: URL {
         ProcessInfo.processInfo.environment["COPILOT_HOME"].map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".copilot")
@@ -43,6 +54,37 @@ public enum TerminalSession {
                 executableURL: executableURL, livePIDs: CopilotDiscovery.runningPIDs())
             _ = try run("/usr/bin/osascript", ["-e", resumeScript, command])
         }.value
+    }
+
+    public static func resumeClaude(id: String, cwd: String, home: URL = ClaudeDiscovery.home,
+                                    executableURL: URL) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            try requireITerm()
+            let command = try resumeClaudeCommand(id: id, cwd: cwd, home: home, executableURL: executableURL,
+                                                 livePIDs: ClaudeDiscovery.runningPIDs())
+            _ = try run("/usr/bin/osascript", ["-e", resumeScript, command])
+        }.value
+    }
+
+    static func resumeClaudeCommand(id: String, cwd: String, home: URL, executableURL: URL,
+                                    livePIDs: Set<Int32>) throws -> String {
+        _ = try ClaudeDiscovery.transcript(id: id, home: home)
+        if let owner = try ClaudeDiscovery.sessions(livePIDs: livePIDs, home: home).first(where: { $0.id == id }) {
+            throw TerminalSessionError.activeOwner(owner.pid)
+        }
+        var directory: ObjCBool = false
+        guard cwd.hasPrefix("/"), !cwd.utf8.contains(0),
+              FileManager.default.fileExists(atPath: cwd, isDirectory: &directory), directory.boolValue else {
+            throw TerminalSessionError.invalidDirectory
+        }
+        guard executableURL.isFileURL, !executableURL.path.utf8.contains(0),
+              FileManager.default.fileExists(atPath: executableURL.path, isDirectory: &directory),
+              !directory.boolValue, FileManager.default.isExecutableFile(atPath: executableURL.path) else {
+            throw TerminalSessionError.missingExecutable
+        }
+        let launch = "cd \(shellQuote(cwd)) && /usr/bin/env \(shellQuote("CLAUDE_CONFIG_DIR=" + home.path)) "
+            + "\(shellQuote(executableURL.path)) --resume \(shellQuote(id)); exec /bin/zsh -l"
+        return "/bin/sh -c \(shellQuote(launch))"
     }
 
     static func shellQuote(_ text: String) -> String {

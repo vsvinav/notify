@@ -4,11 +4,18 @@ public struct SessionAppearance {
     public private(set) var overrides: [String: UInt32] = [:]
     public init() {}
     private static let palette: [UInt32] = [0xA6C8FF, 0xD8AFF5, 0x70D6C4, 0xEAAFBC, 0xC1D58D, 0xE5BF8C, 0xA9B6EF, 0x8ACBDF]
-    private static let choices: [UInt32] = [
+    public static let choices: [UInt32] = [
         0xA6C8FF, 0xB65D50, 0x70D6C4, 0x805D9B, 0xE5BF8C,
         0x4772C4, 0xEAAFBC, 0x4D7E64, 0x8ACBDF, 0xC59639,
         0xD8AFF5, 0x338D91, 0xC1D58D, 0xAC5278, 0xF29A78,
         0x647485, 0xA9B6EF, 0x898642, 0xB9B0A3, 0xD17C41
+    ]
+    public static let names: [UInt32: String] = [
+        0xA6C8FF: "Sky", 0xD8AFF5: "Lilac", 0x70D6C4: "Mint", 0xEAAFBC: "Rose",
+        0xC1D58D: "Sage", 0xE5BF8C: "Sand", 0xA9B6EF: "Periwinkle", 0x8ACBDF: "Aqua",
+        0xF29A78: "Terracotta", 0xB9B0A3: "Stone", 0x4772C4: "Cobalt", 0x338D91: "Teal",
+        0x4D7E64: "Pine", 0x898642: "Olive", 0xC59639: "Ochre", 0xD17C41: "Tangerine",
+        0xB65D50: "Brick", 0xAC5278: "Berry", 0x805D9B: "Plum", 0x647485: "Slate"
     ]
 
     public func suggestedColors(for session: SessionRecord, among sessions: [SessionRecord]) -> [UInt32] {

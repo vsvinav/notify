@@ -1,6 +1,6 @@
 import Foundation
 
-public struct SubagentCreation {
+public struct SubagentCreation: Codable, Equatable {
     public let name: String
     public let agentType: String
     public let prompt: String
@@ -10,6 +10,15 @@ public struct SubagentCreation {
         self.agentType = agentType
         self.prompt = prompt
         self.model = model
+    }
+    public init(from decoder: Decoder) throws {
+        let keys = try decoder.container(keyedBy: MobilePayloadKey.self)
+        guard Set(keys.allKeys.map(\.stringValue)).isSubset(of: ["name", "agentType", "prompt", "model"]) else { throw ProtocolError.invalid }
+        name = try keys.decode(String.self, forKey: .init("name"))
+        agentType = try keys.decode(String.self, forKey: .init("agentType"))
+        prompt = try keys.decode(String.self, forKey: .init("prompt"))
+        model = keys.contains(.init("model")) ? try keys.decode(String.self, forKey: .init("model")) : nil
+        guard isValid else { throw ProtocolError.invalid }
     }
     public var isValid: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.utf16.count <= 160 &&
@@ -32,7 +41,7 @@ public struct ControlReceipt: Identifiable, Equatable {
     public var agentName: String? = nil
     public var agentType: String? = nil
     public var model: String? = nil
-    public var isManagement: Bool { ["create_subagent", "remove_subagent"].contains(action) }
+    public var isManagement: Bool { ["create_subagent", "remove_subagent", "stop_idle_subagents"].contains(action) }
 }
 
 public struct SteeringWorkspace {
@@ -56,6 +65,12 @@ public struct SteeringWorkspace {
     }
     public func unavailableReason(session: SessionRecord, agentID: String?, action: String = "queue") -> String? {
         guard session.connected else { return "Reconnect this session to send messages." }
+        if action == "stop_idle_subagents" {
+            guard agentID == nil, session.agent == "copilot", session.canCleanupIdleSubagents else {
+                return "Idle cleanup is unavailable. Copilot needs the updated Notify extension; Claude hooks do not support stopping."
+            }
+            return session.team != nil && session.team?.error == nil ? nil : "Wait for a valid team snapshot before cleanup."
+        }
         if action == "create_subagent" {
             return agentID == nil && session.canCreateSubagents && !session.subagentTypes.isEmpty ? nil :
                 "This connection cannot create subagents. Reload its Notify extension to check for support."
@@ -93,16 +108,16 @@ public struct SteeringWorkspace {
             }
             if let model = creation.model, !session.subagentModels.contains(model) { throw ProtocolError.invalid }
         } else if creation != nil { throw ProtocolError.invalid }
-        let emptyMessage = ["stop", "remove_subagent"].contains(action)
+        let emptyMessage = ["stop", "remove_subagent", "stop_idle_subagents"].contains(action)
         let text = phoneText ?? creation?.prompt ?? (emptyMessage ? "" : draft(sessionID: session.id, agentID: agentID))
         guard unavailableReason(session: session, agentID: agentID, action: action) == nil,
-              ["queue", "interrupt", "stop", "create_subagent", "remove_subagent"].contains(action),
+              ["queue", "interrupt", "stop", "create_subagent", "remove_subagent", "stop_idle_subagents"].contains(action),
               !(history[session.id] ?? []).contains(where: { $0.status == "sending" }), text.utf16.count <= 16000,
               emptyMessage || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ProtocolError.invalid }
         // Keep unresolved deliveries so a delayed ACK never lands on a different message.
         var entries = history[session.id] ?? []
         while entries.count >= 100 || entries.reduce(0, { $0 + $1.message.utf8.count }) + text.utf8.count > 524288 {
-            guard let index = entries.firstIndex(where: { ["received", "stopped", "cancelled", "failed", "created", "removed"].contains($0.status) }) else {
+            guard let index = entries.firstIndex(where: { ["received", "stopped", "cancelled", "failed", "created", "removed", "cleaned"].contains($0.status) }) else {
                 throw ProtocolError.oversized
             }
             entries.remove(at: index)
@@ -120,11 +135,12 @@ public struct SteeringWorkspace {
     public mutating func update(sessionID: String, commandID: String, status: String, text: String) {
         guard let index = history[sessionID]?.firstIndex(where: { $0.id == commandID }),
               var receipt = history[sessionID]?[index],
-              ["queued", "received", "stopped", "cancelled", "failed", "unknown", "created", "removed"].contains(status) else { return }
-        if ["received", "stopped", "cancelled", "failed", "created", "removed"].contains(receipt.status) { return }
+              ["queued", "received", "stopped", "cancelled", "failed", "unknown", "created", "removed", "cleaned"].contains(status) else { return }
+        if ["received", "stopped", "cancelled", "failed", "created", "removed", "cleaned"].contains(receipt.status) { return }
         if receipt.isManagement {
-            guard ["failed", "unknown", receipt.action == "create_subagent" ? "created" : "removed"].contains(status) else { return }
-        } else if ["created", "removed"].contains(status) { return }
+            let completed = receipt.action == "create_subagent" ? "created" : receipt.action == "remove_subagent" ? "removed" : "cleaned"
+            guard ["failed", "unknown", completed].contains(status) else { return }
+        } else if ["created", "removed", "cleaned"].contains(status) { return }
         if receipt.action == "stop", ["queued", "received"].contains(status) { return }
         if receipt.action != "stop", status == "stopped" { return }
         receipt.status = status
@@ -146,13 +162,32 @@ public struct SessionAutomation {
     public private(set) var enabled = Set<String>()
     public private(set) var dangerous = Set<String>()
     public var activeIDs: Set<String> { enabled.union(dangerous) }
+    private var policyTickets: [String: (work: UUID, connected: Bool, capable: Bool, ticket: String, offTicket: String, revision: Int, refresh: Bool)] = [:]
+    private var policyRevision = 0
     public init() {}
+    public mutating func policy(for session: SessionRecord) -> MobileAutomationPolicy {
+        let old = policyTickets[session.id]
+        let sameConnection = old?.work == session.workRevision && old?.connected == session.connected && old?.capable == session.canAutoYes
+        if let old, sameConnection, !old.refresh {
+            return MobileAutomationPolicy(ticket: old.ticket, offTicket: old.offTicket, revision: old.revision, enabled: dangerous.contains(session.id), normalEnabled: enabled.contains(session.id))
+        }
+        let ticket = UUID().uuidString
+        // UUIDv8 is reserved for Off epochs, so retired IDs cannot be repurposed as ordinary controls.
+        var offID = UUID().uuid
+        offID.6 = (offID.6 & 0x0F) | 0x80
+        let offTicket = sameConnection ? old!.offTicket : UUID(uuid: offID).uuidString
+        policyRevision += 1
+        policyTickets[session.id] = (session.workRevision, session.connected, session.canAutoYes, ticket, offTicket, policyRevision, false)
+        return MobileAutomationPolicy(ticket: ticket, offTicket: offTicket, revision: policyRevision, enabled: dangerous.contains(session.id), normalEnabled: enabled.contains(session.id))
+    }
     public mutating func setEnabled(_ value: Bool, for session: SessionRecord) throws {
         if value {
             guard session.connected, session.canAutoYes else { throw ProtocolError.invalid }
             dangerous.remove(session.id)
             enabled.insert(session.id)
         } else { enabled.remove(session.id) }
+        if value { policyTickets[session.id]?.refresh = true }
+        else { policyTickets.removeValue(forKey: session.id) }
     }
     public mutating func setDangerousEnabled(_ value: Bool, for session: SessionRecord) throws {
         if value {
@@ -160,10 +195,13 @@ public struct SessionAutomation {
             enabled.remove(session.id)
             dangerous.insert(session.id)
         } else { dangerous.remove(session.id) }
+        if value { policyTickets[session.id]?.refresh = true }
+        else { policyTickets.removeValue(forKey: session.id) }
     }
     public mutating func disable(_ id: String) {
         enabled.remove(id)
         dangerous.remove(id)
+        policyTickets.removeValue(forKey: id)
     }
     public func scope(for request: AgentRequest, session: SessionRecord, safeEnabled: Bool, muted: Bool) -> String? {
         guard session.connected, request.kind == "permission" else { return nil }

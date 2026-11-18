@@ -35,14 +35,7 @@ struct SessionColorChoices: View {
     let sessionID: String
     @State private var colors: [UInt32]
     @State private var hoveredColor: UInt32?
-    private static let names: [UInt32: String] = [
-        0xA6C8FF: "Sky", 0xD8AFF5: "Lilac", 0x70D6C4: "Mint", 0xEAAFBC: "Rose",
-        0xC1D58D: "Sage", 0xE5BF8C: "Sand", 0xA9B6EF: "Periwinkle", 0x8ACBDF: "Aqua",
-        0xF29A78: "Terracotta", 0xB9B0A3: "Stone",
-        0x4772C4: "Cobalt", 0x338D91: "Teal", 0x4D7E64: "Pine", 0x898642: "Olive",
-        0xC59639: "Ochre", 0xD17C41: "Tangerine", 0xB65D50: "Brick", 0xAC5278: "Berry",
-        0x805D9B: "Plum", 0x647485: "Slate"
-    ]
+    private static let names = SessionAppearance.names
     init(store: Store, sessionID: String) {
         self.store = store
         self.sessionID = sessionID
@@ -209,12 +202,12 @@ struct TerminalSessionButton: View {
                 (session.isSaved ? "Resume in iTerm2" : "Open in iTerm2")) {
             if session.isSaved { confirmResume = true }
             else { store.openTerminal(session) }
-        }.disabled(session.agent != "copilot" || store.terminalBusy.contains(session.id) || store.launching.contains(session.id) || session.cwd.isEmpty)
+        }.disabled(!["copilot", "claude"].contains(session.agent) || store.terminalBusy.contains(session.id) || store.launching.contains(session.id) || session.cwd.isEmpty)
             .alert("Resume this saved chat in iTerm2?", isPresented: $confirmResume) {
                 Button("Cancel", role: .cancel) {}
                 Button("Resume") { store.openTerminal(session, resume: true) }
             } message: {
-                Text("Open “\(session.name)” in its project folder using the original Copilot CLI. Saved model, mode and permission settings (including allow-all, if previously enabled) carry over. Notify's session Auto-yes stays off.\n\nNo prompt or extension consent is sent automatically. A running owner will be opened instead of creating a duplicate.")
+                Text("Open “\(session.name)” in its project folder using the original \(agentName(session.agent)) CLI. Saved model, mode and permission settings (including allow-all, if previously enabled) carry over. Notify's session Auto-yes stays off.\n\nNo prompt or connection consent is sent automatically. A running owner will be opened instead of creating a duplicate.")
             }
     }
 }
@@ -348,7 +341,7 @@ struct ActivityRow: View {
                 Text(entry.status == "running" ? "Writing a response…" : "No response text was shared.")
                     .font(WorkspaceType.text(13)).foregroundStyle(Palette.muted)
             } else {
-                VStack(alignment: .leading, spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
                         ResponseBlockView(block: block, isFirst: index == 0)
                             .padding(.top, blockSpacing(blocks, at: index))

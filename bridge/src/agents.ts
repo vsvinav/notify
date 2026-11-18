@@ -1,7 +1,8 @@
 import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { CopilotClient, RuntimeConnection, type CopilotSession, type SessionConfig } from "@github/copilot-sdk";
 import { Bridge } from "./connection.ts";
-import { claudeQuestions, formQuestions, formContent, safeRead, type Question } from "./protocol.ts";
+import { claudeQuestions, formQuestions, formContent, safeRead, object, type Question } from "./protocol.ts";
+import { ClaudeTeam } from "./claude-team.ts";
 import { claudePermissionOptions, scopedOptions, selectedPermissionOption, type ScopedOption } from "./permission-options.ts";
 import { attachSubagents } from "./subagents.ts";
 import { ActivityFeed, boundActivityText } from "./activity.ts";
@@ -43,6 +44,7 @@ export class ClaudeAgent {
   private resume?: string;
   private current?: Query;
   private controller?: AbortController;
+  private team?: ClaudeTeam;
   constructor(private bridge: Bridge, private executable: string, private model?: string, resume?: string, private makeQuery: typeof query = query) { this.resume = resume; }
   async checkConnection(): Promise<void> {
     const stream = async function* () { await new Promise<void>(() => {}); };
@@ -56,6 +58,9 @@ export class ClaudeAgent {
   async send(prompt: string): Promise<void> {
     this.controller = new AbortController();
     this.bridge.enableActivity();
+    if (!this.team) {
+      this.team = new ClaudeTeam(this.bridge);
+    }
     this.current = this.makeQuery({
       prompt,
       options: {
@@ -95,7 +100,22 @@ export class ClaudeAgent {
     });
     try {
       for await (const message of this.current) {
-        if ("session_id" in message) this.resume = message.session_id;
+        if ("session_id" in message) {
+          this.resume = message.session_id;
+          this.bridge.setTitle("", String(message.session_id));
+        }
+        // Subagent tracking for launcher sessions.
+        if (message.type === "system" && object(message)) {
+          if (message.subtype === "task_started") {
+            this.team?.started(message as Record<string, unknown>);
+          }
+          if (message.subtype === "task_notification") {
+            const status = String((message as Record<string, unknown>).status ?? "");
+            if (["completed", "failed", "stopped"].includes(status)) {
+              this.team?.stopped(message as Record<string, unknown>);
+            }
+          }
+        }
         if (message.type === "assistant") {
           const paragraphs: string[] = [];
           for (const block of message.message.content) {
@@ -125,6 +145,8 @@ export class ClaudeAgent {
     }
   }
   async stop(): Promise<void> {
+    this.team?.stop();
+    this.team = undefined;
     this.bridge.pending.discardAll();
     this.controller?.abort();
     this.current?.close();
