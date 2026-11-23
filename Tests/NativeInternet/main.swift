@@ -36,7 +36,11 @@ private final class MemoryDefaults: UserDefaults {
             try FileManager.default.copyItem(at: URL(fileURLWithPath: "Tests/NativeInternet/helper.mjs"),
                                             to: scripts.appendingPathComponent(name))
         }
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "Tests/NativeInternet/remembered-authority.mjs"),
+                                        to: scripts.appendingPathComponent("remembered-authority.mjs"))
         try rememberedInternet(root: root, resources: resources)
+        try rememberedPhoneConsent(root: root, resources: resources)
+        try realRememberedConsent(root: root, resources: resources)
         var launchedSessions: [SessionRecord] = []
         var owner: Int32?
         var pauseOwner = false
@@ -815,6 +819,256 @@ private final class MemoryDefaults: UserDefaults {
         store.stop()
         precondition(store.automation.activeIDs.isEmpty, "App shutdown must retain the native reset")
         print("Native internet checks passed: remembered Internet opt-in/startup/shutdown, isolated commands, Dangerous Auto-yes policy/ACK/races/resets, safe recovery/backup; no installed-app changes or Keychain access.")
+    }
+
+    @MainActor static func rememberedPhoneConsent(root: URL, resources: URL) throws {
+        let directory = root.appendingPathComponent("remembered-phone")
+        let connection = MobileConnection(directory: directory, defaults: MemoryDefaults(), resources: resources, transport: .internet)
+        defer { connection.stop() }
+        connection.setInternetOrigin("https://notify.example")
+        connection.setEnabled(true)
+        func wait(_ predicate: () -> Bool) {
+            let end = Date().addingTimeInterval(5)
+            while !predicate(), Date() < end { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+            precondition(predicate(), "Remembered consent fixture timed out")
+        }
+        wait { connection.internetStatus != nil }
+        let invalid: [String: Any] = ["type": "status", "status": [
+            "state": "connecting", "url": "https://notify.example", "devices": [], "pendingPairingIDs": [],
+            "rememberPending": ["id": "not-a-valid-proposal"]]]
+        try JSONSerialization.data(withJSONObject: [invalid]).write(to: directory.appendingPathComponent("inbox.json"))
+        connection.invite()
+        wait { !FileManager.default.fileExists(atPath: directory.appendingPathComponent("inbox.json").path) }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        precondition(connection.error != nil && connection.internetStatus == nil,
+                     "Malformed remembered authorization must fail closed, not be silently ignored")
+        wait { connection.canStartFreshInternetSetup || !connection.starting }
+        connection.setEnabled(false)
+        wait { connection.canStartFreshInternetSetup }
+        connection.setEnabled(true)
+        wait { connection.internetStatus != nil }
+        let producer = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: "Tests/NativeInternet/remembered-producer.json"))) as! [String: Any]
+        let sourceStatus = producer["macPendingStatus"] as! [String: Any]
+        var proposal = sourceStatus["rememberPending"] as! [String: Any]
+        func key(_ wire: String) -> String {
+            Data(base64Encoded: wire.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/") + "=")!.base64EncodedString()
+        }
+        proposal["publicKey"] = key(proposal["publicKey"] as! String)
+        proposal["macPublicKey"] = key(proposal["macPublicKey"] as! String)
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        proposal["expiresAt"] = now + 180_000
+        proposal["authorizationExpiresAt"] = now + 30 * 86_400_000
+        var device: [String: Any] = ["id": proposal["deviceID"]!, "name": proposal["name"]!,
+            "publicKey": proposal["publicKey"]!, "online": false, "pushEnabled": false]
+        func status(_ pending: [String: Any]?) -> [String: Any] {
+            ["type": "status", "status": ["state": "connecting", "url": "https://notify.example",
+                "devices": [device], "pendingPairingIDs": [], "rememberPending": pending as Any? ?? NSNull()]]
+        }
+        func emit(_ values: [[String: Any]]) throws {
+            try JSONSerialization.data(withJSONObject: values).write(to: directory.appendingPathComponent("inbox.json"), options: .atomic)
+            connection.invite()
+            wait { !FileManager.default.fileExists(atPath: directory.appendingPathComponent("inbox.json").path) }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.06))
+        }
+        func commands() throws -> [[String: Any]] {
+            try String(contentsOf: directory.appendingPathComponent("events.jsonl"), encoding: .utf8).split(separator: "\n")
+                .map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }
+                .filter { $0["type"] as? String == "remember-decision" }
+        }
+        try emit([status(proposal)])
+        let displayed = connection.internetStatus!.rememberPending!
+        precondition(connection.pairings.isEmpty && connection.internetStatus?.pendingPairingIDs.isEmpty == true,
+                     "Remembered consent must not become pairing or terminal attention")
+        for (field, value): (String, Any) in [
+            ("authorizationExpiresAt", now + 30 * 86_400_000 - 1), ("expiresAt", now + 179_000),
+            ("id", String(repeating: "A", count: 43)), ("generation", String(repeating: "A", count: 43)),
+            ("publicKey", proposal["macPublicKey"]!)
+        ] {
+            var changed = proposal
+            changed[field] = value
+            if field == "publicKey" { device["publicKey"] = value }
+            try emit([status(changed)])
+            connection.decideRemembered(true, expected: displayed)
+            precondition(try connection.rememberedDecision == nil && commands().isEmpty, "A changed displayed context must not dispatch")
+            device["publicKey"] = proposal["publicKey"]
+        }
+        try emit([status(proposal)])
+        connection.decideRemembered(true, expected: displayed)
+        wait { (try? commands().count) == 1 }
+        precondition(connection.rememberedDecision?.outcome == .sending && connection.internetStatus?.rememberPending == displayed,
+                     "Writing to stdin is not acknowledgement and must not clear the proposal")
+        let sent = try commands()[0]
+        precondition(Set(sent.keys) == Set(["type", "requestID", "proposal", "allow"]) &&
+                     sent["allow"] as? Bool == true &&
+                     NSDictionary(dictionary: sent["proposal"] as! [String: Any]).isEqual(to: proposal),
+                     "IPC must capture the exact full-key proposal, not just a pairing ID")
+        var result: [String: Any] = ["type": "remember-result", "requestID": sent["requestID"]!,
+            "proposalID": proposal["id"]!, "generation": proposal["generation"]!,
+            "authorizationExpiresAt": proposal["authorizationExpiresAt"]!, "outcome": "unknown", "message": "Synthetic lost ACK"]
+        result["requestID"] = UUID().uuidString
+        try emit([result])
+        precondition(connection.rememberedDecision?.outcome == .sending, "Uncorrelated ACKs cannot complete another decision")
+        result["requestID"] = sent["requestID"]
+        try emit([result])
+        precondition(connection.rememberedDecision?.outcome == .unknown)
+        connection.decideRemembered(true, expected: displayed)
+        precondition(try commands().count == 1, "An unknown mutation cannot be replayed")
+        var remembered: [String: Any] = ["generation": String(repeating: "A", count: 43),
+            "authorizationExpiresAt": proposal["authorizationExpiresAt"]!, "state": "active"]
+        device["remembered"] = remembered
+        try emit([status(nil)])
+        precondition(connection.rememberedDecision?.outcome == .unknown, "Status must not adopt a different generation")
+        remembered["generation"] = proposal["generation"]
+        device["remembered"] = remembered
+        try emit([status(nil)])
+        precondition(connection.rememberedDecision?.outcome == .approved &&
+                     connection.internetStatus?.devices.first?.remembered?.isActive == true,
+                     "Exact committed G/E reconciles a lost response")
+        var next = proposal
+        next["id"] = String(repeating: "A", count: 43)
+        next["generation"] = String(repeating: "B", count: 42) + "A"
+        try emit([status(next)])
+        let nextDisplayed = connection.internetStatus!.rememberPending!
+        connection.decideRemembered(false, expected: nextDisplayed)
+        wait { (try? commands().count) == 2 }
+        let denied = try commands()[1]
+        result["requestID"] = denied["requestID"]
+        result["proposalID"] = next["id"]
+        result["generation"] = next["generation"]
+        result["outcome"] = "denied"
+        result.removeValue(forKey: "message")
+        try emit([result, status(nil)])
+        precondition(connection.rememberedDecision?.outcome == .denied &&
+                     connection.internetStatus?.devices.first?.remembered?.generation == displayed.generation,
+                     "Denying a replacement must not report the old authorization Off")
+        remembered["state"] = "revoked"
+        device["remembered"] = remembered
+        try emit([status(nil)])
+        precondition(connection.internetStatus?.devices.first?.remembered?.isActive == false)
+        if CommandLine.arguments.contains("--remembered-ui") {
+            try emit([status(proposal)])
+            try rememberedConsentUI(connection)
+        }
+        next["id"] = String(repeating: "C", count: 42) + "A"
+        next["generation"] = String(repeating: "D", count: 42) + "A"
+        try emit([status(next)])
+        connection.decideRemembered(true, expected: connection.internetStatus!.rememberPending!)
+        wait { (try? commands().count) == 3 }
+        connection.setEnabled(false)
+        precondition(connection.rememberedDecision?.outcome == .unknown, "Stopping cannot turn a written command into approval or discard uncertainty")
+        if CommandLine.arguments.contains("--remembered-ui") {
+            try rememberedConsentUI(connection, offline: true)
+        }
+        wait { connection.canStartFreshInternetSetup }
+        connection.setEnabled(true)
+        wait { connection.internetStatus != nil }
+        precondition(connection.rememberedDecision?.outcome == .unknown)
+        remembered["state"] = "active"
+        remembered["generation"] = next["generation"]
+        device["remembered"] = remembered
+        try emit([status(nil)])
+        precondition(try connection.rememberedDecision?.outcome == .approved && commands().count == 3,
+                     "Restart status must reconcile exact G/E without command replay")
+        next["id"] = String(repeating: "E", count: 42) + "A"
+        next["generation"] = String(repeating: "F", count: 42) + "A"
+        try emit([status(next)])
+        connection.decideRemembered(false, expected: connection.internetStatus!.rememberPending!)
+        wait { (try? commands().count) == 4 }
+        result["requestID"] = try commands()[3]["requestID"]
+        result["proposalID"] = next["id"]
+        result["generation"] = next["generation"]
+        result["outcome"] = "unknown"
+        try emit([result])
+        let unknownRequest = connection.rememberedDecision!.requestID
+        next["id"] = String(repeating: "G", count: 42) + "A"
+        next["generation"] = String(repeating: "H", count: 42) + "A"
+        try emit([status(next)])
+        connection.decideRemembered(false, expected: connection.internetStatus!.rememberPending!)
+        precondition(connection.rememberedDecisions.contains(where: { $0.requestID == unknownRequest && $0.outcome == .unknown }),
+                     "A new explicit decision must not discard an earlier uncertain result")
+        if CommandLine.arguments.contains("--remembered-ui") {
+            connection.stop()
+            try rememberedConsentUI(connection, offline: true, history: true)
+        }
+        print("Remembered phone consent: strict typed status, captured full-key IPC, changed-expiry rejection, ACK correlation, lost ACK/no replay, generation pinning, deny/revoke passed.")
+    }
+
+    @MainActor static func realRememberedConsent(root: URL, resources: URL) throws {
+        guard let sourceRoot = ProcessInfo.processInfo.environment["NOTIFY_REMEMBERED_HELPER_ROOT"] else {
+            print("Real remembered authority IPC check requires NOTIFY_REMEMBERED_HELPER_ROOT; typed dispatcher checks still ran.")
+            return
+        }
+        for allow in [true, false] {
+            let directory = root.appendingPathComponent("real-remembered-\(allow)")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try JSONSerialization.data(withJSONObject: ["sourceRoot": sourceRoot])
+                .write(to: directory.appendingPathComponent("remembered-fixture.json"))
+            let connection = MobileConnection(directory: directory, defaults: MemoryDefaults(), resources: resources, transport: .internet)
+            defer { connection.stop() }
+            connection.setInternetOrigin("https://notify.example")
+            connection.setEnabled(true)
+            func wait(_ predicate: () -> Bool) {
+                let end = Date().addingTimeInterval(8)
+                while !predicate(), Date() < end { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+                precondition(predicate(), "Real remembered IPC fixture failed: \(connection.error ?? "timeout")")
+            }
+            wait { connection.internetStatus?.rememberPending != nil }
+            let proposal = connection.internetStatus!.rememberPending!
+            connection.decideRemembered(allow, expected: proposal)
+            wait { connection.rememberedDecision?.outcome == (allow ? .approved : .denied) }
+            let evidence = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("authority.json"))) as! [String: Any]
+            let mutations = evidence["mutations"] as! [[String: Any]]
+            precondition(mutations.count == 1 && mutations[0]["path"] as? String == "mac/remember/decision")
+            let input = mutations[0]["input"] as! [String: Any], result = mutations[0]["result"] as! [String: Any]
+            precondition(Set(input.keys) == Set(["id", "allow"]) && input["id"] as? String == proposal.id && input["allow"] as? Bool == allow)
+            precondition(result["generation"] as? String == proposal.generation &&
+                         (result["authorizationExpiresAt"] as? NSNumber)?.int64Value == proposal.authorizationExpiresAt &&
+                         result["approved"] as? Bool == allow)
+            let devices = (evidence["status"] as! [String: Any])["devices"] as! [[String: Any]]
+            precondition((devices[0]["remembered"] != nil) == allow, "Native ACK must match the real authority commit, not a success fixture constant")
+            precondition(connection.pairings.isEmpty && !connection.canReceiveCommands)
+        }
+        print("Real native → helper → synthetic P256 authority IPC: separate Allow and Deny commits/ACKs passed.")
+    }
+
+    @MainActor static func rememberedConsentUI(_ connection: MobileConnection, offline: Bool = false, history: Bool = false) throws {
+        _ = NSApplication.shared
+        let output = URL(fileURLWithPath: ".build/remembered-consent-captures", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            let host = NSHostingView(rootView: ScrollView {
+                InternetSettingsView(internet: connection).padding(24)
+            }.frame(width: 560, height: 680).background(Palette.surface))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 680),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: appearance)
+            window.contentView = host
+            defer { window.close() }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+            host.layoutSubtreeIfNeeded()
+            precondition(!window.isVisible && !window.isKeyWindow, "Fictional fixture must never be shown")
+            let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            let state = offline ? (history ? "offline-history" : "offline-unknown") : "remembered"
+            try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("\(state)-\(name).png"))
+            if offline {
+                precondition(connection.internetStatus == nil && connection.rememberedDecision?.outcome == .unknown,
+                             "Offline rendering must exercise the real helper-stop state")
+                let recognition = VNRecognizeTextRequest()
+                recognition.recognitionLevel = .accurate
+                try VNImageRequestHandler(cgImage: bitmap.cgImage!, options: [:]).perform([recognition])
+                let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+                try text.write(to: output.appendingPathComponent("\(state)-\(name).txt"), atomically: true, encoding: .utf8)
+                guard text.contains("Decision not confirmed"), text.contains("Reconnect to check status"),
+                      !text.contains("Remember this phone?"), !text.contains("Revoke"),
+                      !history || text.contains("Earlier decision for") else {
+                    throw NSError(domain: "RememberedOfflineUI", code: 1, userInfo: [
+                        NSLocalizedDescriptionKey: "Offline uncertainty must remain rendered without stale device/proposal actions. OCR: \(text)"
+                    ])
+                }
+            }
+        }
     }
 
     @MainActor static func rememberedInternet(root: URL, resources: URL) throws {

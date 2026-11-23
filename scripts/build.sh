@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 export NODE_TLS_REJECT_UNAUTHORIZED=1
 MOBILE_SOURCE="${NOTIFY_MOBILE_SOURCE:?Set NOTIFY_MOBILE_SOURCE to your notify-mobile checkout}"
-for file in src/main.mjs src/remote-main.mjs public/index.html public/remote-crypto/channel.js public/remote-crypto/channel_bg.wasm public/remote-crypto/LICENSES.txt package.json package-lock.json; do
+for file in src/main.mjs src/remote-main.mjs src/panel-main.mjs public/index.html public/remote-crypto/channel.js public/remote-crypto/channel_bg.wasm public/remote-crypto/LICENSES.txt package.json package-lock.json; do
     if [ ! -f "$MOBILE_SOURCE/$file" ]; then
         printf 'Missing mobile companion file: %s/%s\n' "$MOBILE_SOURCE" "$file" >&2
         exit 1

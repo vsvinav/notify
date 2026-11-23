@@ -18,6 +18,11 @@ func sessionMoveTarget(_ id: String, in group: [String], offset: Int) -> String?
 
 struct WorkOverview: View {
     @ObservedObject var store: Store
+    @ObservedObject private var panel: PanelConnection
+    init(store: Store) {
+        self.store = store
+        panel = store.panel
+    }
     @State private var filter = "Live"
     @State private var search = ""
     @State private var order: [String] = []
@@ -42,11 +47,24 @@ struct WorkOverview: View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 18) {
                 HStack {
-                    Text("Sessions").font(WorkspaceType.text(23, strong: true))
+                    Text(panel.enabled ? "Notify" : "Sessions").font(WorkspaceType.text(23, strong: true))
                     Spacer()
                     Button { store.settingsVisible = true } label: { Image(systemName: "gearshape") }
                         .buttonStyle(.borderless)
                         .accessibilityLabel("Notify settings")
+                }
+                PendingAttentionIndicator(store: store) {
+                    filter = "Live"
+                    search = ""
+                    store.waitingOnly = false
+                    store.openAttentionRequest()
+                }
+                if panel.enabled {
+                    VStack(spacing: 4) {
+                        destination("Sessions", icon: "terminal", value: .sessions)
+                        destination("Dashboard", icon: "square.grid.2x2", value: .dashboard)
+                    }
+                    Divider()
                 }
                 Picker("Session source", selection: $filter) {
                     Text("Live").tag("Live")
@@ -100,7 +118,9 @@ struct WorkOverview: View {
             }.padding(18).frame(width: 232).background(Palette.sidebar)
             Divider()
             VStack(alignment: .leading, spacing: 18) {
-                if let selected = store.selected, visible.contains(where: { $0.id == selected.id }) {
+                if store.workspaceDestination == .dashboard && panel.enabled {
+                    PanelDashboardView(panel: panel)
+                } else if let selected = store.selected, visible.contains(where: { $0.id == selected.id }) {
                     WorkDetail(store: store, session: selected).id(selected.id)
                 } else {
                     VStack(alignment: .leading, spacing: 12) {
@@ -136,6 +156,11 @@ struct WorkOverview: View {
         .onChange(of: connected.isEmpty) { if connected.isEmpty { showDisconnected = true } }
         .onChange(of: visible.map { "\($0.id):\($0.connected):\($0.requests.count)" }) { store.reconcileSelection(in: visible) }
         .onChange(of: filter) { if filter == "Saved" { store.waitingOnly = false } }
+        .onChange(of: store.sessionSelectionRevision) {
+            guard store.workspaceDestination == .sessions, store.selectionIsExplicit, let selected = store.selected,
+                  !visible.contains(where: { $0.id == selected.id }) else { return }
+            filter = selected.isSaved ? "Saved" : "Live"; search = ""; store.waitingOnly = false
+        }
         .onChange(of: store.selectedID) {
             guard store.selectionIsExplicit, let selected = store.selected else { return }
             if !visible.contains(where: { $0.id == selected.id }) {
@@ -145,6 +170,17 @@ struct WorkOverview: View {
             }
             if !selected.connected { showDisconnected = true }
         }
+    }
+    private func destination(_ title: String, icon: String, value: WorkspaceDestination) -> some View {
+        Button { store.workspaceDestination = value } label: {
+            HStack {
+                Label(title, systemImage: icon)
+                Spacer()
+                if value == .dashboard { Text("Optional").font(WorkspaceType.text(10)).foregroundStyle(Palette.muted) }
+            }.font(WorkspaceType.text(13, strong: true)).padding(10)
+                .background(store.workspaceDestination == value ? Palette.raised : .clear,
+                            in: RoundedRectangle(cornerRadius: 6))
+        }.buttonStyle(.plain).accessibilityAddTraits(store.workspaceDestination == value ? .isSelected : [])
     }
     private func sessionGroup(_ title: String, records: [SessionRecord]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -255,6 +291,53 @@ private struct WorkRow: View {
     }
 }
 
+struct PendingAttentionIndicator: View {
+    @ObservedObject var store: Store
+    let open: () -> Void
+
+    var body: some View {
+        if let item = store.attentionRequest {
+            let confirmed = store.attentionIsActionable
+            let connected = store.registry.sessions[item.sessionID]?.connected == true
+            let status = !confirmed ? (connected ? "Awaiting update · status unknown" : "Disconnected · status unknown") :
+                store.sending.contains(item.requestID) ? "Awaiting acknowledgment" :
+                store.requestErrors[item.requestID] != nil ? "Check reply delivery" : nil
+            let content = VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Label(confirmed ? "Needs attention" : "Pending request",
+                          systemImage: confirmed ? "questionmark.circle" : connected ? "clock" : "wifi.slash")
+                        .font(WorkspaceType.text(13, strong: true))
+                    Spacer(minLength: 0)
+                    if confirmed {
+                        Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
+                    }
+                }.foregroundStyle(Palette.accent)
+                Text(item.requestTitle).font(WorkspaceType.text(13, strong: true)).lineLimit(2)
+                Text(item.sessionName).font(WorkspaceType.text(12)).foregroundStyle(Palette.muted).lineLimit(1)
+                if let status {
+                    Text(status).font(WorkspaceType.text(11)).foregroundStyle(Palette.amber)
+                }
+                if store.additionalAttentionCount > 0 {
+                    Text("+\(store.additionalAttentionCount) additional \(store.additionalAttentionCount == 1 ? "request" : "requests")")
+                        .font(WorkspaceType.text(12)).foregroundStyle(Palette.muted)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+            Group {
+                if confirmed {
+                    Button(action: open) { content }.buttonStyle(.plain)
+                } else {
+                    content.accessibilityElement(children: .combine)
+                }
+            }
+            .accessibilityIdentifier("pending-attention")
+            .accessibilityLabel("Pending request: \(item.requestTitle), \(item.sessionName)")
+            .accessibilityValue([status, "\(store.additionalAttentionCount) additional requests"].compactMap { $0 }.joined(separator: ". "))
+            .accessibilityHint(confirmed ? "Open this request in Decision. No answer is sent." : "Status unknown. Waiting for this request to be confirmed by its session.")
+            .help(confirmed ? "Review \(item.requestTitle) in \(item.sessionName). No answer is sent." : "Status unknown. This request must be confirmed by its session before it can be reviewed.")
+        }
+    }
+}
+
 private struct WorkDetail: View {
     @ObservedObject var store: Store
     let session: SessionRecord
@@ -312,6 +395,7 @@ private struct WorkDetail: View {
                         }
                         content
                     }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .onChange(of: store.decisionFocus) { tab = "Decision" }
                         .sheet(isPresented: $showSubagentManagement) {
                             SubagentManagementView(store: store, sessionID: session.id)
                         }
@@ -401,7 +485,7 @@ private struct WorkDetail: View {
                 }
             } else if let request = store.activeRequest {
                 if session.requests.count > 1 {
-                    Picker("Pending request", selection: Binding(get: { request.id }, set: { store.selectedRequestID = $0 })) {
+                    Picker("Pending request", selection: Binding(get: { request.id }, set: { store.select(session.id, request: $0) })) {
                         ForEach(session.requests) { Text($0.title).tag($0.id) }
                     }
                 }

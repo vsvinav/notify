@@ -20,6 +20,8 @@ enum AppearanceMode: String, CaseIterable {
     case system, light, dark
 }
 
+enum WorkspaceDestination { case sessions, dashboard }
+
 struct IdleCleanupAttempt: Identifiable {
     let sessionID: String
     let name: String
@@ -28,12 +30,33 @@ struct IdleCleanupAttempt: Identifiable {
     var id: String { sessionID }
 }
 
+struct PendingAttention: Equatable {
+    let sessionID: String
+    let requestID: String
+    let sessionName: String
+    let requestTitle: String
+
+    init(session: SessionRecord, request: AgentRequest) {
+        sessionID = session.id; requestID = request.id
+        sessionName = session.name; requestTitle = request.title
+    }
+}
+
 final class Store: ObservableObject {
+    @Published var workspaceDestination: WorkspaceDestination = .sessions {
+        didSet { updatePanelVisibility() }
+    }
     @Published private(set) var registry = SessionRegistry() {
-        didSet { synchronizeResumeLifecycles(); mobile.workspaceChanged(); internet.workspaceChanged() }
+        didSet { reconcileAttention(); synchronizeResumeLifecycles(); mobile.workspaceChanged(); internet.workspaceChanged() }
     }
     @Published var selectedID: String?
+    @Published private(set) var sessionSelectionRevision: UInt64 = 0
     @Published var selectedRequestID: String?
+    @Published private(set) var decisionFocus = UUID()
+    private var attentionSelection: PendingAttention?
+    private let attentionEpoch = UUID().uuidString.lowercased()
+    private var publishedAttention: MobileAttention?
+    private var deferringAttentionSelection = false
     private(set) var selectionIsExplicit = false
     @Published var waitingOnly = false
     @Published private(set) var sessionOrder: [String]
@@ -50,9 +73,11 @@ final class Store: ObservableObject {
     var attentionIDs = Set<String>()
     private var announcedIDs: [String] = []
     private var replyAttempts: [String: UUID] = [:]
-    @Published var settingsVisible = false
+    @Published var settingsVisible = false {
+        didSet { updatePanelVisibility() }
+    }
     @Published var setupVisible = false {
-        didSet { onAttentionChange?() }
+        didSet { onAttentionChange?(); updatePanelVisibility() }
     }
     @Published var setupAgent = SetupAgent.copilot
     @Published var setupSnapshot: AgentSetupSnapshot?
@@ -65,7 +90,9 @@ final class Store: ObservableObject {
     @Published var appearanceMode: AppearanceMode {
         didSet { defaults.set(appearanceMode.rawValue, forKey: "appearanceMode") }
     }
-    @Published var centerVisible = false
+    @Published var centerVisible = false {
+        didSet { updatePanelVisibility() }
+    }
     @Published var floatingColorPickerSessionID: String? {
         didSet { onAttentionChange?() }
     }
@@ -75,7 +102,9 @@ final class Store: ObservableObject {
         didSet { onAttentionChange?() }
     }
     @Published var sending = Set<String>()
-    @Published var automaticallySending = Set<String>()
+    @Published var automaticallySending = Set<String>() {
+        didSet { reconcileAttention() }
+    }
     @Published var mutedSessions = Set<String>()
     @Published var audit: [AuditEntry] = []
     @Published var replyWorkspace = ReplyWorkspace()
@@ -117,6 +146,7 @@ final class Store: ObservableObject {
     let server: LocalServer
     let mobile: MobileConnection
     let internet: MobileConnection
+    let panel: PanelConnection
     private var mobileReplies: [String: (reply: MobileReply, connection: MobileConnection)] = [:]
     private var phoneControls: [String: (control: MobileControl, connection: MobileConnection)] = [:]
     private let defaults: UserDefaults
@@ -126,7 +156,7 @@ final class Store: ObservableObject {
     private let descriptionRunner = DescriptionRunner()
 
     init(directory: URL? = nil, defaults: UserDefaults = .standard, mobileResources: URL? = Bundle.main.resourceURL,
-         terminal: SessionTerminal = .live) {
+         terminal: SessionTerminal = .live, panelExecutor: PanelConnection.Executor? = nil) {
         self.terminal = terminal
         self.defaults = defaults
         let savedAppearance = defaults.string(forKey: "appearanceMode")
@@ -144,7 +174,13 @@ final class Store: ObservableObject {
         mobile = MobileConnection(directory: self.directory.appendingPathComponent("mobile"), defaults: defaults, resources: mobileResources)
         internet = MobileConnection(directory: self.directory.appendingPathComponent("remote-mobile"), defaults: defaults,
                                     resources: mobileResources, transport: .internet)
+        panel = PanelConnection(defaults: defaults, resources: mobileResources, directory: self.directory, executor: panelExecutor)
+        panel.onEnabledChange = { [weak self] enabled in
+            if !enabled { self?.workspaceDestination = .sessions }
+            self?.updatePanelVisibility()
+        }
         for connection in [mobile, internet] {
+            connection.canonicalAttentionSnapshot = { [weak self] in self?.phoneAttentionSnapshot() }
             connection.attentionSnapshot = { [weak self] in
                 guard let self else { return [] }
                 return Set(self.pending.filter {
@@ -197,6 +233,8 @@ final class Store: ObservableObject {
         server.onError = { [weak self] error in self?.error = error }
         server.onDisconnect = { [weak self] id in
             guard let self else { return }
+            self.deferringAttentionSelection = true
+            defer { self.deferringAttentionSelection = false; self.reconcileAttention() }
             for request in self.registry.sessions[id]?.requests ?? [] {
                 self.finishPhoneReply(request.id, sessionID: id, error: "The agent disconnected. Check the Mac before retrying.")
                 self.sending.remove(request.id)
@@ -552,6 +590,7 @@ final class Store: ObservableObject {
         } catch { self.error = "Could not start summary: \(error.localizedDescription)" }
     }
     func stop() {
+        panel.stop()
         mobile.stop()
         internet.stop()
         for id in automation.activeIDs { disableSessionAutoYes(id, reason: "app closing") }
@@ -564,8 +603,67 @@ final class Store: ObservableObject {
     var pending: [(session: SessionRecord, request: AgentRequest)] {
         sessions.filter(\.connected).flatMap { session in session.requests.map { (session, $0) } }
     }
+    private var manualPending: [(session: SessionRecord, request: AgentRequest)] {
+        pending.filter { !automaticallySending.contains($0.request.id) }
+    }
+    var attentionRequest: PendingAttention? {
+        if let selection = attentionSelection {
+            if let session = registry.sessions[selection.sessionID],
+               let request = session.requests.first(where: { $0.id == selection.requestID }) {
+                return PendingAttention(session: session, request: request)
+            }
+            // Observation refreshes may forget requests without resolving them.
+            return selection
+        }
+        return manualPending.first.map { PendingAttention(session: $0.session, request: $0.request) }
+    }
+    var attentionIsActionable: Bool {
+        guard let item = attentionRequest, let session = registry.sessions[item.sessionID] else { return false }
+        return session.connected && session.requests.contains { $0.id == item.requestID }
+    }
+    var additionalAttentionCount: Int {
+        guard let current = attentionRequest else { return 0 }
+        return manualPending.filter { $0.session.id != current.sessionID || $0.request.id != current.requestID }.count
+    }
+    func phoneAttentionSnapshot() -> MobileAttention? {
+        let current: MobileAttentionItem?
+        if let item = attentionRequest {
+            guard [item.sessionID, item.requestID].allSatisfy({
+                !$0.isEmpty && $0.utf16.count <= 128 && !$0.contains("\0")
+            }), !item.requestTitle.isEmpty, !item.requestTitle.contains("\0"), !item.sessionName.contains("\0") else { return nil }
+            func label(_ text: String, limit: Int) -> String {
+                guard text.utf16.count > limit else { return text }
+                var result = ""
+                for scalar in text.unicodeScalars {
+                    if result.utf16.count + scalar.utf16.count > limit - 1 { break }
+                    result.unicodeScalars.append(scalar)
+                }
+                return result + "…"
+            }
+            current = MobileAttentionItem(sessionID: item.sessionID, requestID: item.requestID,
+                sessionName: label(item.sessionName, limit: 256), requestTitle: label(item.requestTitle, limit: 300))
+        } else { current = nil }
+        let count = additionalAttentionCount
+        guard (0...256).contains(count) else { return nil }
+        if let previous = publishedAttention, previous.current == current, previous.additionalCount == count { return previous }
+        let revision = (publishedAttention?.revision ?? 0) + 1
+        guard revision <= 9_007_199_254_740_991 else { return nil }
+        let value = MobileAttention(epoch: attentionEpoch, revision: revision, current: current, additionalCount: count)
+        publishedAttention = value
+        return value
+    }
+    private func reconcileAttention() {
+        guard !deferringAttentionSelection else { return }
+        attentionSelection = attentionRequest
+    }
+    func openAttentionRequest() {
+        guard let item = attentionRequest, let session = registry.sessions[item.sessionID],
+              session.connected, session.requests.contains(where: { $0.id == item.requestID }) else { return }
+        select(item.sessionID, request: item.requestID)
+        decisionFocus = UUID()
+    }
     var waitingCount: Int {
-        pending.filter { !automaticallySending.contains($0.request.id) }.count
+        manualPending.count
     }
     var floatingRequests: [(session: SessionRecord, request: AgentRequest)] {
         pending.filter { !snoozed.contains($0.request.id) && !automaticallySending.contains($0.request.id) }
@@ -652,11 +750,19 @@ final class Store: ObservableObject {
         }
     }
     func select(_ id: String, request: String? = nil) {
+        workspaceDestination = .sessions
+        let previous = attentionRequest
         selectionIsExplicit = true
         selectedRequestID = request
         selectedID = id
+        sessionSelectionRevision &+= 1
+        if let item = manualPending.first(where: { $0.session.id == id && (request == nil || $0.request.id == request) }) {
+            attentionSelection = PendingAttention(session: item.session, request: item.request)
+        }
+        if previous != attentionRequest { publishPhones() }
     }
     func reconcileSelection(in visible: [SessionRecord]) {
+        guard workspaceDestination == .sessions else { return }
         if selectionIsExplicit, visible.contains(where: { $0.id == selectedID }) { return }
         let preferred = visible.first { $0.connected && !$0.requests.isEmpty }
             ?? visible.first { $0.connected && !$0.needsSetup } ?? visible.first
@@ -665,6 +771,9 @@ final class Store: ObservableObject {
             selectedRequestID = nil
             selectedID = preferred?.id
         }
+    }
+    private func updatePanelVisibility() {
+        panel.setVisible(centerVisible && !settingsVisible && !setupVisible && workspaceDestination == .dashboard)
     }
     var activeFloatingRequest: (session: SessionRecord, request: AgentRequest)? {
         let requests = floatingRequests
@@ -725,6 +834,8 @@ final class Store: ObservableObject {
     private func receive(_ packet: AgentPacket) {
         switch packet.type {
         case "hello":
+            deferringAttentionSelection = true
+            defer { deferringAttentionSelection = false; reconcileAttention() }
             for request in registry.sessions[packet.sessionID]?.requests ?? [] {
                 finishPhoneReply(request.id, sessionID: packet.sessionID, error: "The agent reconnected. Refresh the request before replying.")
             }
@@ -814,6 +925,9 @@ final class Store: ObservableObject {
             registry.output(packet.sessionID, text: packet.text ?? "")
         case "request":
             guard let request = packet.request else { error = "Launcher sent an empty request."; return }
+            // Choose new attention only after automatic dispatch eligibility is settled.
+            deferringAttentionSelection = true
+            defer { deferringAttentionSelection = false; reconcileAttention() }
             let alreadyPresent = registry.sessions[packet.sessionID]?.requests.contains { $0.id == request.id } == true
             do { try registry.add(request, to: packet.sessionID) }
             catch { self.error = "Invalid or excessive pending requests."; return }
@@ -842,6 +956,9 @@ final class Store: ObservableObject {
                 let option = session.requests.first(where: { $0.id == id })?.permissionOptions?.first(where: { $0.id == packet.permissionOptionID })
                 do { try record(session: session, action: option.map { "Reply acknowledged: \($0.label) - \($0.detail)" } ?? packet.decision ?? "answered", automatic: false) }
                 catch { self.error = "Reply delivered, but approval history could not be saved: \(error.localizedDescription)" }
+            }
+            if attentionSelection?.sessionID == packet.sessionID && attentionSelection?.requestID == id {
+                attentionSelection = nil
             }
             registry.resolve(sessionID: packet.sessionID, requestID: id)
             replyWorkspace.resolve(id)

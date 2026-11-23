@@ -6,6 +6,23 @@ import Vision
 
 @main struct UIChecks {
     @MainActor static func main() throws {
+        if CommandLine.arguments.contains("--panel") {
+            try PanelChecks.run()
+            return
+        }
+        if CommandLine.arguments.contains("--panel-rendering") {
+            try PanelChecks.captureOffscreen()
+            return
+        }
+        if CommandLine.arguments.contains("--attention") {
+            try AttentionChecks.run()
+            return
+        }
+        if CommandLine.arguments.contains("--attention-rendering") {
+            try AttentionChecks.run()
+            try AttentionChecks.captureOffscreen()
+            return
+        }
         if CommandLine.arguments.contains("--steering-rendering") {
             try SteeringRenderingChecks.run()
             return

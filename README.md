@@ -35,7 +35,7 @@ This beta is **ad-hoc signed, not Developer ID signed or notarized**. If Apple's
 
 Already installed? Run `open ~/Applications/Notify.app`. Downloads contain no personal accounts, settings, paired phones or session history. Connect agents and pair each Mac separately.
 
-**Release scope:** **[beta 7 / build 14](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.7)** remembers your Internet On/Off choice across restarts. It retains immediate Send with explicit Queue, richer native Markdown, pairing/reconnect recovery, Android session management and background-approval alerts. Use Android 0.3.3 or later for immediate Send and encrypted offline reading. A changed ad-hoc signer can require explicit phone re-pairing when replacing an older download; never reset pairing automatically. Check the selected release's notes rather than assuming an older download includes newer source features.
+**Release scope:** **[beta 8 / build 18](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.8)** adds the optional native Dashboard, a global pending-request indicator and separate remembered-phone consent. It retains remembered Internet On/Off, immediate Send with explicit Queue, native Markdown, pairing/reconnect recovery and background-approval alerts. Pair it with **[Android 0.3.6 / build 9](https://github.com/vsvinav/notify-android/releases/tag/v0.3.6-beta.1)**. Remembered access also requires the compatible service described below. The public ZIP preserves beta 7's nested signer; a different older/custom signer can still require explicit re-pairing. Never reset pairing automatically. These are prereleases; physical-phone reconnection, new-phone alerts and live Dashboard actions remain separate acceptance checks.
 
 **Release policy for Notify repositories:** publish client updates as versioned
 GitHub releases with installable artifacts and SHA-256 checksums: the Mac app ZIP
@@ -71,11 +71,43 @@ Try a fictional request without an agent call or model credits:
 - **Catch up optionally:** explicit Haiku summaries send a limited conversation excerpt through your agent account and use model allowance.
 - **Use your phone:** live requests, recent conversations and supported controls, subject to the same agent capabilities and exact acknowledgments.
 
+**Global attention:** a compact attention indicator at the top of
+the sidebar brings pending decisions from all connected sessions into view.
+Open the current request directly; **+N** below it shows how many others remain.
+Sending a reply does not dismiss it before acknowledgement.
+
 **Claude hooks are not full control parity.** Original Claude terminals cannot receive Notify's Send/Interrupt/Stop or direct subagent creation/removal commands. Questions appear only when the runtime supplies a supported hook.
 
 **Keyboard priority:** while a floating request is visible, Up/Down and Return go to Notify—even from another app. Return can activate an approval or Deny. Hide or snooze the panel to return those keys.
 
 **Dangerous Auto-yes is optional and dangerous.** It may approve destructive commands and external actions. It is session-specific, requires explicit confirmation, resets on provider disconnect/restart (not phone disconnect), and never bypasses runtime restrictions. [Limits and Off controls](docs/guide.md#dangerous-auto-yes).
+
+## Optional dashboard
+
+**Native Mac Dashboard (beta 8 / build 18):** with the included
+companion, enable **Settings > Custom
+dashboard** and choose **Dashboard** beside Sessions. It reads your chosen local
+provider without enabling phone connections or Internet access. Provider-defined
+stages, activity and forms, including **Add a todo** when supplied, use native
+controls. The setting defaults Off; hidden dashboards do not poll.
+[Mac setup and limits](docs/guide.md#custom-dashboard).
+
+**Android Dashboard (Android 0.3.6 with Mac beta 8):** enable **Settings >
+Custom dashboard** on the phone to show a compatible provider you choose to run
+locally on your Mac through the existing encrypted relay. The setting defaults
+Off and remembers your choice. Open **Dashboard** in the phone's drawer for
+provider-defined tabs, stages, recent activity and optional text forms, such as
+**Add a todo**. Review the exact instruction before explicitly sending it.
+No public dashboard port or arbitrary HTTP proxy is
+added. [Connect your own provider](https://github.com/vsvinav/notify-mobile/blob/main/docs/dashboard-provider.md).
+Older Mac beta 7 and Android 0.3.3 downloads do not include this feature.
+
+Notify does not include anyone's private work dashboard, tracker credentials or
+organization-specific hooks. A read-only provider needs no agent hooks; controls
+need an explicitly configured, supported adapter. Turning the dashboard Off
+stops future dashboard requests, not ordinary terminal notifications or phone
+controls, and cannot undo an action already sent. Real-provider actions, Mac
+keyboard/window interaction and latest-build physical-phone acceptance remain pending.
 
 ## Use your phone
 
@@ -110,12 +142,28 @@ checks cover these controls; real-terminal acceptance remains separate.
 
 **Internet:** use **Settings > Internet**, enter your operator's exact HTTPS origin and enable access. The updated helper prepares a fresh pairing QR automatically; use **Pair an internet device** to retry or replace an expired invitation. Sign in with a passkey, then compare the **complete public key** on both devices before approving on the Mac. A short code is insufficient. The Android native client is separate from the LAN web app; use its versioned APK and release instructions supplied by your operator.
 
-**Native Android, current development build:** choose **Scan Mac QR**, grant camera
+**Optional remembered phone — Mac beta 8 and Android 0.3.6:**
+a compatible phone/service can request a separate **Remember this phone?** decision.
+Compare the complete key, account and exact expiry, then choose **Allow** or **Deny**.
+Pairing never opts in automatically. Allow permits that phone to connect without
+hourly account sign-in until the fixed expiry (at most 30 days); it does not extend
+the account session. Anyone able to use the phone's private key can use this access.
+The device row shows current remembered expiry/off/expired separately from connection
+status. **Revoke** still removes the device's entire internet access, not its account
+sign-in. Denying a replacement request leaves any prior authorization unchanged.
+An uncertain decision is checked against current status, never automatically resent.
+Install matching Mac and phone builds and deploy the compatible service before use.
+The service needs the remembered-phone authorization contract introduced in
+[`0eb6834`](https://github.com/vsvinav/notify-mobile/commit/0eb6834ccee2e69894182ba64abcb2a394401b74).
+Existing deployments of that revision already provide the required native-client
+contract; adding Dashboard does not require another hosted-service deployment.
+
+**Native Android:** choose **Scan Mac QR**, grant camera
 permission when asked, and scan the Mac's invitation instead of entering technical
 fields. Passkey verification and explicit full-key approval on the Mac still apply.
 The phone has a searchable session drawer and **Chat / Decision / Agents** views,
 with the Mac's illustrated characters and warm light/dark palette. The matching
-lightning icons use amber on warm charcoal. Android 0.3.0 is a prerelease;
+lightning icons use amber on warm charcoal. Android 0.3.6 is a prerelease;
 these changes are not in the older 0.2.0 APK. Matching updated Mac/helper
 builds also support live-catalog helper creation, ended-helper removal, and
 confirmed idle cleanup. Matching Mac/helper builds and Android 0.3.0 support
@@ -126,6 +174,13 @@ builds show unsupported. Native fictional layout checks passed; real policy
 activation, camera and physical keyboard interaction remain separate acceptance checks.
 Android 0.3.1 additionally keeps drafts editable during connection changes or
 uncertain delivery without relaxing Send or approval guards.
+
+**Changed phones?** Install the APK on the new phone and pair it as a new device:
+generate a fresh invitation, sign in with your intended Notify passkey and compare
+the complete new phone key before approving on the Mac. Do not copy private keys
+or reuse an old QR. Old-phone access is not revoked by installing on a new phone;
+review and explicitly **Revoke** its device entry when appropriate.
+[New-phone checklist](docs/remote-setup.md#changing-phones).
 
 **Different account or stuck pairing:** try the original Notify passkey first. Build 7 adds **Start fresh internet setup** under **Pairing recovery**: turn internet off, wait for the helper to stop, and confirm the private backup before pairing again. It never resets automatically or changes terminal sessions, LAN pairing or Google passkeys. This recovery button requires beta 5/build 11 or a corresponding development build. See [safe recovery](docs/remote-setup.md#8-revoke-rotate-and-recover-safely).
 

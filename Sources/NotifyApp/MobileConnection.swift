@@ -2,11 +2,83 @@ import AppKit
 import Combine
 import NotifyCore
 
+struct RememberedAuthorization: Decodable, Equatable {
+    let generation: String
+    let authorizationExpiresAt: Int64
+    let state: State
+    enum State: String, Decodable { case active, revoked, expired }
+
+    var isValid: Bool { RememberedProposal.validID(generation) && authorizationExpiresAt > 0 && authorizationExpiresAt <= 9_007_199_254_740_991 }
+    var isActive: Bool { state == .active && Double(authorizationExpiresAt) > Date().timeIntervalSince1970 * 1000 }
+}
+
+struct RememberedProposal: Codable, Equatable, Identifiable {
+    struct Account: Codable, Equatable {
+        let issuer: String
+        let subject: String
+    }
+    let id: String
+    let generation: String
+    let deviceID: String
+    let publicKey: String
+    let name: String
+    let account: Account
+    let macID: String
+    let macPublicKey: String
+    let expiresAt: Int64
+    let authorizationExpiresAt: Int64
+
+    var isExpired: Bool { Double(expiresAt) <= Date().timeIntervalSince1970 * 1000 }
+    func isValid(origin: String) -> Bool {
+        Self.validID(id) && Self.validID(generation) &&
+            UUID(uuidString: deviceID) != nil && UUID(uuidString: macID) != nil &&
+            Self.validKey(publicKey) && Self.validKey(macPublicKey) &&
+            !name.isEmpty && name.count <= 100 && !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) &&
+            account.issuer == origin && !account.subject.isEmpty && account.subject.count <= 256 &&
+            !account.subject.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) &&
+            expiresAt > 0 && authorizationExpiresAt > expiresAt &&
+            authorizationExpiresAt <= 9_007_199_254_740_991 &&
+            authorizationExpiresAt - expiresAt <= 30 * 86_400_000
+    }
+    static func validKey(_ value: String) -> Bool {
+        guard value.utf8.count == 88, let bytes = Data(base64Encoded: value), bytes.count == 65, bytes.first == 4 else { return false }
+        return bytes.base64EncodedString() == value
+    }
+    static func validID(_ value: String) -> Bool {
+        guard value.utf8.count == 43,
+              value.unicodeScalars.allSatisfy({ CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-").contains($0) }),
+              let bytes = Data(base64Encoded: value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/") + "="),
+              bytes.count == 32 else { return false }
+        return bytes.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") == value
+    }
+}
+
+struct RememberedDecision {
+    let sentAt = Date()
+    let requestID: String
+    let proposal: RememberedProposal
+    let allow: Bool
+    var outcome: Outcome
+    var message: String?
+    enum Outcome: String, Decodable { case sending, unknown, approved, denied, error }
+}
+
+struct RememberedDecisionResult: Decodable {
+    let requestID: String
+    let proposalID: String
+    let generation: String
+    let authorizationExpiresAt: Int64
+    let outcome: RememberedDecision.Outcome
+    let message: String?
+}
+
 struct MobileDevice: Decodable, Identifiable {
     let id: String
     let name: String
     let online: Bool
     let pushEnabled: Bool
+    let publicKey: String?
+    let remembered: RememberedAuthorization?
 }
 
 struct MobileStatus: Decodable {
@@ -40,6 +112,7 @@ struct InternetStatus: Decodable {
     let setupURL: String?
     let pairingCode: String?
     let message: String?
+    let rememberPending: RememberedProposal?
 }
 
 struct MobileReply: Decodable {
@@ -83,6 +156,31 @@ struct MobileItem: Encodable {
     let error: String?
 }
 
+struct MobileAttentionItem: Codable, Equatable {
+    let sessionID: String
+    let requestID: String
+    let sessionName: String
+    let requestTitle: String
+}
+
+struct MobileAttention: Encodable, Equatable {
+    let version = 1
+    let epoch: String
+    let revision: Int
+    let current: MobileAttentionItem?
+    let additionalCount: Int
+
+    private enum CodingKeys: String, CodingKey { case version, epoch, revision, current, additionalCount }
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(version, forKey: .version)
+        try values.encode(epoch, forKey: .epoch)
+        try values.encode(revision, forKey: .revision)
+        try values.encode(current, forKey: .current)
+        try values.encode(additionalCount, forKey: .additionalCount)
+    }
+}
+
 private struct MobileEvent: Decodable {
     let type: String
     let id: String?
@@ -100,6 +198,19 @@ final class MobileConnection: ObservableObject {
     @Published private(set) var internetStatus: InternetStatus?
     @Published private(set) var internetOrigin: String
     @Published private(set) var pairings: [MobilePairing] = []
+    @Published private(set) var rememberedDecisions: [RememberedDecision] = []
+    private(set) var rememberedDecision: RememberedDecision? {
+        get { rememberedDecisions.last }
+        set {
+            guard let value = newValue else { return }
+            if let index = rememberedDecisions.firstIndex(where: { $0.requestID == value.requestID }) {
+                rememberedDecisions[index] = value
+            } else {
+                rememberedDecisions.removeAll { $0.outcome != .unknown && $0.outcome != .sending }
+                rememberedDecisions.append(value)
+            }
+        }
+    }
     var pairing: MobilePairing? { pairings.first }
     var canConfirmPairing: Bool {
         guard let pairing else { return false }
@@ -116,6 +227,7 @@ final class MobileConnection: ObservableObject {
     }
     var snapshot: (() -> [MobileItem])?
     var attentionSnapshot: (() -> Set<String>)?
+    var canonicalAttentionSnapshot: (() -> MobileAttention?)?
     var onReply: ((MobileReply) -> Void)?
     var onControl: ((MobileControl) -> Void)?
     var workspaceSnapshot: (([String]) throws -> [Data])?
@@ -234,6 +346,11 @@ final class MobileConnection: ObservableObject {
             send(start)
             timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
                 guard let self, !self.sleeping else { return }
+                if let decision = self.rememberedDecision, decision.outcome == .sending,
+                   Date().timeIntervalSince(decision.sentAt) > 15 {
+                    self.rememberedDecision?.outcome = .unknown
+                    self.rememberedDecision?.message = "Decision not confirmed. Checking status; it will not be sent again."
+                }
                 if Date().timeIntervalSince(self.lastEvent) > 25 {
                     self.fail("The phone companion stopped responding. Turn phone connections off and on to retry.")
                 } else { self.publish(heartbeat: true) }
@@ -262,6 +379,10 @@ final class MobileConnection: ObservableObject {
     }
 
     func stop() {
+        if rememberedDecision?.outcome == .sending {
+            rememberedDecision?.outcome = .unknown
+            rememberedDecision?.message = "Decision not confirmed. Reconnect to check status; it will not be sent again."
+        }
         timer?.invalidate()
         timer = nil
         for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
@@ -342,6 +463,26 @@ final class MobileConnection: ObservableObject {
         pairings.removeAll { $0.id == pairing.id }
     }
     func revoke(_ id: String) { send(["type": "revoke", "id": id]) }
+    func decideRemembered(_ allow: Bool, expected: RememberedProposal) {
+        guard transport == .internet, enabled, !sleeping, process?.isRunning == true,
+              internetStatus?.rememberPending == expected, expected.isValid(origin: internetOrigin), !expected.isExpired,
+              rememberedDecision?.outcome != .sending,
+              !rememberedDecisions.contains(where: { $0.proposal.id == expected.id && $0.outcome != .error }) else {
+            error = "The remembered-phone prompt changed, expired, or was already sent. Check the current full key and status."
+            return
+        }
+        guard rememberedDecisions.filter({ $0.outcome == .unknown }).count < 8 else {
+            error = "Eight remembered-phone decisions remain unconfirmed. Check the service connection before sending another."
+            return
+        }
+        let requestID = UUID().uuidString.lowercased()
+        do {
+            let proposal = try JSONSerialization.jsonObject(with: JSONEncoder().encode(expected))
+            rememberedDecision = RememberedDecision(requestID: requestID, proposal: expected, allow: allow, outcome: .sending)
+            error = nil
+            send(["type": "remember-decision", "requestID": requestID, "proposal": proposal, "allow": allow])
+        } catch { self.error = "Could not encode the remembered-phone decision: \(error.localizedDescription)" }
+    }
     func testPush() { error = nil; send(["type": "test-push"]) }
 
     func ticket(sessionID: String, request: AgentRequest) -> String {
@@ -383,8 +524,10 @@ final class MobileConnection: ObservableObject {
             let type = "snapshot"
             let requests: [MobileItem]
             let total: Int
+            let attention: MobileAttention?
         }
-        do { write(try JSONEncoder().encode(Snapshot(requests: items, total: items.count))) }
+        do { write(try JSONEncoder().encode(Snapshot(requests: items, total: items.count,
+            attention: canonicalAttentionSnapshot?()))) }
         catch { fail("Could not encode phone requests: \(error.localizedDescription)") }
         if heartbeat { publishWorkspace(heartbeat: true) }
         else { workspaceChanged() }
@@ -501,6 +644,10 @@ final class MobileConnection: ObservableObject {
                     guard status.url == internetOrigin, status.devices.count <= 64,
                           Set(status.devices.map(\.id)).count == status.devices.count,
                           status.devices.allSatisfy({ !$0.id.isEmpty && $0.id.count <= 128 && !$0.name.isEmpty && $0.name.count <= 100 }),
+                          status.devices.allSatisfy({ $0.remembered.map(\.isValid) ?? true }),
+                          status.devices.allSatisfy({ $0.publicKey.map(RememberedProposal.validKey) ?? ($0.remembered == nil) }),
+                          status.rememberPending.map({ proposal in proposal.isValid(origin: internetOrigin) &&
+                              status.devices.contains(where: { $0.id == proposal.deviceID && $0.publicKey == proposal.publicKey }) }) ?? true,
                           status.pendingPairingIDs.count <= 8,
                           Set(status.pendingPairingIDs).count == status.pendingPairingIDs.count,
                           status.pendingPairingIDs.allSatisfy({ !$0.isEmpty && $0.count <= 128 }),
@@ -509,6 +656,7 @@ final class MobileConnection: ObservableObject {
                     let wasConnected = internetStatus?.state == .connected
                     if status.state != .connected { invalidateAuthority() }
                     internetStatus = status
+                    reconcileRemembered(status)
                     pairings.removeAll { !status.pendingPairingIDs.contains($0.id) }
                     starting = status.state == .connecting
                     error = status.state == .error ? (status.message ?? "The internet helper reported an error.") : nil
@@ -526,6 +674,22 @@ final class MobileConnection: ObservableObject {
                 pairings.removeAll { !status.pendingPairingIDs.contains($0.id) }
                 starting = false
                 if first { publish() }
+            case "remember-result":
+                guard transport == .internet else { throw ProtocolError.invalid }
+                let result = try JSONDecoder().decode(RememberedDecisionResult.self, from: data)
+                guard result.outcome != .sending, result.message.map({ $0.count <= 500 }) ?? true,
+                      RememberedProposal.validID(result.proposalID), RememberedProposal.validID(result.generation),
+                      UUID(uuidString: result.requestID) != nil else { throw ProtocolError.invalid }
+                guard var decision = rememberedDecisions.first(where: { $0.requestID == result.requestID }),
+                      result.proposalID == decision.proposal.id, result.generation == decision.proposal.generation,
+                      result.authorizationExpiresAt == decision.proposal.authorizationExpiresAt else { return }
+                guard (result.outcome != .approved || decision.allow) &&
+                      (result.outcome != .denied || !decision.allow) else { throw ProtocolError.invalid }
+                if decision.outcome == .sending || decision.outcome == .unknown {
+                    decision.outcome = result.outcome
+                    decision.message = result.message
+                    rememberedDecision = decision
+                }
             case "pairing":
                 guard let id = event.id, let name = event.name,
                       id.count <= 128, name.count <= 100 else { throw ProtocolError.invalid }
@@ -572,6 +736,17 @@ final class MobileConnection: ObservableObject {
               url.scheme == origin.scheme, url.host == origin.host, url.port == origin.port,
               url.user == nil, url.password == nil, url.url?.absoluteString == value else { return false }
         return true
+    }
+
+    private func reconcileRemembered(_ status: InternetStatus) {
+        for var decision in rememberedDecisions where decision.allow && (decision.outcome == .sending || decision.outcome == .unknown) {
+            guard let device = status.devices.first(where: { $0.id == decision.proposal.deviceID && $0.publicKey == decision.proposal.publicKey }),
+                  let remembered = device.remembered, remembered.generation == decision.proposal.generation,
+                  remembered.authorizationExpiresAt == decision.proposal.authorizationExpiresAt else { continue }
+            decision.outcome = remembered.isActive ? .approved : .error
+            decision.message = remembered.isActive ? nil : "This remembered authorization is no longer active."
+            rememberedDecision = decision
+        }
     }
 
     private func fail(_ message: String) { stop(); error = message }

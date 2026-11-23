@@ -34,6 +34,24 @@ struct InternetSettingsView: View {
                 if let message = status.message, status.state != .error {
                     Text(message).font(WorkspaceType.text(12)).foregroundStyle(Palette.muted).textSelection(.enabled)
                 }
+                if let proposal = status.rememberPending {
+                    rememberedConsent(proposal)
+                }
+            }
+            if let decision = internet.rememberedDecision {
+                Text(decision.message ?? decisionLabel(decision))
+                    .font(WorkspaceType.text(12))
+                    .foregroundStyle(decision.outcome == .unknown || decision.outcome == .error ? Palette.amber : Palette.muted)
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(internet.rememberedDecisions.filter {
+                $0.outcome == .unknown && $0.requestID != internet.rememberedDecision?.requestID
+            }, id: \.requestID) { decision in
+                Text("Earlier decision for \(decision.proposal.name) remains unconfirmed. Request: \(decision.proposal.id). It will not be sent again.")
+                    .font(WorkspaceType.text(12)).foregroundStyle(Palette.amber)
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
+            if let status = internet.internetStatus {
                 ForEach(status.devices) { device in
                     HStack(alignment: .top, spacing: 12) {
                         Image(systemName: "iphone").font(.system(size: 22)).foregroundStyle(Palette.muted)
@@ -41,6 +59,13 @@ struct InternetSettingsView: View {
                             Text(device.name).font(WorkspaceType.text(13, strong: true))
                             Text(device.online && status.state == .connected ? "Connected" : "Not connected")
                                 .font(WorkspaceType.text(11)).foregroundStyle(Palette.muted)
+                            Text(rememberedLabel(device.remembered))
+                                .font(WorkspaceType.text(12)).foregroundStyle(Palette.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if status.devices.contains(where: { $0.remembered != nil }) {
+                            Text("Remembered access is separate from account sign-in. Revoke removes all internet access for this device; it does not sign out the account.")
+                                .font(WorkspaceType.text(12)).foregroundStyle(Palette.muted)
                         }
                         Spacer()
                         Button("Revoke") { internet.revoke(device.id) }
@@ -104,6 +129,63 @@ struct InternetSettingsView: View {
             } message: {
                 Text("Keep the old internet identity and pairing in a private backup on this Mac, then start with a new identity the next time you enable internet. Previously paired phones must be paired and approved again.\n\nTerminal sessions, local notifications, Wi-Fi pairing and Google passkeys are unchanged. Internet stays off.")
             }
+    }
+
+    private func rememberedConsent(_ proposal: RememberedProposal) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Remember this phone?").font(WorkspaceType.text(16, strong: true))
+            Text(proposal.name).font(WorkspaceType.text(13, strong: true))
+            Text("Compare the complete public key with your phone. Pairing alone does not allow remembered access.")
+                .font(WorkspaceType.text(12))
+            Text(proposal.publicKey).font(.system(size: 12, design: .monospaced))
+                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            Text("Allow this phone to connect without hourly account sign-in for up to 30 days, until the exact expiry below. This does not extend the account session.")
+                .font(WorkspaceType.text(13)).fixedSize(horizontal: false, vertical: true)
+            Text("Anyone who can use this phone’s private key can use its remembered Notify access. Only allow a phone you control.")
+                .font(WorkspaceType.text(13)).fixedSize(horizontal: false, vertical: true)
+            Text("Authorization ends: \(exactDate(proposal.authorizationExpiresAt))")
+                .font(WorkspaceType.text(13, strong: true)).textSelection(.enabled)
+            Text("Decide before: \(exactDate(proposal.expiresAt))")
+                .font(WorkspaceType.text(12)).textSelection(.enabled)
+            Text("Account: \(proposal.account.subject)\nService: \(proposal.account.issuer)")
+                .font(WorkspaceType.text(12)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            Text("Phone: \(proposal.deviceID)\nRequest: \(proposal.id)\nGeneration: \(proposal.generation)")
+                .font(.system(size: 11, design: .monospaced)).foregroundStyle(Palette.muted)
+                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Allow") { internet.decideRemembered(true, expected: proposal) }
+                Button("Deny") { internet.decideRemembered(false, expected: proposal) }
+                if internet.rememberedDecision?.proposal.id == proposal.id,
+                   internet.rememberedDecision?.outcome == .sending {
+                    ProgressView().controlSize(.small).accessibilityLabel("Waiting for confirmation")
+                }
+            }
+            .disabled(proposal.isExpired || internet.rememberedDecision?.outcome == .sending ||
+                      (internet.rememberedDecision?.proposal.id == proposal.id && internet.rememberedDecision?.outcome != .error))
+        }.padding(12).background(Palette.raised, in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private func exactDate(_ milliseconds: Int64) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: Date(timeIntervalSince1970: Double(milliseconds) / 1000))
+    }
+
+    private func rememberedLabel(_ value: RememberedAuthorization?) -> String {
+        guard let value else { return "No remembered authorization reported" }
+        if value.isActive { return "Remembered until \(exactDate(value.authorizationExpiresAt))" }
+        if value.state == .revoked { return "Remembered access off · revoked" }
+        return "Remembered access expired · \(exactDate(value.authorizationExpiresAt))"
+    }
+
+    private func decisionLabel(_ decision: RememberedDecision) -> String {
+        switch decision.outcome {
+        case .sending: return "Waiting for the service to confirm your decision…"
+        case .unknown: return "Decision not confirmed. Checking status; it will not be sent again."
+        case .approved: return "Allow confirmed. Current remembered access is shown with the device."
+        case .denied: return "Request denied. Any previous authorization is shown with the device."
+        case .error: return "Decision failed. Check the current request before trying again."
+        }
     }
 
     private var stateLabel: String {

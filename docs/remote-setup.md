@@ -59,7 +59,7 @@ Sources: [Firestore IAM roles](https://docs.cloud.google.com/iam/docs/roles-perm
 
 ## 4. Create one Render Free web service
 
-1. In the [Render dashboard](https://dashboard.render.com/), choose **New > Web Service** and connect your accessible copy of `notify-mobile`. Select the compatible `feature/remote-access` branch or the reviewed commit specified by your client release. Do not deploy the Mac repository.
+1. In the [Render dashboard](https://dashboard.render.com/), choose **New > Web Service** and connect your accessible copy of `notify-mobile`. Select the reviewed commit specified by your client release. Mac beta 8 and Android 0.3.6 require the remembered-phone contract in [`0eb6834ccee2e69894182ba64abcb2a394401b74`](https://github.com/vsvinav/notify-mobile/commit/0eb6834ccee2e69894182ba64abcb2a394401b74) or a compatible later revision. A service already on that revision does not need redeployment for the native Dashboard. Do not deploy the Mac repository.
 2. Select **Node** and **Free**. Keep one instance (`numInstances: 1`); do not add workers, databases, disks or a custom domain. The checked-in `render.yaml` is a reference blueprint, not evidence that anything is deployed.
 3. Set:
 
@@ -134,6 +134,19 @@ Sources: [Digital Asset Links](https://developers.google.com/digital-asset-links
 The Mac must remain awake, online and running Notify. After sleep or a network interruption, a fresh authenticated encrypted channel is required. If a reply is uncertain, check the original session before retrying; Notify never automatically replays it. Do not use a real destructive permission request as a connectivity test.
 
 The relay carries encrypted session payloads. The service can still see account/public-key relationships, connection timing and minimal notification routing metadata. Firestore stores approved public account/device trust, a hash of the Mac credential and private push tokens when enabled—not chat history, commands, private endpoint keys or live encrypted-channel state.
+
+### Changing phones
+
+1. Download the matching [Android APK and SHA-256 checksums](https://github.com/vsvinav/notify-android/releases) to the new phone. Verify the download and install it; source archives are not APKs. The native app requires Android 9+, arm64 and a compatible passkey provider.
+2. On the Mac, keep existing pairing data. Open **Settings > Internet > Pair an internet device** to create a fresh invitation. An old phone's QR or expired invitation is not a migration mechanism.
+3. On the new phone, choose **Scan Mac QR** and sign in with the intended Notify account/passkey. A synced account passkey does not copy the old phone's device identity or approve the new one. Never export or copy the old phone's private device key.
+4. Compare the **complete new phone public key** on both screens and explicitly approve only if it matches. Do not use **Start fresh internet setup** merely because the phone changed.
+5. Enable notifications on the new phone if desired. Its permission, channel, vibration and battery settings are new; an old phone's successful alert does not verify this one. Optional **Remember this phone** requires fresh passkey verification and its own Mac approval, with a fixed expiry of at most 30 days.
+6. Review the old phone's device entry in Mac Internet settings. If you no longer want it authorized, explicitly choose **Revoke** for that exact device. Installing or pairing the new phone does not revoke the old one. If the old phone was lost or is no longer trusted, revoke it before relying on the replacement.
+
+Use a harmless demo to check the new phone's connection and notifications. Do not
+use real destructive approvals as a setup test. No key, account or pairing reset
+is required just to download an update.
 
 ## 7. Restarts, quotas and verification
 
