@@ -15,12 +15,66 @@ remote disconnect, preservation of pending LAN replies, no late-result replay,
 fresh authority after wake, full-key pairing display data and stale-prompt
 confirmation binding, and fail-closed status validation.
 
+## Remembered-phone candidate checks
+
+Included in beta 8 / build 18; these checks do not prove live device behavior. The default
+headless runner additionally tests separate typed remembered consent, complete
+canonical-base64 keys, captured ID/generation/expiry changes, correlated ACKs,
+unknown delivery/no replay, exact committed G/E reconciliation after helper
+restart, replacement denial and revoked status. The synthetic producer JSON is
+copied from the frozen backend examples; no actual keys/accounts are used.
+
+To also run native → helper → real synthetic P256 authority Allow/Deny commits:
+
+```sh
+NOTIFY_REMEMBERED_HELPER_ROOT=/path/to/notify-mobile/worktree bash Tests/NativeInternet/check.sh
+```
+
+The optional `--remembered-ui` argument to `.build/NotifyInternetChecks` renders
+fictional light/dark 560×680 windows that are **never shown**, with no activation,
+input posting or key interception. Keep the runner's isolated HOME/agent-home
+environment when invoking it. Images go to `.build/remembered-consent-captures`.
+Offline-unknown and offline-history captures use actual helper-stop state; OCR
+asserts that uncertainty/reconnect guidance remains visible while stale remembered
+proposals and device Revoke actions are absent.
+This is not the older interactive `--recovery-ui` mode; do not use that mode for
+offscreen-only validation.
+
+### Remembered native/helper additions
+
+`status.rememberPending` is absent/null or an exact typed proposal:
+`{id,generation,deviceID,publicKey,name,account:{issuer,subject},macID,macPublicKey,expiresAt,authorizationExpiresAt}`.
+Both native key fields use canonical **standard base64**, like pairing verification;
+the server wire remains base64url. IDs/generation retain canonical base64url.
+Times are integer Unix milliseconds. It is never a pairing ID or terminal request.
+Device rows optionally add `publicKey` and
+`remembered:{generation,authorizationExpiresAt,state:"active"|"revoked"|"expired"}`.
+Missing metadata grants no authority.
+
+Native sends
+`{type:"remember-decision",requestID:<UUID>,proposal:<entire captured proposal>,allow:<boolean>}`.
+The helper rechecks the exact local owner/device/Mac and current server proposal,
+then sends only `{id,allow}` to `mac/remember/decision` with the enrollment bearer.
+It never modifies the local paired-key allowlist for this operation.
+
+The correlated event is
+`{type:"remember-result",requestID,proposalID,generation,authorizationExpiresAt,outcome:"approved"|"denied"|"unknown"|"error",message?:string}`.
+Writing stdin does not confirm a decision. Unknown results are retained, not
+replayed. Exact committed active generation/expiry can reconcile Allow; mere
+absence cannot confirm Deny. Pending proposals and old committed authorization
+are independent. Earlier uncertain results survive a new explicit decision and
+helper restart in a bounded in-memory history (at most eight unresolved results);
+they are never inferred to be denied merely because a proposal disappeared.
+Only this operation uses these result events; existing dispatcher
+and terminal approval semantics are unchanged.
+
 ## Process boundary
 
 Internet is a second `MobileConnection`, with `.internet` transport.
-It never reads/writes `mobileEnabled`; no persisted value enables it.
-`internetOrigin` is the only saved internet preference. Opt-in is required on
-each Store/process initialization. Store shutdown disables it.
+It never reads/writes `mobileEnabled`. Store remembers the separate explicit
+Internet On/Off preference from build 14 onward and restores On using the saved
+origin and existing trust. Shutdown stops the connection without erasing that
+choice; a saved preference never approves a new phone.
 
 Native launches bundled `mobile/src/remote-main.mjs` with Node. Its first
 newline-delimited JSON command is:

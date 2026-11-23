@@ -27,6 +27,19 @@ The illustrated agent reflects observed state: working, thinking when reasoning 
 
 Drag session rows to reorder them within their current group. The order is remembered across app restarts and follows the original chat identity. Move up/down actions are also available to accessibility tools; reordering never changes connection or waiting status.
 
+**Needs attention**, just below **Sessions**, shows a current pending request even when your sidebar filters hide it. **+2 additional requests** means two other connected requests need review. Click it to open that exact request in **Decision**; clicking never sends an answer. Selecting another pending request makes it current, and new arrivals do not replace it. Sending, failed or uncertain replies stay pending until acknowledgment or withdrawal, even if Auto-yes dispatches the current request. After acknowledgment or withdrawal, the indicator advances without answering the next request. Other disconnected or automatically handled requests are not promoted or included in the extra count.
+
+If its session disconnects, **Pending request** stays visible with **Disconnected · status unknown** and cannot be clicked. Reconnecting or refreshing the session list does not prove that the request was answered: **Awaiting update · status unknown** remains until that exact request is confirmed again or an explicit result arrives. The current connection must supply the request before it can be opened in **Decision**. A request answered while disconnected may remain unknown because the connection does not provide a complete pending-request snapshot. You can explicitly select another confirmed pending request; Notify never treats silence, a missing session row or a timeout as success or withdrawal. No indicator appears when no current unconfirmed or eligible requests remain.
+
+Android 0.3.6 and the companion bundled with Mac beta 8 mirror this current request in
+a compact global strip over the existing authenticated encrypted connection.
+Only bounded display labels, identity and the additional count are projected;
+phone actions still require the current request and ticket. Phone navigation
+does not change the Mac's selection. If the Mac app restarts, a phone retaining
+an older request keeps it unconfirmed until exact reobservation or explicit
+selection of the freshly reported current request in **Needs you**. Generic
+background push notifications do not include this private display text.
+
 Floating cards show the chat title and project/agent above the full request. **Session > Open session** selects that exact chat. **Expand** enlarges the panel in place. Sending a reply keeps the card visible until acknowledgment; delivery failures appear inline, not in a blocking control-center popup. Replayed pending prompts do not repeatedly notify, and new arrivals preserve your selected question and draft.
 
 Click the **colored circle beside the session title** on a floating notification to choose from twenty swatches: soft pastels plus richer cobalt, teal, pine, olive, ochre, tangerine, brick, berry, plum and slate. **Next color** cycles to the next least-used color; swatches stay in place while choosing. Usage counts other connected chats once, even if they have multiple records. The same saved color updates the control center immediately. Existing colors are preserved; **Reset automatic** restores the original stable color. Approval shortcuts pause while this picker is open. **More request details** jumps to supplied command/path evidence on shorter panels.
@@ -36,6 +49,38 @@ The updated original-Copilot extension supplies the **Live activity** timeline: 
 Activity is a bounded in-memory preview (up to 300 entries and 512 KiB of retained native text per session); individual event previews are limited too. Earlier history remains with the original CLI. Notify does not invent reasoning, test results or progress, nor spend model credits to generate this timeline.
 
 The updated Copilot extension streams partial assistant replies before completion. Existing terminals need an explicit extension reload to load this change. Terminal input still waiting in the agent's queue appears when the runtime consumes it; the app does not yet preview queued input.
+
+## Custom dashboard
+
+**Mac beta 8 / build 18:** the native Mac Dashboard includes the matching
+companion containing `mobile/src/panel-main.mjs`. Older downloads and installed
+builds do not acquire it from a source update.
+Node.js 22.18 or newer remains a prerequisite; no new package or cloud account
+is required for local Dashboard access.
+
+Run a trusted compatible provider on your Mac, then enable **Settings > Custom
+dashboard**. The choice defaults Off and is remembered independently of phone
+pairing, Internet access and alerts. Choose **Dashboard** beside **Sessions**.
+Notify does not start the provider, install its hooks, or include a private work
+dashboard. A read-only provider needs no agent hooks.
+[Build your own provider](https://github.com/vsvinav/notify-mobile/blob/main/docs/dashboard-provider.md).
+
+Tabs, stages, recent activity and forms come from the provider. A form shortcut
+such as **Add a todo** opens its editor; providers without forms have no such
+shortcut. Follow the displayed text limits, review the exact instruction, then
+choose **Send** or **Cancel**. Cancel keeps the draft and sends nothing.
+Reported progress and accepted instructions do not prove task completion.
+
+Local access does not require Notify Internet access or a paired phone. The
+provider itself may need a network connection for its data sources or actions.
+Only the visible Dashboard polls; hiding it, opening Settings or turning it Off
+pauses future reads. Reopening requires fresh data before actions are available.
+Ordinary terminal notifications continue independently.
+
+Turning Off cannot undo a dispatched instruction. An unconfirmed delivery remains
+visible in Settings, including after a restart. Check the destination before
+acknowledging it or trying again; Notify never automatically resends it. Drafts
+remain in memory across Dashboard navigation, not across app restarts.
 
 ## Open and resume in iTerm2
 
@@ -266,7 +311,7 @@ The larger main agent wears a hat. Helper chats use a mini portrait, the helper'
 
 Choose **Stop idle >10 min** in the Control Center sidebar. Review the notice, then choose **Stop idle subagents**. This is a manual cleanup across **all connected supported sessions**, not just the selected chat. It never runs on a schedule.
 
-The matching **native Android source preview** also offers **Add subagent**,
+The matching **native Android 0.3.6 preview** also offers **Add subagent**,
 ended-only **Remove from list**, and **Stop idle >10 min** in **Agents**. Unlike
 the Mac sidebar loop, phone cleanup targets **only the selected session** after
 confirmation. Creation offers live type/model IDs or **Configured default**,
@@ -275,8 +320,8 @@ instead. Native validation, audit and actual runtime acknowledgments remain
 authoritative. Catalog changes invalidate reviewed management actions without
 resetting chat drafts; rejected/unknown creation preserves form values. Unknown
 delivery is not automatically retried. Old Mac/helper builds and Claude do not
-advertise dispatchable management. This is unreleased source functionality,
-not a change to the installed Android app or the LAN web app.
+advertise dispatchable management. Install the matching APK; this does not add
+these controls to the LAN web app.
 
 Copilot must load the updated Notify extension. Idle observation starts when the extension connects; an old creation date does not prove that a helper has been idle. New activity resets that observation. Helpers must have been continuously observed idle for **more than ten minutes**. Missing timing or unsafe/unknown ancestry is skipped. Claude hooks cannot stop subagents, so Claude sessions are explicitly skipped.
 
@@ -353,7 +398,7 @@ Both session modes use the same adapter-advertised eligibility and runtime-polic
 
 Opt-in and each automatic dispatch are audited before sending. Audit/delivery failure stops further automatic approvals. **Turn off** works even if the audit cannot be saved. Provider disconnect, restart, Stop, lost capability and agent/steering errors reset the mode. Already-sent approvals cannot be recalled. Approval hotkeys pause while a native confirmation sheet or modal is open.
 
-Matching unpublished Mac/helper/native Android source builds also expose this same
+Mac beta 8 and native Android 0.3.6 also expose this same
 session policy on the phone, with explicit high-risk confirmation, a red On
 indicator and direct Off. **Phone disconnect does not disable Dangerous Auto-yes.**
 Offline state shows last-known On/unknown, never a successful Off; toggles are not

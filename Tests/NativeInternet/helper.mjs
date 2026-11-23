@@ -3,8 +3,9 @@ import { appendFileSync, mkdirSync, readFileSync, existsSync, unlinkSync } from 
 import { basename, dirname, join } from "node:path";
 import { createConnection } from "node:net";
 
-let directory, agent;
-process.on("SIGTERM", () => {
+let directory, agent, remembered;
+process.on("SIGTERM", async () => {
+  await remembered?.close();
   if (directory && existsSync(join(directory, "delay-stop"))) {
     setTimeout(() => process.exit(0), 300);
   } else process.exit(0);
@@ -17,6 +18,16 @@ for await (const line of createInterface({ input: process.stdin })) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
   }
   appendFileSync(join(directory, "events.jsonl"), JSON.stringify(command) + "\n", { mode: 0o600 });
+  if (command.type === "start" && existsSync(join(directory, "remembered-fixture.json"))) {
+    const config = JSON.parse(readFileSync(join(directory, "remembered-fixture.json"), "utf8"));
+    const { startRememberedFixture } = await import("./remembered-authority.mjs");
+    remembered = await startRememberedFixture({ ...config, directory, origin: command.origin, emit });
+    continue;
+  }
+  if (remembered) {
+    await remembered.command(command);
+    continue;
+  }
   if (command.type === "start") {
     if (process.env.NODE_TLS_REJECT_UNAUTHORIZED !== "1") throw new Error("TLS verification required");
     if (basename(process.argv[1]) === "remote-main.mjs") {
@@ -51,3 +62,4 @@ for await (const line of createInterface({ input: process.stdin })) {
   }
 }
 agent?.destroy();
+await remembered?.close();
