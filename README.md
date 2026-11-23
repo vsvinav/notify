@@ -39,7 +39,7 @@ Already installed? Run `open ~/Applications/Notify.app`. Downloads contain no pe
 
 **Release policy for Notify repositories:** publish client updates as versioned
 GitHub releases with installable artifacts and SHA-256 checksums: the Mac app ZIP
-in this repository and the Android APK in its private repository. A source-only
+in this repository and the Android APK in its Android repository. A source-only
 merge is not a release. Label previews and disclose remaining acceptance limits;
 never publish personal settings, identities or private local-build paths.
 
